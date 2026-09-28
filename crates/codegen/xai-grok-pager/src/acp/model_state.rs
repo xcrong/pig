@@ -83,13 +83,19 @@ impl ModelState {
     /// untouched.
     pub fn current_model_short_name(&self) -> Option<String> {
         let current = self.current.as_ref()?;
-        let name = if let Some(model_info) = self.available.get(current) {
+        Some(self.short_name_for(current))
+    }
+
+    /// Short display name for any catalog entry: full name with the exact
+    /// " (<id>)" vendor suffix stripped, or the raw id when the entry is unknown.
+    pub fn short_name_for(&self, id: &acp::ModelId) -> String {
+        let name = if let Some(model_info) = self.available.get(id) {
             model_info.name.clone()
         } else {
-            current.0.to_string()
+            id.0.to_string()
         };
-        let suffix = format!(" ({})", current.0.as_ref());
-        Some(name.strip_suffix(&suffix).unwrap_or(&name).to_string())
+        let suffix = format!(" ({})", id.0.as_ref());
+        name.strip_suffix(&suffix).unwrap_or(&name).to_string()
     }
 
     /// Machine-readable model ID string for the current model (e.g. "grok-4.5").
@@ -410,6 +416,15 @@ mod tests {
             state.current_model_short_name(),
             Some("Model A".to_string())
         );
+    }
+
+    #[test]
+    fn test_short_name_for_falls_back_to_id() {
+        let state = sample_models();
+        let unknown = acp::ModelId::new(Arc::from("missing/model"));
+        assert_eq!(state.short_name_for(&unknown), "missing/model");
+        let known = acp::ModelId::new(Arc::from("model-a"));
+        assert_eq!(state.short_name_for(&known), "Model A");
     }
 
     #[test]

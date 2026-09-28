@@ -1337,12 +1337,7 @@ fn stage_dashboard_model(
     model_id: acp::ModelId,
     effort: Option<xai_grok_shell::sampling::types::ReasoningEffort>,
 ) {
-    let display = app
-        .models
-        .available
-        .get(&model_id)
-        .map(|info| info.name.clone())
-        .unwrap_or_else(|| model_id.0.to_string());
+    let display = app.models.short_name_for(&model_id);
     if let Some(d) = app.dashboard.as_mut() {
         d.dispatch.set_text("");
         d.error_toast = None;

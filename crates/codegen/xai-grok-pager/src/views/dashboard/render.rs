@@ -2092,7 +2092,7 @@ fn paint_dispatch_config_badge(
             Some(effort) => format!("{} ({effort})", m.display),
             None => m.display.clone(),
         })
-        .or_else(|| state.models.current_model_name())
+        .or_else(|| state.models.current_model_short_name())
         .unwrap_or_default();
 
     // Mode flag, styled exactly like the chat prompt's mode flags.
