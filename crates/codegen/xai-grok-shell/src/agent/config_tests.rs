@@ -8282,6 +8282,40 @@ fn resolve_model_list_empty_prefetch_yields_vendor_only_base() {
         "vendor snapshots form the remaining base"
     );
 }
+/// Regression: an explicit `[model.*] context_window` that happens to equal
+/// the default constant must still win. The slug-match inheritance below used
+/// `== DEFAULT_CONTEXT_WINDOW` as a "missing" sentinel, so 256000 was
+/// overwritten by the vendor snapshot sibling (e.g. gpt-6-luna 1050000).
+#[test]
+fn resolve_model_list_explicit_context_window_equal_to_default_wins() {
+    let (_, resolved) = resolve_models_from_toml(
+        r#"
+            [vendors.opencode-go]
+            enabled = true
+            env_key = "TEST_VENDOR_KEY"
+
+            [model.gpt-6-luna]
+            model = "gpt-6-luna"
+            context_window = 256000
+            api_backend = "responses"
+            "#,
+        None,
+    );
+    let entry = resolved.get("gpt-6-luna").expect("custom model exists");
+    assert_eq!(
+        entry.info.context_window,
+        NonZeroU64::new(256_000).unwrap(),
+        "explicit context_window must survive slug-match inheritance"
+    );
+    let vendor = resolved
+        .get("opencode-go/gpt-6-luna")
+        .expect("vendor model exists");
+    assert_eq!(
+        vendor.info.context_window,
+        NonZeroU64::new(1_050_000).unwrap(),
+        "vendor sibling keeps its snapshot window"
+    );
+}
 /// Regression: enterprise managed config overlays env_key on an oauth-only catalog entry.
 /// BYOK must force visibility for API-key users so a base `supported_in_api: false` does not leak into the overlay.
 #[test]

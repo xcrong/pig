@@ -3391,6 +3391,7 @@ pub(crate) fn resolve_model_list(
     let effective_providers =
         super::vendors::effective_model_providers(&cfg.model_providers, &cfg.vendors);
     let mut explicit_api_backend_keys = std::collections::HashSet::new();
+    let mut explicit_context_window_keys = std::collections::HashSet::new();
     let mut explicit_supports_effort_false_keys = std::collections::HashSet::new();
     let mut explicit_menu_keys = std::collections::HashSet::new();
     for (key, model_override) in &cfg.config_models {
@@ -3416,6 +3417,12 @@ pub(crate) fn resolve_model_list(
         let effective = with_provider.as_ref().unwrap_or(model_override);
         if effective.api_backend.is_some() {
             explicit_api_backend_keys.insert(key.as_str());
+        }
+        // An explicit context_window (including one that equals the default
+        // constant) must survive the slug-match inheritance below, which
+        // otherwise mistakes it for a missing value.
+        if effective.context_window.is_some() {
+            explicit_context_window_keys.insert(key.as_str());
         }
         if effective.supports_reasoning_effort == Some(false)
             && effective.reasoning_efforts.is_empty()
@@ -3471,9 +3478,12 @@ pub(crate) fn resolve_model_list(
         let default_cw = DEFAULT_CONTEXT_WINDOW;
         let donors: std::collections::HashMap<String, (std::num::NonZeroU64, ApiBackend)> =
             resolved
-                .values()
-                .filter(|e| e.info.context_window.get() != default_cw)
-                .map(|e| {
+                .iter()
+                .filter(|(k, e)| {
+                    e.info.context_window.get() != default_cw
+                        || explicit_context_window_keys.contains(k.as_str())
+                })
+                .map(|(_, e)| {
                     (
                         e.info.model.clone(),
                         (e.info.context_window, e.info.api_backend.clone()),
@@ -3502,7 +3512,9 @@ pub(crate) fn resolve_model_list(
         }
         for (key, entry) in resolved.iter_mut() {
             if let Some((donor_cw, donor_backend)) = donors.get(&entry.info.model) {
-                if entry.info.context_window.get() == default_cw {
+                if entry.info.context_window.get() == default_cw
+                    && !explicit_context_window_keys.contains(key.as_str())
+                {
                     tracing::debug!(
                         model = %entry.info.model,
                         from = default_cw,
