@@ -13,7 +13,8 @@
 - 为保持与上游的合并干净，crate 名一律保留 `xai-grok-*`，函数名保留 `grok_home` 等历史命名，仅改解析值与用户可见产物名。
 - 配置目录：`$PIG_HOME` → `$GROK_HOME`（兼容旧用户）→ `~/.config/pig`，收口于 `xai-dirs`；纯默认路径下首次创建时一次性迁移旧 `~/.grok`（只拷不删）；UI 展示为 `~/.config/pig` / `$PIG_HOME`。
 - 二进制产物：`xai-grok-pager-bin` 的 `[[bin]]` 名为 `pig`；clap `bin_name` 白名单含 `grok/agent/pig`，缺省 `pig`；测试脚手架经 `CARGO_BIN_EXE_pig` / `PAGER_BINARY` 找二进制。
-- 刻意不动（v2 品牌 pass 再议）：`GROK_*` 环境变量全改名、`grok-shell` User-Agent、界面 "Grok Build" 字样、文档中 `~/.grok` 路径、自更新（仍指向上游产物，fork 用户应设 `[cli] auto_update = false`）。
+- 界面产品名统一为 `Pig Agent`：欢迎页版本徽标、副标题、信任提示等用户可见文案不再保留上游 `Grok Build` 字样；合并上游时冲突优先保留本 fork 文案。
+- 刻意不动（v2 品牌 pass 再议）：`GROK_*` 环境变量全改名、`grok-shell` User-Agent、文档中 `~/.grok` 路径、自更新（仍指向上游产物，fork 用户应设 `[cli] auto_update = false`）。
 
 ## 构建与测试
 
