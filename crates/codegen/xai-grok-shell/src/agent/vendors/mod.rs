@@ -764,33 +764,88 @@ mod tests {
     #[test]
     fn vendor_snapshots_carry_effort_support() {
         let models = builtin_vendor_models(&enabled_vendors());
-        // deepseek-v4-flash: low/high/max plus off-as-none.
-        let flash = models.get("opencode-go/deepseek-v4-flash").expect("mapped");
-        assert!(flash.info.supports_reasoning_effort);
-        assert_eq!(
-            effort_ids(&flash.info.reasoning_efforts),
-            ["none", "low", "high", "max"]
-        );
-        // kimi-k2.6 explicitly opts out via compat.
-        let kimi = models.get("opencode-go/kimi-k2.6").expect("mapped");
-        assert!(!kimi.info.supports_reasoning_effort);
-        assert!(kimi.info.reasoning_efforts.is_empty());
-        // No thinkingLevelMap: base five, no xhigh/max.
-        let glm = models.get("opencode-go/glm-5.1").expect("mapped");
-        assert!(glm.info.supports_reasoning_effort);
-        assert_eq!(
-            effort_ids(&glm.info.reasoning_efforts),
-            ["none", "minimal", "low", "medium", "high"]
-        );
+        assert!(!models.is_empty(), "expected mapped vendor models");
+        // Raw snapshot entries keyed `<vendor>/<model-id>`. pi retires model
+        // ids regularly (e.g. opencode-go dropped kimi-k2.6/glm-5.1 in
+        // 2026-09), so this test follows the catalog instead of pinning ids.
+        // The exact menu rules stay pinned in the synthetic
+        // `effort_menu_*` tests; here we prove the wiring for whatever pi
+        // serves today.
+        let mut raw_by_key = std::collections::HashMap::new();
+        for vendor in VENDORS {
+            let parsed: serde_json::Value =
+                serde_json::from_str(vendor.snapshot_json).expect("snapshot is JSON");
+            let items = parsed
+                .as_array()
+                .map(|arr| arr.iter().collect::<Vec<_>>())
+                .or_else(|| {
+                    parsed
+                        .get("models")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().collect::<Vec<_>>())
+                })
+                .unwrap_or_default();
+            for model in items {
+                if let Some(id) = model.get("id").and_then(|v| v.as_str()) {
+                    raw_by_key.insert(format!("{}/{}", vendor.id, id), model.clone());
+                }
+            }
+        }
+        let mut with_menu = 0;
+        for (key, entry) in &models {
+            let raw = raw_by_key
+                .get(key)
+                .unwrap_or_else(|| panic!("snapshot entry missing for {key}"));
+            match vendor_effort_menu(raw) {
+                Some(expected) => {
+                    assert!(
+                        entry.info.supports_reasoning_effort,
+                        "{key} should support reasoning effort"
+                    );
+                    assert_eq!(
+                        effort_ids(&entry.info.reasoning_efforts),
+                        effort_ids(&expected),
+                        "effort menu drift for {key}"
+                    );
+                    with_menu += 1;
+                }
+                None => {
+                    assert!(
+                        !entry.info.supports_reasoning_effort,
+                        "{key} should not support reasoning effort"
+                    );
+                    assert!(
+                        entry.info.reasoning_efforts.is_empty(),
+                        "{key} menu should be empty"
+                    );
+                }
+            }
+        }
+        assert!(with_menu > 0, "expected at least one reasoning model");
         // The ACP projection carries the flag + menu, which is what /effort
-        // and /model <model> <level> actually read.
+        // and /model <model> <level> actually read. Prefer the long-lived
+        // deepseek-v4-flash example when pi still serves it, otherwise use
+        // the first model with a menu.
+        let probe_key = models
+            .keys()
+            .find(|k| k.as_str() == "opencode-go/deepseek-v4-flash")
+            .or_else(|| {
+                models
+                    .iter()
+                    .find_map(|(k, v)| v.info.supports_reasoning_effort.then_some(k))
+            })
+            .expect("reasoning model")
+            .clone();
+        let probe = models.get(&probe_key).expect("mapped");
+        let expected_ids = effort_ids(&probe.info.reasoning_efforts);
+        assert!(!expected_ids.is_empty());
         let acp_models = super::super::config::to_acp_model_info(&models);
-        let flash_acp = acp_models
+        let probe_acp = acp_models
             .iter()
-            .find(|(id, _)| id.0.as_ref() == "opencode-go/deepseek-v4-flash")
+            .find(|(id, _)| id.0.as_ref() == probe_key)
             .map(|(_, info)| info)
             .expect("projected");
-        let meta = flash_acp.meta.as_ref().expect("meta");
+        let meta = probe_acp.meta.as_ref().expect("meta");
         assert_eq!(
             meta.get("supportsReasoningEffort"),
             Some(&serde_json::Value::Bool(true))
@@ -802,6 +857,6 @@ mod tests {
             .iter()
             .filter_map(|o| o.get("value").and_then(|v| v.as_str()))
             .collect();
-        assert_eq!(values, ["none", "low", "high", "max"]);
+        assert_eq!(values, expected_ids);
     }
 }

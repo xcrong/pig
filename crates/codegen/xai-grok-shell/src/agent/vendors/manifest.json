@@ -5,23 +5,23 @@
     "opencode": "https://pi.dev/api/models/providers/opencode?types=chat",
     "opencode-go": "https://pi.dev/api/models/providers/opencode-go?types=chat"
   },
-  "fetchedAt": "2026-09-27T00:00:00Z",
+  "fetchedAt": "2026-09-28T11:56:37Z",
   "note": "Snapshots are verbatim pi.dev responses. Refresh with scripts/sync-pi-vendors.sh (no Node required). pig maps only chat models on its three backends; see per-provider skippedApis.",
   "providers": {
     "opencode": {
       "file": "data/opencode.json",
-      "sha256": "7aa27b9b4faafbe349c0581411580e851ef7784ef85cf548263ebed8806e8b17",
-      "totalModels": 75,
-      "mappedModels": 68,
+      "sha256": "30313577bf53ce416ceb690848f001a272a3fe6ef9f7a2c6e62300af1628efc3",
+      "totalModels": 76,
+      "mappedModels": 69,
       "skippedApis": {
         "google-generative-ai": 7
       }
     },
     "opencode-go": {
       "file": "data/opencode-go.json",
-      "sha256": "4a585655ff18584e9a5f21669dcc8a803fb5326ef6a3ea62807cae8f0308a2d5",
-      "totalModels": 32,
-      "mappedModels": 32,
+      "sha256": "fb9309176fdc0e9804cccd98aafb8d6a7da4f550ac621c7f1648e48a2b790da0",
+      "totalModels": 29,
+      "mappedModels": 29,
       "skippedApis": {}
     }
   }

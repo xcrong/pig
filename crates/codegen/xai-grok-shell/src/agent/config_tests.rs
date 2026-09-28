@@ -8200,7 +8200,17 @@ fn resolve_model_list_prunes_bundled_entries_not_in_prefetch() {
 }
 #[test]
 fn resolve_model_list_prefetch_visibility_matches_auth_and_server_list() {
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    // Vendors are explicit opt-in: enable one snapshot so the layering below
+    // has third-party keys to assert on.
+    cfg.vendors.insert(
+        crate::agent::vendors::VENDOR_OPENCODE_GO.to_string(),
+        crate::agent::vendors::VendorConfig {
+            enabled: true,
+            env_key: Some(EnvKeys::single("TEST_VENDOR_KEY")),
+            api_key: None,
+        },
+    );
     let dm = crate::models::default_model();
     let mut defs = default_model_entries(&EndpointsConfig::default());
     let mut p = IndexMap::new();
@@ -8250,7 +8260,16 @@ fn resolve_model_list_prefetch_replaces_bundled_entirely() {
 }
 #[test]
 fn resolve_model_list_empty_prefetch_yields_vendor_only_base() {
-    let cfg = Config::default();
+    let mut cfg = Config::default();
+    // Same opt-in as above: without an enabled vendor the base would be empty.
+    cfg.vendors.insert(
+        crate::agent::vendors::VENDOR_OPENCODE_GO.to_string(),
+        crate::agent::vendors::VendorConfig {
+            enabled: true,
+            env_key: Some(EnvKeys::single("TEST_VENDOR_KEY")),
+            api_key: None,
+        },
+    );
     let resolved = resolve_model_list(&cfg, Some(IndexMap::new()));
     // An empty server catalog still replaces the bundled first-party entries,
     // but the third-party vendor snapshots layer in as the remaining base.
