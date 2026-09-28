@@ -26,17 +26,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 发版目标收缩到 linux x64 + mac arm64（2026-09 起）。
+        # ubuntu-arm / mac-intel / windows 暂不发版：windows 还会触发上游
+        # Cargo.lock 里 find-msvc-tools 0.1.13 与 cc 1.2.48 的不兼容问题，
+        # 等上游 lock 修复或有人需要时再加回来。
         include:
           - runner: ubuntu-24.04
             artifact: pig-linux-x86_64.tar.gz
-          - runner: ubuntu-24.04-arm
-            artifact: pig-linux-aarch64.tar.gz
           - runner: macos-14
             artifact: pig-macos-arm64.tar.gz
-          - runner: macos-15-intel
-            artifact: pig-macos-x86_64.tar.gz
-          - runner: windows-2022
-            artifact: pig-windows-x86_64.zip
 
     steps:
       - name: Checkout
@@ -60,30 +58,50 @@ jobs:
         if: startsWith(runner.os, 'macOS')
         run: brew install protobuf
 
-      - name: Install protoc (Windows)
-        if: startsWith(runner.os, 'Windows')
-        run: choco install protoc -y
-
       - name: Install Rust toolchain
         # 遵循仓库根目录 rust-toolchain.toml 的版本 pin
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Pre-fetch ripgrep (retryable)
+        # xai-grok-shell / xai-grok-tools 的 build.rs 会在 release 构建时现下
+        # ripgrep，且没有重试：runner 网络一抖就挂（pig-v1.0.41 macos-14 的失败原因）。
+        # 这里用自带重试的 curl 提前下好，走上游官方支持的 *_BUNDLE_RG_PATH 覆盖机制，
+        # 产物与在线下载的字节一致。版本号从 build.rs 解析，上游升级 rg 版本时自动跟随。
+        # 改动只在这个 fork 自有的 workflow 文件里，不碰 crates/ 与 Cargo.lock。
+        shell: bash
+        run: |
+          case "${{ matrix.runner }}" in
+            ubuntu-24.04) TRIPLE=x86_64-unknown-linux-musl ;;
+            macos-14) TRIPLE=aarch64-apple-darwin ;;
+            *) echo "unsupported runner: ${{ matrix.runner }}"; exit 1 ;;
+          esac
+          SHELL_VER=$(sed -n 's/^const RG_VER: &str = "\(.*\)";/\1/p' crates/codegen/xai-grok-shell/build.rs)
+          TOOLS_VER=$(sed -n 's/^const RG_VER: &str = "\(.*\)";/\1/p' crates/codegen/xai-grok-tools/build.rs)
+          [ -n "$SHELL_VER" ] || { echo "cannot parse RG_VER from xai-grok-shell/build.rs"; exit 1; }
+          [ -n "$TOOLS_VER" ] || { echo "cannot parse RG_VER from xai-grok-tools/build.rs"; exit 1; }
+          mkdir -p /tmp/rg-prefetch
+          fetch_rg() { # $1 = version -> prints extracted rg path
+            local ver=$1 dir=/tmp/rg-prefetch/$ver-$TRIPLE
+            mkdir -p "$dir"
+            if [ ! -f "$dir/rg" ]; then
+              curl --proto '=https' --tlsv1.2 --retry 5 --retry-all-errors --retry-delay 5 \
+                -fsSL -o /tmp/rg-prefetch/ripgrep-$ver-$TRIPLE.tar.gz \
+                "https://github.com/BurntSushi/ripgrep/releases/download/$ver/ripgrep-$ver-$TRIPLE.tar.gz"
+              tar -xzf /tmp/rg-prefetch/ripgrep-$ver-$TRIPLE.tar.gz -C "$dir"
+            fi
+            find "$dir" -name rg -type f | head -n 1
+          }
+          echo "GROK_SHELL_BUNDLE_RG_PATH=$(fetch_rg "$SHELL_VER")" >> "$GITHUB_ENV"
+          echo "GROK_TOOLS_BUNDLE_RG_PATH=$(fetch_rg "$TOOLS_VER")" >> "$GITHUB_ENV"
+
       - name: Build release binary
         run: cargo build --release -p xai-grok-pager-bin
 
-      - name: Package (unix)
-        if: "!startsWith(runner.os, 'Windows')"
+      - name: Package
         shell: bash
         run: |
           cd target/release
           tar -czf "$GITHUB_WORKSPACE/${{ matrix.artifact }}" pig
-
-      - name: Package (Windows)
-        if: startsWith(runner.os, 'Windows')
-        shell: pwsh
-        run: |
-          cd target/release
-          Compress-Archive -Path pig.exe -DestinationPath "$env:GITHUB_WORKSPACE/${{ matrix.artifact }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
