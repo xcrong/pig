@@ -733,6 +733,7 @@ mod tests {
             extra_headers: [("x-team".to_owned(), "codegen".to_owned())]
                 .into_iter()
                 .collect(),
+            session_header: Some("x-opencode-session".to_owned()),
             query_params: [("api-version".to_owned(), "2026-07-22".to_owned())]
                 .into_iter()
                 .collect(),

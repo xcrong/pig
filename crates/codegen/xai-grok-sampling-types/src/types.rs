@@ -1138,6 +1138,11 @@ pub struct SamplingConfig {
     /// Header name to environment variable; only the mapping persists, not the resolved secret.
     #[serde(default, skip_serializing_if = "indexmap::IndexMap::is_empty")]
     pub env_http_headers: indexmap::IndexMap<String, String>,
+    /// Vendor-specific per-conversation routing header name (e.g. `x-opencode-session`).
+    /// Persisted as configuration; the per-turn value is threaded separately
+    /// via `xai_grok_sampler::SamplerConfig::session_id` and never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_header: Option<String>,
     /// Total context window size in tokens; auto-compact thresholds derive from it.
     pub context_window: NonZeroU64,
     /// Provider request-body cap, already defaulted from `api_backend` by model resolution; `None` budgets to 50 MiB.
@@ -1172,6 +1177,7 @@ impl Default for SamplingConfig {
             conversation_group_id: None,
             query_params: indexmap::IndexMap::new(),
             env_http_headers: indexmap::IndexMap::new(),
+            session_header: None,
             context_window: NonZeroU64::MIN,
             max_request_bytes: None,
             reasoning_effort: None,

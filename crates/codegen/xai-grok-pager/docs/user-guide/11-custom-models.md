@@ -77,7 +77,7 @@ Grok supports three API backends. Set `api_backend` in your `[model.*]` config t
 
 When you omit `api_backend`, Grok uses `chat_completions`.
 
-To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers verbatim with every request to the endpoint.
+To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers verbatim with every request to the endpoint. For vendor gateways that require a *per-conversation* routing header -- for example, OpenCode's `x-opencode-session` -- use `session_header` instead: the header name comes from config, the value is the live session id on every turn, and an `extra_headers` entry of the same name (any casing) wins when you need to pin a value.
 
 ---
 
@@ -100,6 +100,7 @@ top_p = 0.95                              # Nucleus sampling parameter
 max_completion_tokens = 8192              # Maximum tokens per response
 context_window = 128000                   # Total context window in tokens
 extra_headers = { "x-api-key" = "sk-..." } # Extra request headers, sent verbatim (optional)
+session_header = "x-opencode-session"        # Per-conversation routing header; value is the session id (optional)
 query_params = { api-version = "2026-07-22" } # Query params appended to every request URL (optional)
 env_http_headers = { "X-Tenant" = "TENANT_TOKEN" }    # Headers from env vars, resolved at client build (optional)
 ```
@@ -315,6 +316,28 @@ base_url = "https://api.together.xyz/v1"
 name = "Mixtral 8x7B"
 env_key = "TOGETHER_API_KEY"
 ```
+
+### OpenCode Zen / OpenCode Go (builtin vendor catalog)
+
+Grok ships pi-compatible snapshots of the OpenCode Zen (`opencode`) and OpenCode Go (`opencode-go`) catalogs, refreshed from pi's served catalog (`https://pi.dev/api/models/providers/<id>`; see `scripts/sync-pi-vendors.sh`). Snapshot models appear in the picker as `opencode/<model-id>` and `opencode-go/<model-id>`, and both vendors pre-register `[model_providers]` presets, so no hand-written provider block is needed:
+
+```bash
+export OPENCODE_API_KEY="..."
+grok -p "Hello" -m opencode/kimi-k2.6
+```
+
+```toml
+# Minimal override: inherit the builtin preset (base_url, env_key, session_header)
+[model.my-zen]
+model = "kimi-k2.6"
+model_provider = "opencode"
+```
+
+Both vendors require the per-conversation `x-opencode-session` routing header. Grok sends it automatically (value: the session id) for any model with `session_header` set -- via the vendor preset, the snapshot entries, or your own `[model.*]` / `[model_providers.*]` value. A matching `extra_headers` entry (any casing) overrides the automatic value. Like other third-party entries these models are BYOK: without `OPENCODE_API_KEY` they resolve with no credential and never borrow your session token.
+
+> Explicitly unsupported: snapshot models served by pi on `google-generative-ai` (e.g. Gemini) are filtered out of the catalog by design -- pig's sampler only speaks `chat_completions`, `responses`, and `messages`. They never appear in the picker. If pi starts serving a new shape, the sync reports it under `skippedApis` and it stays excluded until support is deliberately added.
+
+> Enterprise lockdown: custom-endpoint deployments (`GROK_MODELS_BASE_URL`) skip the vendor snapshots, like the bundled defaults -- all inference routes through the pinned gateway.
 
 ### Local OpenAI-Compatible Server
 

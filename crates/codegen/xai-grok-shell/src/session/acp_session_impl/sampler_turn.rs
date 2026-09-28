@@ -671,6 +671,7 @@ impl SessionActor {
                 conversation_group_id: None,
                 query_params: Default::default(),
                 env_http_headers: Default::default(),
+                session_header: None,
                 context_window: std::num::NonZeroU64::new(256_000).unwrap(),
                 max_request_bytes: None,
                 reasoning_effort: None,
@@ -757,6 +758,10 @@ impl SessionActor {
             extra_response_includes,
             query_params: cfg.query_params.clone(),
             env_http_headers: cfg.env_http_headers.clone(),
+            session_header: cfg.session_header.clone(),
+            // Vendor routing value (e.g. `x-opencode-session`); the header name
+            // above opts in, the value here is always the live session id.
+            session_id: Some(self.session_info.id.0.to_string()),
             context_window: cfg.context_window.get(),
             max_request_bytes: cfg.max_request_bytes,
             client_version: creds.client_version,

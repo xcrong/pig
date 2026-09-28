@@ -30,6 +30,7 @@ pub(crate) mod subscription_check;
 #[cfg(feature = "test-support")]
 pub mod testkit;
 pub(crate) mod update_chunk_merge;
+pub mod vendors;
 
 pub use mvp_agent::MvpAgent;
 pub use mvp_agent::SessionSetupPhase;

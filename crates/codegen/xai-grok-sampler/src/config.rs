@@ -62,6 +62,16 @@ pub struct SamplerConfig {
     /// Header name to environment variable, resolved into request headers at client build and never persisted.
     #[serde(default)]
     pub env_http_headers: IndexMap<String, String>,
+    /// Vendor-specific per-conversation routing header name (e.g. `x-opencode-session`).
+    /// The value comes from `session_id`; `None` disables the header.
+    /// Mirrors pi's `StreamOptions.sessionId` -> `x-opencode-session` mapping
+    /// (`pi/packages/ai/src/providers/opencode-headers.ts`).
+    #[serde(default)]
+    pub session_header: Option<String>,
+    /// Per-conversation value sent as `session_header`. Threaded per turn from
+    /// the session id by `reconstruct_full_config`; never persisted to disk.
+    #[serde(default)]
+    pub session_id: Option<String>,
     /// Total context window size in tokens.
     /// The sampler does not enforce it; the session uses it for compaction decisions.
     pub context_window: u64,
@@ -142,6 +152,8 @@ impl Default for SamplerConfig {
             extra_response_includes: Vec::new(),
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
+            session_header: None,
+            session_id: None,
             context_window: 0,
             max_request_bytes: None,
             force_http1: false,

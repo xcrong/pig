@@ -1,0 +1,28 @@
+{
+  "$schema": "pig vendor catalog manifest (see src/agent/vendors/mod.rs)",
+  "source": "pi runtime model catalog",
+  "sourceUrls": {
+    "opencode": "https://pi.dev/api/models/providers/opencode?types=chat",
+    "opencode-go": "https://pi.dev/api/models/providers/opencode-go?types=chat"
+  },
+  "fetchedAt": "2026-09-27T00:00:00Z",
+  "note": "Snapshots are verbatim pi.dev responses. Refresh with scripts/sync-pi-vendors.sh (no Node required). pig maps only chat models on its three backends; see per-provider skippedApis.",
+  "providers": {
+    "opencode": {
+      "file": "data/opencode.json",
+      "sha256": "7aa27b9b4faafbe349c0581411580e851ef7784ef85cf548263ebed8806e8b17",
+      "totalModels": 75,
+      "mappedModels": 68,
+      "skippedApis": {
+        "google-generative-ai": 7
+      }
+    },
+    "opencode-go": {
+      "file": "data/opencode-go.json",
+      "sha256": "4a585655ff18584e9a5f21669dcc8a803fb5326ef6a3ea62807cae8f0308a2d5",
+      "totalModels": 32,
+      "mappedModels": 32,
+      "skippedApis": {}
+    }
+  }
+}

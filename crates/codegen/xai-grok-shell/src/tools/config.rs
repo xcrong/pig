@@ -209,6 +209,8 @@ impl ShellToolsetConfig {
             extra_response_includes: Vec::new(),
             query_params: indexmap::IndexMap::new(),
             env_http_headers: indexmap::IndexMap::new(),
+            session_header: None,
+            session_id: None,
             context_window: 256_000,
             max_request_bytes: None,
             client_version: None,

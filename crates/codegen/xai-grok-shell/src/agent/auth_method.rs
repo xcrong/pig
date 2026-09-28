@@ -660,6 +660,9 @@ mod tests {
         // Make sure no global key is masking the per-model path we're trying to exercise
         // Held until end-of-scope so we restore on panic too
         let _global = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
+        // Vendor snapshots also declare env_key credentials; an ambient vendor key
+        // would resolve them into BYOK and mask this test the same way.
+        let _vendor = EnvGuard::unset(crate::agent::vendors::OPENCODE_ENV_KEY);
 
         let dm = xai_grok_models::default_model();
         let toml: toml::Value = toml::from_str(&format!(
@@ -785,6 +788,7 @@ mod tests {
     fn env_key_probe_unusable_suppresses_advertise_without_byok() {
         let _set = EnvGuard::set(XAI_API_KEY_ENV_VAR, "xai-dead-key");
         let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+        let _vendor = EnvGuard::unset(crate::agent::vendors::OPENCODE_ENV_KEY);
         let cfg = Config::default();
         let models = resolve_model_list(&cfg, None);
         assert!(

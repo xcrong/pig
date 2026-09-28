@@ -302,6 +302,35 @@ fn apply_env_http_headers(
     }
 }
 
+/// Inject a vendor-specific per-conversation routing header (e.g. `x-opencode-session`).
+/// No-op when the model did not opt in (`header_name` is `None`) or no session value
+/// is present. A header already present under the same name (case-insensitive)
+/// wins, matching pi's `withOpenCodeSessionHeader` caller-override semantics.
+fn apply_session_header(
+    header_name: Option<&str>,
+    session_id: Option<&str>,
+    headers: &mut HeaderMap,
+) {
+    let Some(name) = header_name.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let Some(value) = session_id.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let Ok(header_name) = HeaderName::try_from(name) else {
+        tracing::warn!(header = %name, "skipping session_header with an invalid header name");
+        return;
+    };
+    if headers.contains_key(&header_name) {
+        return;
+    }
+    let Ok(header_value) = HeaderValue::from_str(value) else {
+        tracing::warn!(header = %name, "skipping session_header with an invalid header value");
+        return;
+    };
+    headers.insert(header_name, header_value);
+}
+
 /// HTTP client for sampling. Cheap to clone.
 /// Carries an `Arc`-backed `reqwest::Client` and the default headers/request-defaults computed from a [`SamplerConfig`] at construction time.
 #[derive(Clone)]
@@ -554,6 +583,16 @@ impl SamplingClient {
         apply_env_http_headers(
             &config.env_http_headers,
             |var| std::env::var(var).ok(),
+            &mut headers,
+        );
+
+        // Vendor-specific per-conversation routing header (e.g. `x-opencode-session`).
+        // Mirrors pi's `withOpenCodeSessionHeader`: only when the model opts in via
+        // `session_header` and a session value is present, and never overriding a
+        // caller-supplied header of the same name (HeaderMap is case-insensitive).
+        apply_session_header(
+            config.session_header.as_deref(),
+            config.session_id.as_deref(),
             &mut headers,
         );
 
@@ -2894,6 +2933,70 @@ mod tests {
     fn sampling_client_always_has_user_agent() {
         let client = SamplingClient::new(minimal_config()).expect("build");
         assert!(client.default_headers.contains_key(USER_AGENT));
+    }
+
+    /// Vendor routing header (e.g. `x-opencode-session`, mirroring pi's
+    /// `withOpenCodeSessionHeader`): sent only when the model opts in via
+    /// `session_header` and a session value is present.
+    #[test]
+    fn session_header_sent_when_configured_with_session_id() {
+        let cfg = SamplerConfig {
+            session_header: Some("x-opencode-session".to_string()),
+            session_id: Some("conversation-1".to_string()),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("build");
+        assert_eq!(
+            client
+                .default_headers
+                .get("x-opencode-session")
+                .and_then(|v| v.to_str().ok()),
+            Some("conversation-1")
+        );
+    }
+
+    #[test]
+    fn session_header_absent_without_session_id() {
+        let cfg = SamplerConfig {
+            session_header: Some("x-opencode-session".to_string()),
+            session_id: None,
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("build");
+        assert!(!client.default_headers.contains_key("x-opencode-session"));
+    }
+
+    #[test]
+    fn session_header_absent_without_opt_in() {
+        let cfg = SamplerConfig {
+            session_header: None,
+            session_id: Some("conversation-1".to_string()),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("build");
+        assert!(!client.default_headers.contains_key("x-opencode-session"));
+    }
+
+    /// A caller-supplied header of the same name (any casing) wins, matching
+    /// pi's case-insensitive override semantics.
+    #[test]
+    fn session_header_preserves_caller_override() {
+        let mut extra_headers = IndexMap::new();
+        extra_headers.insert("X-OpenCode-Session".to_string(), "caller-value".to_string());
+        let cfg = SamplerConfig {
+            extra_headers,
+            session_header: Some("x-opencode-session".to_string()),
+            session_id: Some("generated-value".to_string()),
+            ..minimal_config()
+        };
+        let client = SamplingClient::new(cfg).expect("build");
+        assert_eq!(
+            client
+                .default_headers
+                .get("x-opencode-session")
+                .and_then(|v| v.to_str().ok()),
+            Some("caller-value")
+        );
     }
 
     // Regression: a past change dropped HeaderInjector (traceparent) from sampling requests.

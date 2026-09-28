@@ -8208,16 +8208,23 @@ fn resolve_model_list_prefetch_visibility_matches_auth_and_server_list() {
         p.insert(dm.to_string(), e);
     }
     let resolved = resolve_model_list(&cfg, Some(p));
-    let sess: Vec<_> = resolved
-        .values()
-        .filter(|e| e.visible_for_auth(true))
+    // Vendor snapshots layer in alongside the prefetched server catalog.
+    let first_party: Vec<_> = resolved.iter().filter(|(k, _)| !k.contains('/')).collect();
+    assert_eq!(first_party.len(), 1);
+    let sess: Vec<_> = first_party
+        .iter()
+        .filter(|(_, e)| e.visible_for_auth(true))
         .collect();
-    let api: Vec<_> = resolved
-        .values()
-        .filter(|e| e.visible_for_auth(false))
+    let api: Vec<_> = first_party
+        .iter()
+        .filter(|(_, e)| e.visible_for_auth(false))
         .collect();
     assert_eq!(sess.len(), 1);
     assert_eq!(api.len(), 1);
+    assert!(
+        resolved.keys().any(|k| k.contains('/')),
+        "vendor snapshots still layer in alongside prefetch"
+    );
 }
 #[test]
 fn resolve_model_list_keeps_prefetch_only_entries_and_prunes_defaults() {
@@ -8242,10 +8249,19 @@ fn resolve_model_list_prefetch_replaces_bundled_entirely() {
     assert!(!resolved.contains_key(dm));
 }
 #[test]
-fn resolve_model_list_empty_prefetch_yields_empty_base() {
+fn resolve_model_list_empty_prefetch_yields_vendor_only_base() {
     let cfg = Config::default();
     let resolved = resolve_model_list(&cfg, Some(IndexMap::new()));
-    assert!(resolved.is_empty());
+    // An empty server catalog still replaces the bundled first-party entries,
+    // but the third-party vendor snapshots layer in as the remaining base.
+    assert!(
+        !resolved.contains_key(crate::models::default_model()),
+        "bundled defaults stay replaced by prefetch"
+    );
+    assert!(
+        resolved.keys().any(|k| k.contains('/')),
+        "vendor snapshots form the remaining base"
+    );
 }
 /// Regression: enterprise managed config overlays env_key on an oauth-only catalog entry.
 /// BYOK must force visibility for API-key users so a base `supported_in_api: false` does not leak into the overlay.

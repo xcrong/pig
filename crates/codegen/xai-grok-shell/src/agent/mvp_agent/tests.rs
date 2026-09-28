@@ -3835,6 +3835,9 @@ async fn cached_token_fallthrough_falls_to_grok_com_without_credentials() {
     let _lockdown = EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH");
     let _new = EnvGuard::unset(XAI_API_KEY_ENV_VAR);
     let _legacy = EnvGuard::unset(LEGACY_XAI_API_KEY_ENV_VAR);
+    // Vendor snapshots declare env_key credentials; isolate them so "no API-key
+    // creds" really means none.
+    let _vendor = EnvGuard::unset(crate::agent::vendors::OPENCODE_ENV_KEY);
     let agent = build_minimal_agent_for_tests();
     assert_eq!(
         agent

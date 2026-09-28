@@ -2009,6 +2009,7 @@ impl Config {
             if let Some(ref id) = model.model_provider
                 && !config.model_providers.contains_key(id)
                 && !declared_model_provider_names.contains(id.as_str())
+                && !super::vendors::is_builtin_vendor(id)
             {
                 config.config_warnings.push(
                     super::config_model_override_parse::ConfigWarning::model(
@@ -3357,6 +3358,25 @@ pub(crate) fn resolve_model_list(
         }
         resolved = prefetched;
     }
+    // Third-party vendor snapshots (pi-compatible `opencode`/`opencode-go` catalogs).
+    // Layered below user `[model.*]`: the loop below can still override any vendor key.
+    // Keys are namespaced (`<vendor>/<model-id>`), so collisions with bundled or
+    // prefetched entries are not expected; `or_insert` keeps first-party wins.
+    // Skipped for custom-endpoint (enterprise lockdown) deployments, like the
+    // bundled defaults: all inference there routes through the pinned gateway.
+    if !cfg.endpoints.has_custom_endpoint() {
+        let vendor_models = super::vendors::builtin_vendor_models();
+        tracing::debug!(
+            count = vendor_models.len(),
+            "loaded vendor catalog snapshots"
+        );
+        for (key, entry) in vendor_models {
+            resolved.entry(key).or_insert(entry);
+        }
+    }
+    // Effective `[model_providers]` table: builtin vendor presets fill gaps so
+    // `model_provider = "opencode"` resolves without hand-written provider blocks.
+    let effective_providers = super::vendors::effective_model_providers(&cfg.model_providers);
     let mut explicit_api_backend_keys = std::collections::HashSet::new();
     let mut explicit_supports_effort_false_keys = std::collections::HashSet::new();
     let mut explicit_menu_keys = std::collections::HashSet::new();
@@ -3375,7 +3395,7 @@ pub(crate) fn resolve_model_list(
             }
         }
         let with_provider = model_override.model_provider.as_deref().map(|pid| {
-            match cfg.model_providers.get(pid) {
+            match effective_providers.get(pid) {
                 Some(provider) => model_override.with_provider_defaults(provider, pid),
                 None => model_override.with_missing_provider(),
             }
@@ -3709,6 +3729,7 @@ fn default_models(endpoints: &EndpointsConfig) -> IndexMap<String, ModelEntryCon
                 api_key: None,
                 env_key: None,
                 extra_headers: IndexMap::new(),
+                session_header: None,
                 use_concise: false,
                 hidden: m.hidden,
                 supported_in_api: m.supported_in_api,
@@ -3787,6 +3808,11 @@ pub struct ModelEntryConfig {
     /// Example: { "x-anthropic-api-key" = "sk-ant-..." }
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub extra_headers: IndexMap<String, String>,
+    /// Vendor-specific per-conversation routing header name (e.g. `x-opencode-session`).
+    /// The per-turn value is the session id; `None` disables the header.
+    /// See `xai_grok_sampler::SamplerConfig::session_header`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_header: Option<String>,
     /// The total context window size in tokens for this model.
     /// Used for auto-compact threshold calculations.
     /// Required: BYOK users must explicitly set this in config.toml.
@@ -3882,6 +3908,7 @@ impl Default for ModelEntryConfig {
             reasoning_effort_server_default: false,
             variants: Vec::new(),
             extra_headers: IndexMap::new(),
+            session_header: None,
             context_window: NonZeroU64::MIN,
             max_request_bytes: None,
             auto_compact_threshold_percent: None,
@@ -3939,6 +3966,8 @@ pub struct ConfigModelOverride {
     pub api_backend: Option<ApiBackend>,
     #[serde(default)]
     pub extra_headers: IndexMap<String, String>,
+    /// Vendor-specific per-conversation routing header name (e.g. `x-opencode-session`).
+    pub session_header: Option<String>,
     #[serde(default)]
     pub query_params: IndexMap<String, String>,
     #[serde(default)]
@@ -4014,6 +4043,9 @@ impl ConfigModelOverride {
         }
         if !self.extra_headers.is_empty() {
             entry.info.extra_headers = self.extra_headers.clone();
+        }
+        if self.session_header.is_some() {
+            entry.info.session_header.clone_from(&self.session_header);
         }
         if !self.query_params.is_empty() {
             entry.info.query_params = self.query_params.clone();
@@ -4127,6 +4159,9 @@ pub struct ModelInfo {
     pub api_backend: ApiBackend,
     pub auth_scheme: AuthScheme,
     pub extra_headers: IndexMap<String, String>,
+    /// Vendor-specific per-conversation routing header name (e.g. `x-opencode-session`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_header: Option<String>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
     pub query_params: IndexMap<String, String>,
     #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
@@ -4216,6 +4251,7 @@ impl ModelInfo {
             api_backend: ApiBackend::default(),
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
+            session_header: None,
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),
@@ -4259,6 +4295,7 @@ impl ModelInfo {
             api_backend: entry.api_backend.clone(),
             auth_scheme: entry.auth_scheme.unwrap_or_default(),
             extra_headers: entry.extra_headers.clone(),
+            session_header: entry.session_header.clone(),
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: entry.context_window,
@@ -4966,6 +5003,7 @@ pub(crate) fn resolve_aux_model_sampling_config(
                 api_backend: ApiBackend::Responses,
                 auth_scheme: Default::default(),
                 extra_headers: IndexMap::new(),
+                session_header: None,
                 query_params: IndexMap::new(),
                 env_http_headers: IndexMap::new(),
                 context_window: NonZeroU64::new(200_000).unwrap(),
@@ -5027,6 +5065,9 @@ pub(crate) fn stamp_session_local_sampler_fields(
 ) {
     cfg.client_identifier = client_identifier;
     cfg.conversation_group_id = active_session_config.conversation_group_id.clone();
+    // Vendor routing (e.g. `x-opencode-session`) follows the originating session
+    // so helper requests on third-party models route like the main turn.
+    cfg.session_id = active_session_config.session_id.clone();
     cfg.attribution_callback = active_session_config.attribution_callback.clone();
     if crate::util::is_xai_api_bearer_url(&cfg.base_url) {
         cfg.bearer_resolver = active_session_config.bearer_resolver.clone();
@@ -5128,6 +5169,10 @@ pub(crate) fn sampling_config_for_model(
         extra_response_includes,
         query_params: info.query_params.clone(),
         env_http_headers: info.env_http_headers.clone(),
+        session_header: info.session_header.clone(),
+        // The per-turn value is threaded by `reconstruct_full_config` from the
+        // session id; model resolution only decides the header name.
+        session_id: None,
         context_window: info.context_window.get(),
         max_request_bytes: Some(
             info.max_request_bytes
@@ -5198,6 +5243,7 @@ fn resolve_hidden_default_web_search_sampling_config(
             api_backend: ApiBackend::Responses,
             auth_scheme: Default::default(),
             extra_headers: IndexMap::new(),
+            session_header: None,
             query_params: IndexMap::new(),
             env_http_headers: IndexMap::new(),
             context_window: NonZeroU64::new(200_000).unwrap(),

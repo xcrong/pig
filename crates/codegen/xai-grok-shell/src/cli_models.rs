@@ -111,7 +111,7 @@ mod tests {
     }
     /// Isolate process-global auth sources that `AuthStatus::resolve` consults.
     /// Uses `GROK_AUTH_PATH` (not `GROK_HOME`) so a OnceLock-cached real home with `auth.json` cannot leak into these tests.
-    fn isolate_auth_sources() -> (tempfile::TempDir, [EnvGuard; 7]) {
+    fn isolate_auth_sources() -> (tempfile::TempDir, [EnvGuard; 8]) {
         let dir = tempfile::tempdir().unwrap();
         let auth_path = dir.path().join("no-auth.json");
         let guards = [
@@ -122,6 +122,9 @@ mod tests {
             EnvGuard::unset("GROK_DEPLOYMENT_KEY"),
             EnvGuard::unset("GROK_WS_ORIGIN"),
             EnvGuard::unset("GROK_DISABLE_API_KEY_AUTH"),
+            // Third-party vendor snapshots declare env_key credentials; without
+            // isolation an ambient key would resolve them into BYOK status.
+            EnvGuard::unset(crate::agent::vendors::OPENCODE_ENV_KEY),
         ];
         (dir, guards)
     }

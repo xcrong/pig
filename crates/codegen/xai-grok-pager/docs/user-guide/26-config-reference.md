@@ -401,6 +401,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | `model.<id>.reasoning_effort` | `string` | `yes` | `user` | Deprecated per-model effort; prefer `reasoning_efforts`. |
 | `model.<id>.reasoning_efforts` | `array of tables` | `yes` | `user` | Allowed reasoning-effort values for this model. When omitted, the menu comes from the endpoint's `/v1/models` row (`reasoning_efforts`, or `capabilities.reasoning_effort` when that is absent). |
 | `model.<id>.reasoning_summary` | `none / auto / concise / detailed` | `yes` | `user` | Responses API `reasoning.summary` for this model; default `concise`. `none` omits the field for endpoints that reject it (e.g. AWS Bedrock Mantle). |
+| `model.<id>.session_header` | `string` | `yes` | `user` | Vendor per-conversation routing header name (e.g. `x-opencode-session`). The per-turn value is the session id; unset disables the header. Inherits `[model_providers.<id>].session_header` when the model sets none. |
 | `model.<id>.show_model_fingerprint` | `boolean` | `yes` | `user` | Show the provider model fingerprint in the UI when present. |
 | `model.<id>.stream_tool_calls` | `boolean` | `yes` | `user` | Per-model tool-call streaming request shape. |
 | `model.<id>.subagent_rate_limit_max_attempts` | `number` | `yes` | `user` | Maximum subagent 429 wait-loop attempts when `rate_limit_retry_threshold` is unset; default 8, maximum 32, and `0` disables the wait loop. |
@@ -417,6 +418,7 @@ User-level configuration lives in `$GROK_HOME/config.toml` (default `~/.grok/con
 | Key | Type / Values | Requirements | Managed | Details |
 | --- | --- | --- | --- | --- |
 | `model_providers.<name>` | `table` | `yes` | `user` | Named custom model provider definition. |
+| `model_providers.<name>.session_header` | `string` | `yes` | `user` | Vendor per-conversation routing header name inherited by models on this provider that set none of their own (e.g. `x-opencode-session`). |
 
 ### `models`
 

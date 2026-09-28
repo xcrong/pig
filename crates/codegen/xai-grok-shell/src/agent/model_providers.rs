@@ -15,6 +15,9 @@ pub struct ModelProviderConfig {
     pub api_key: Option<String>,
     pub api_backend: Option<ApiBackend>,
     pub extra_headers: IndexMap<String, String>,
+    /// Vendor-specific per-conversation routing header name, inherited by
+    /// models that set none of their own (e.g. `x-opencode-session`).
+    pub session_header: Option<String>,
     /// Query parameters folded into every request URL; inherited by models.
     pub query_params: IndexMap<String, String>,
     /// Header name to environment variable; inherited by models, resolved at client build.
@@ -183,6 +186,7 @@ impl ConfigModelOverride {
             api_key,
             api_backend,
             extra_headers,
+            session_header,
             query_params,
             env_http_headers,
             auth_provider,
@@ -207,6 +211,9 @@ impl ConfigModelOverride {
         }
         if merged.env_http_headers.is_empty() {
             merged.env_http_headers = env_http_headers.clone();
+        }
+        if merged.session_header.is_none() {
+            merged.session_header.clone_from(session_header);
         }
         let model_sets_own_api_key = self
             .api_key
@@ -1064,6 +1071,112 @@ mod tests {
                 .map(String::as_str),
             Some("model"),
             "a model that sets its own query params inherits none of the provider's"
+        );
+    }
+
+    #[test]
+    fn model_inherits_provider_session_header() {
+        let toml_cfg: toml::Value = toml::from_str(
+            r#"
+            [model_providers.gateway]
+            base_url = "https://gateway.example/v1"
+            api_key = "sk-provider"
+            session_header = "x-opencode-session"
+
+            [model.via-gateway]
+            model = "m"
+            model_provider = "gateway"
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&toml_cfg).expect("config should parse");
+        let resolved = resolve_model_list(&cfg, None);
+        let model = resolved.get("via-gateway").expect("model should exist");
+        assert_eq!(
+            model.info.session_header.as_deref(),
+            Some("x-opencode-session"),
+            "the model inherits the provider's session header name"
+        );
+        let sampler = sampling_config_for_model(
+            model,
+            resolve_credentials(model, None),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            sampler.session_header.as_deref(),
+            Some("x-opencode-session"),
+            "the sampler config carries the header name; the value is threaded per turn"
+        );
+        assert_eq!(
+            sampler.session_id, None,
+            "model resolution must not fabricate a session value"
+        );
+    }
+
+    #[test]
+    fn model_own_session_header_wins_over_provider() {
+        let toml_cfg: toml::Value = toml::from_str(
+            r#"
+            [model_providers.gateway]
+            base_url = "https://gateway.example/v1"
+            api_key = "sk-provider"
+            session_header = "x-provider-session"
+
+            [model.via-gateway]
+            model = "m"
+            model_provider = "gateway"
+            session_header = "x-model-session"
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&toml_cfg).expect("config should parse");
+        let resolved = resolve_model_list(&cfg, None);
+        let model = resolved.get("via-gateway").expect("model should exist");
+        assert_eq!(
+            model.info.session_header.as_deref(),
+            Some("x-model-session"),
+            "an explicit model session_header wins over the provider's"
+        );
+    }
+
+    #[test]
+    fn builtin_vendor_provider_needs_no_hand_written_block() {
+        use crate::agent::vendors::{OPENCODE_SESSION_HEADER, VENDOR_OPENCODE};
+
+        let toml_cfg: toml::Value = toml::from_str(
+            r#"
+            [model.via-opencode]
+            model = "kimi-k2.6"
+            base_url = "https://opencode.ai/zen/v1"
+            context_window = 200000
+            model_provider = "opencode"
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&toml_cfg).expect("config should parse");
+        assert!(
+            !cfg.config_warnings
+                .iter()
+                .any(|w| format!("{w:?}").contains(VENDOR_OPENCODE)),
+            "the builtin vendor preset must not warn as undefined: {:?}",
+            cfg.config_warnings
+        );
+        let resolved = resolve_model_list(&cfg, None);
+        let model = resolved.get("via-opencode").expect("model should exist");
+        assert_eq!(
+            model.info.session_header.as_deref(),
+            Some(OPENCODE_SESSION_HEADER),
+            "the model inherits the builtin vendor session header"
+        );
+        assert!(
+            model.has_own_credentials(),
+            "the vendor env_key marks the model BYOK so the session token never leaks"
         );
     }
 }

@@ -1,3 +1,7 @@
 /target
 **/*.rs.bk
 .DS_Store
+
+# Vendor catalog snapshots reuse pi's provider ids as filenames. A global
+# gitignore convention ignores `opencode.json` anywhere; re-allow ours.
+!crates/codegen/xai-grok-shell/src/agent/vendors/data/opencode.json

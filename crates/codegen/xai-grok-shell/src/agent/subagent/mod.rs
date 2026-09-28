@@ -806,6 +806,10 @@ async fn read_parent_sampling_config(
                 conversation_group_id: cfg.conversation_group_id,
                 query_params: cfg.query_params.clone(),
                 env_http_headers: cfg.env_http_headers.clone(),
+                session_header: cfg.session_header.clone(),
+                // Keep the parent conversation's routing value so vendor-side
+                // session affinity follows the originating session.
+                session_id: ctx.sampling_config.session_id.clone(),
                 context_window: cfg.context_window.get(),
                 max_request_bytes: cfg.max_request_bytes,
                 client_version: creds.client_version,
