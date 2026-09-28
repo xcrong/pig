@@ -1,20 +1,19 @@
 ---
 name: release-notes
-description: Cut a pig release: collect changes since the previous pig-v* tag, write the bilingual (zh-CN/en) release log to changelogs/, commit it, and push the tag to trigger the release build. Use when the user wants to 发布版本, 打 tag, 写 release 日志 or 更新 changelog.
+description: Cut a pig release: collect changes since the previous v* tag, write the bilingual (zh-CN/en) release log to changelogs/, commit it, and push the tag to trigger the release build. Use when the user wants to 发布版本, 打 tag, 写 release 日志 or 更新 changelog.
 ---
 
 # Pig Release Notes
 
-为 pig 发版写双语 release 日志。每次打 `pig-v*` tag 发版本时，根据上次发版以来的变更写中英两篇日志，存入 `changelogs/`，为未来国际化打基础。
+为 pig 发版写双语 release 日志。每次打 `v*` tag 发版本时，根据上次发版以来的变更写中英两篇日志，存入 `changelogs/`，为未来国际化打基础。
 
 ## 前置约定
 
-- 稳定版与上游版本对齐：tag 后缀即上游版本号（如上游发到 1.0.41，pig 就打 `pig-v1.0.41`），也就是 `crates/codegen/xai-grok-pager-bin/Cargo.toml` 的 `version`。
-- 上游下一版本尚未发布时，pig 可以发布面向该版本的预发布序列。例如：`1.0.42-1`、`1.0.42-2`、`1.0.42-10`。预发布标识符使用不带前导零的纯数字，版本顺序为 `1.0.41 < 1.0.42-1 < 1.0.42-2 < 1.0.42-10 < 1.0.42`。
-- 上游发布并同步 1.0.42 后，稳定版使用 `1.0.42`，结束 `1.0.42-N` 预发布序列。`Cargo.toml` 版本、tag 后缀和日志文件名必须保持一致。
+- pig 使用独立版本号，不跟随上游版本：在当前基线之上递增（如 `v1.0.1`、`v1.0.2`），也就是 `crates/codegen/xai-grok-pager-bin/Cargo.toml` 的 `version`。将来需要对齐上游时再整体 bump，并在日志里说明。
+- 如需预发布，用 `-N` 后缀（如 `v1.0.2-1`、`v1.0.2-2`，`N` 为不带前导零的纯数字）；稳定版没有后缀。
 - 日志文件（每版两个，结构一致）：
-  - `changelogs/pig-v<version>.zh-CN.md`（中文）
-  - `changelogs/pig-v<version>.en.md`（英文）
+  - `changelogs/v<version>.zh-CN.md`（中文）
+  - `changelogs/v<version>.en.md`（英文）
 - 提交信息用中文，不带 `Co-authored-by`。
 - 打完 tag 并推送后，`.github/workflows/release-pig.yml` 会自动构建多平台二进制并创建 GitHub Release（附件），而本 skill 产出的 markdown 是仓库内的 release 日志正文。
 
@@ -22,21 +21,19 @@ description: Cut a pig release: collect changes since the previous pig-v* tag, w
 
 ### 1. 确定新版本号
 
-向用户确认新版本号（默认建议：pager-bin Cargo 版本）。预发布版本沿用目标稳定版本号并递增 `-N`，例如当前序列为 `1.0.42-10` 时，下一版使用 `1.0.42-11`。检查：
+向用户确认新版本号（默认建议：在当前基线上递增 patch，如 `v1.0.1` 之后是 `v1.0.2`）。检查：
 
 ```bash
-git tag --list 'pig-v*' --sort=-v:refname | head -5
+git tag --list 'v*' --sort=-v:refname | head -5
 git status --short  # 工作区必须干净，有未提交改动先处理
 ```
 
 tag 已存在则报错停下，不要覆盖已发布的 tag。
 
-`-N` 中的 `N` 必须是不带前导零的数字；`1.0.42-01` 不符合 SemVer 2.0.0。
-
 ### 2. 收集上次发版以来的变更
 
 ```bash
-PREV=$(git tag --list 'pig-v*' --sort=-v:refname | head -1)
+PREV=$(git tag --list 'v*' --sort=-v:refname | head -1)
 git log ${PREV}..HEAD --oneline
 git diff --stat ${PREV}..HEAD
 ```
@@ -61,8 +58,8 @@ git diff --stat ${PREV}..HEAD
 
 同时写中英两个文件，章节结构完全一致，先写中文版，再逐节翻译成英文版：
 
-- `changelogs/pig-v<version>.zh-CN.md`
-- `changelogs/pig-v<version>.en.md`
+- `changelogs/v<version>.zh-CN.md`
+- `changelogs/v<version>.en.md`
 
 中文模板：
 
@@ -97,11 +94,11 @@ git diff --stat ${PREV}..HEAD
 ### 5. 提交并打 tag
 
 ```bash
-git add changelogs/pig-v<version>.zh-CN.md changelogs/pig-v<version>.en.md
+git add changelogs/v<version>.zh-CN.md changelogs/v<version>.en.md
 git commit -m "发布 pig v<version>"
-git tag pig-v<version>
+git tag v<version>
 git push origin pig <branch commits if any>
-git push origin pig-v<version>   # 触发自动构建与 GitHub Release
+git push origin v<version>   # 触发自动构建与 GitHub Release
 ```
 
-包含 `-N` 预发布后缀的 tag 会被 workflow 标记为 GitHub 预发布版本；稳定版 tag 会创建普通 GitHub Release。tag 推送后提醒用户去 Actions 页确认 `pig release` 工作流的构建结果。
+tag 推送后提醒用户去 Actions 页确认 `pig release` 工作流的构建结果。
