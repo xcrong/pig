@@ -8209,6 +8209,7 @@ fn resolve_model_list_prefetch_visibility_matches_auth_and_server_list() {
             enabled: true,
             env_key: Some(EnvKeys::single("TEST_VENDOR_KEY")),
             api_key: None,
+            ..Default::default()
         },
     );
     let dm = crate::models::default_model();
@@ -8268,6 +8269,7 @@ fn resolve_model_list_empty_prefetch_yields_vendor_only_base() {
             enabled: true,
             env_key: Some(EnvKeys::single("TEST_VENDOR_KEY")),
             api_key: None,
+            ..Default::default()
         },
     );
     let resolved = resolve_model_list(&cfg, Some(IndexMap::new()));

@@ -1186,7 +1186,7 @@ async fn restore_session_from_remote(
         Some(auth_manager),
         None,
         None,
-        "grok-pager",
+        "pig-pager",
     );
     let progress: xai_grok_shell::session::restore::ProgressCallback = Box::new(move |event| {
         emit_pre_tui_restore_line(progress_on_stdout, &format!("  {}", event.display_line()));

@@ -106,7 +106,7 @@ pub(super) fn open_credit_limit_upsell(
             heading: "You hit your weekly limit.",
             upgrade_tier_desc: "Upgrade to a higher tier for more usage",
             secondary_label: "Buy more credits",
-            secondary_desc: "Purchase credits to keep using Grok Build",
+            secondary_desc: "Purchase credits to keep using Pig Agent",
             second_choice: xai_grok_telemetry::events::CreditLimitChoice::PurchaseCredits,
             payg_telemetry: false,
         },
@@ -259,7 +259,7 @@ fn open_supergrok_upsell(
         },
         QuestionOption {
             label: "Upgrade to SuperGrok Heavy".into(),
-            description: "Get the most out of Grok Build. Highest usage limits.".into(),
+            description: "Get the most out of Pig Agent. Highest usage limits.".into(),
             preview: None,
             id: Some(UPSELL_URL_UPGRADE.into()),
         },

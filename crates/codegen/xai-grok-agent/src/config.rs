@@ -1453,7 +1453,7 @@ impl AgentDefinition {
             tool_config: default_grok_build_toolset(),
             ..Self::base(
                 BuiltinAgentName::GrokBuild,
-                "Grok Build agent for software engineering tasks.",
+                "Pig Agent agent for software engineering tasks.",
             )
         }
     }
@@ -1464,7 +1464,7 @@ impl AgentDefinition {
             agents_md: false,
             ..Self::base(
                 BuiltinAgentName::GrokBuildConcise,
-                "Grok Build agent with concise output format.",
+                "Pig Agent agent with concise output format.",
             )
         }
     }
@@ -1473,7 +1473,7 @@ impl AgentDefinition {
             tool_config: grok_build_plan_toolset(),
             ..Self::base(
                 BuiltinAgentName::GrokBuildPlan,
-                "Grok Build agent with plan mode support.",
+                "Pig Agent agent with plan mode support.",
             )
         }
     }
@@ -1482,7 +1482,7 @@ impl AgentDefinition {
             tool_config: grok_build_plan_no_subagents_toolset(),
             ..Self::base(
                 BuiltinAgentName::GrokBuildPlanNoSubagents,
-                "Grok Build agent with plan mode (no subagents).",
+                "Pig Agent agent with plan mode (no subagents).",
             )
         }
     }
@@ -1491,7 +1491,7 @@ impl AgentDefinition {
             tool_config: grok_build_ask_user_toolset(),
             ..Self::base(
                 BuiltinAgentName::GrokBuildAskUser,
-                "Grok Build agent with ask-user-question tool.",
+                "Pig Agent agent with ask-user-question tool.",
             )
         }
     }

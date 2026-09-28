@@ -183,7 +183,7 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
 
     if let Some(error) = status.error.as_deref() {
         println!(
-            "Grok Build - v{} [{}]",
+            "Pig Agent - v{} [{}]",
             status.current_version, status.channel
         );
         println!("Update check failed: {error}");
@@ -195,11 +195,11 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
     if status.update_available {
         if let Some(latest_version) = status.latest_version.as_deref() {
             println!(
-                "A new version of Grok Build is available: {} -> {}{}",
+                "A new version of Pig Agent is available: {} -> {}{}",
                 status.current_version, latest_version, channel_label
             );
         } else {
-            println!("A new version of Grok Build is available.");
+            println!("A new version of Pig Agent is available.");
         }
         if status.installer.as_deref() == Some(WINGET) {
             let target = match status.latest_version.as_deref() {
@@ -215,13 +215,13 @@ pub fn print_update_status(status: &UpdateStatus, json: bool) -> anyhow::Result<
 
     if let Some(latest_version) = status.latest_version.as_deref() {
         println!(
-            "Grok Build - v{} (latest: {}){}",
+            "Pig Agent - v{} (latest: {}){}",
             status.current_version, latest_version, channel_label
         );
         return Ok(());
     }
 
-    println!("Grok Build - v{}{}", status.current_version, channel_label);
+    println!("Pig Agent - v{}{}", status.current_version, channel_label);
     Ok(())
 }
 
@@ -781,9 +781,7 @@ pub async fn run_update_if_available(
         return Ok(false);
     }
     if inst == WINGET {
-        eprintln!(
-            "A new version of Grok Build is available: {current_version} -> {latest_version}"
-        );
+        eprintln!("A new version of Pig Agent is available: {current_version} -> {latest_version}");
         let target = if has_version_cap(&policy) {
             crate::winget::Target::Exact(&latest_version)
         } else {
@@ -798,7 +796,7 @@ pub async fn run_update_if_available(
     let channel_label = format!(" [{}]", update_config.channel);
     if auto_update {
         eprintln!(
-            "A new version of Grok Build is available: {} -> {}{}",
+            "A new version of Pig Agent is available: {} -> {}{}",
             current_version, latest_version, channel_label
         );
         if interactive {
@@ -826,7 +824,7 @@ pub async fn run_update_if_available(
             return Ok(false);
         }
         eprintln!(
-            "A new version of Grok Build is available: {} -> {}{}",
+            "A new version of Pig Agent is available: {} -> {}{}",
             current_version, latest_version, channel_label
         );
         if interactive {
@@ -934,7 +932,7 @@ pub fn restart_grok() -> Result<()> {
     }
     cmd.env_clear();
     cmd.envs(std::env::vars_os().filter(|(k, _)| k != "GROK_AUTO_UPDATE"));
-    eprintln!("Restarting Grok...");
+    eprintln!("Restarting Pig Agent...");
 
     // Use exec on Unix to replace the current process, avoiding stdio issues when the parent exits
     // On Windows, fall back to spawn and exit
@@ -2627,7 +2625,7 @@ pub async fn run_update(
             tracing::warn!("Failed to persist auto_update=false for pinned install: {e}");
         }
         eprintln!("  ✓ grok v{} installed successfully!", version);
-        eprintln!("  Please restart Grok.");
+        eprintln!("  Please restart Pig Agent.");
         return Ok(Some(version.to_string()));
     }
 
@@ -2733,7 +2731,10 @@ pub async fn run_update(
         );
         &effective_current
     } else {
-        eprintln!("Updating Grok {} → {}", effective_current, install_target);
+        eprintln!(
+            "Updating Pig Agent {} → {}",
+            effective_current, install_target
+        );
         &install_target
     };
 
@@ -2747,7 +2748,7 @@ pub async fn run_update(
     eprintln!("  ✓ grok v{} installed successfully!", target_version);
 
     if !force && std::env::var_os("GROK_AUTO_UPDATE").is_none() {
-        eprintln!("  Please restart Grok.");
+        eprintln!("  Please restart Pig Agent.");
     }
     Ok(Some(target_version.to_string()))
 }

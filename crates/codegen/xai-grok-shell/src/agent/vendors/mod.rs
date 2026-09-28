@@ -93,7 +93,27 @@ pub const VENDORS: &[Vendor] = &[
 /// `model_provider = "opencode"` warns as undefined unless the vendor is enabled
 /// (or the user hand-wrote `[model_providers.<id>]`).
 pub fn is_enabled_vendor(id: &str, vendors: &IndexMap<String, VendorConfig>) -> bool {
-    vendors.get(id).is_some_and(|v| v.enabled) && VENDORS.iter().any(|v| v.id == id)
+    vendors.get(id).is_some_and(|v| v.enabled)
+        && (VENDORS.iter().any(|v| v.id == id) || is_custom_vendor_complete(id, vendors))
+}
+
+/// Whether `id` is a custom (non-builtin) vendor with a complete snapshot
+/// source: both `base_url` and `snapshot_file` set. Completeness is about
+/// declared fields, not file existence; an unreadable snapshot warns and maps
+/// nothing at load time.
+fn is_custom_vendor_complete(id: &str, vendors: &IndexMap<String, VendorConfig>) -> bool {
+    vendors.get(id).is_some_and(custom_source_complete)
+}
+
+/// Field-level half of [`is_custom_vendor_complete`], for entries not yet stored.
+fn custom_source_complete(cfg: &VendorConfig) -> bool {
+    cfg.base_url
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+        && cfg
+            .snapshot_file
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty())
 }
 
 /// User-declared `[vendors.<id>]` entry: explicit opt-in for a builtin vendor catalog.
@@ -112,6 +132,29 @@ pub struct VendorConfig {
     pub env_key: Option<EnvKeys>,
     /// Static alternative to `env_key`; wins when both are set.
     pub api_key: Option<String>,
+    /// Custom vendors only: default inference base URL for snapshot models that
+    /// omit one. Also overrides the builtin default when set on a builtin id.
+    pub base_url: Option<String>,
+    /// Custom vendors only: pi-shaped catalog snapshot to map, resolved against
+    /// the pig home when relative. Also overrides the builtin snapshot when set
+    /// on a builtin id. Save any pi.dev `/api/models/providers/<id>?types=chat`
+    /// response there to mirror a provider pig does not ship.
+    pub snapshot_file: Option<String>,
+    /// Custom vendors only: per-conversation routing header inherited by mapped
+    /// models (e.g. a session header like the builtin `x-opencode-session`).
+    /// Builtins always use [`OPENCODE_SESSION_HEADER`].
+    pub session_header: Option<String>,
+}
+
+/// A `[vendors.<id>]` entry carries custom-vendor fields when the id is not a
+/// builtin. Their presence declares intent, so a typo'd builtin id without them
+/// still warns as unknown instead of silently becoming a custom vendor.
+fn has_custom_fields(value: &toml::Value) -> bool {
+    value.as_table().is_some_and(|t| {
+        t.contains_key("base_url")
+            || t.contains_key("snapshot_file")
+            || t.contains_key("session_header")
+    })
 }
 
 /// Parse `[vendors.<id>]` tables leniently: unknown vendor ids and malformed
@@ -137,12 +180,15 @@ pub(crate) fn parse_vendor_configs(
         return (vendors, warnings);
     };
     for (id, value) in table {
-        if !VENDORS.iter().any(|v| v.id == id.as_str()) {
+        let is_builtin = VENDORS.iter().any(|v| v.id == id.as_str());
+        if !is_builtin && !has_custom_fields(value) {
             warnings.push(ConfigWarning::config_key(
                 format!("vendors.{id}"),
                 ConfigWarningKind::UnknownField,
                 format!(
-                    "unknown vendor '{id}'; supported vendors are {}. Entry ignored.",
+                    "unknown vendor '{id}'; supported vendors are {}. \
+                     To mirror another pi provider, add base_url + snapshot_file. \
+                     Entry ignored.",
                     VENDORS.iter().map(|v| v.id).collect::<Vec<_>>().join(", ")
                 ),
             ));
@@ -160,29 +206,15 @@ pub(crate) fn parse_vendor_configs(
                         "unrecognized key; field ignored".to_owned(),
                     ));
                 }
-                let has_static_key = entry
-                    .api_key
-                    .as_deref()
-                    .map(str::trim)
-                    .is_some_and(|k| !k.is_empty());
-                if has_static_key && entry.env_key.is_some() {
-                    warnings.push(ConfigWarning::config_key(
-                        format!("vendors.{id}"),
-                        ConfigWarningKind::ConflictingFields,
-                        "api_key shadows env_key; the static key always takes precedence"
-                            .to_owned(),
-                    ));
-                } else if entry.enabled
-                    && !has_static_key
-                    && entry.env_key.as_ref().and_then(EnvKeys::primary).is_none()
-                {
+                check_credential_warnings(id, &entry, &mut warnings);
+                if !is_builtin && entry.enabled && !custom_source_complete(&entry) {
                     warnings.push(ConfigWarning::config_key(
                         format!("vendors.{id}"),
                         ConfigWarningKind::InvalidValue,
-                        "enabled with no env_key/api_key; vendor models resolve with no \
-                         credential (BYOK)"
+                        "custom vendor needs both base_url and snapshot_file; vendor stays disabled"
                             .to_owned(),
                     ));
+                    continue;
                 }
                 vendors.insert(id.clone(), entry);
             }
@@ -198,10 +230,37 @@ pub(crate) fn parse_vendor_configs(
     (vendors, warnings)
 }
 
+/// Shared `env_key` / `api_key` warnings for builtin and custom vendors.
+fn check_credential_warnings(id: &str, entry: &VendorConfig, warnings: &mut Vec<ConfigWarning>) {
+    let has_static_key = entry
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|k| !k.is_empty());
+    if has_static_key && entry.env_key.is_some() {
+        warnings.push(ConfigWarning::config_key(
+            format!("vendors.{id}"),
+            ConfigWarningKind::ConflictingFields,
+            "api_key shadows env_key; the static key always takes precedence".to_owned(),
+        ));
+    } else if entry.enabled
+        && !has_static_key
+        && entry.env_key.as_ref().and_then(EnvKeys::primary).is_none()
+    {
+        warnings.push(ConfigWarning::config_key(
+            format!("vendors.{id}"),
+            ConfigWarningKind::InvalidValue,
+            "enabled with no env_key/api_key; vendor models resolve with no \
+             credential (BYOK)"
+                .to_owned(),
+        ));
+    }
+}
+
 /// Provider presets for explicitly enabled vendors, so `[model.x]
 /// model_provider = "opencode-go"` works with only a `[vendors.opencode-go]`
 /// block. Credentials come solely from the vendor config: no implicit env key.
-pub fn builtin_vendor_providers(
+pub fn vendor_providers(
     vendors: &IndexMap<String, VendorConfig>,
 ) -> IndexMap<String, ModelProviderConfig> {
     let mut providers = IndexMap::new();
@@ -212,10 +271,34 @@ pub fn builtin_vendor_providers(
         providers.insert(
             vendor.id.to_string(),
             ModelProviderConfig {
-                base_url: Some(vendor.default_base_url.to_string()),
+                base_url: Some(
+                    cfg.base_url
+                        .clone()
+                        .filter(|s| !s.trim().is_empty())
+                        .unwrap_or_else(|| vendor.default_base_url.to_string()),
+                ),
                 env_key: cfg.env_key.clone(),
                 api_key: cfg.api_key.clone(),
                 session_header: Some(OPENCODE_SESSION_HEADER.to_string()),
+                ..Default::default()
+            },
+        );
+    }
+    for (id, cfg) in vendors {
+        if VENDORS.iter().any(|v| v.id == id.as_str()) || !cfg.enabled {
+            continue;
+        }
+        if !custom_source_complete(cfg) {
+            tracing::debug!(vendor = id.as_str(), "custom vendor incomplete; no preset");
+            continue;
+        }
+        providers.insert(
+            id.clone(),
+            ModelProviderConfig {
+                base_url: cfg.base_url.clone(),
+                env_key: cfg.env_key.clone(),
+                api_key: cfg.api_key.clone(),
+                session_header: cfg.session_header.clone().filter(|s| !s.trim().is_empty()),
                 ..Default::default()
             },
         );
@@ -229,7 +312,7 @@ pub fn effective_model_providers(
     configured: &IndexMap<String, ModelProviderConfig>,
     vendors: &IndexMap<String, VendorConfig>,
 ) -> IndexMap<String, ModelProviderConfig> {
-    let mut effective = builtin_vendor_providers(vendors);
+    let mut effective = vendor_providers(vendors);
     for (id, provider) in configured {
         effective.insert(id.clone(), provider.clone());
     }
@@ -341,16 +424,19 @@ fn vendor_effort_menu(model: &serde_json::Value) -> Option<Vec<ReasoningEffortOp
 /// loads the models credential-less (BYOK). Returns `(mapped, skipped_by_api)`
 /// so callers can log coverage.
 fn map_vendor_snapshot(
-    vendor: &Vendor,
+    vendor_id: &str,
+    snapshot_json: &str,
+    default_base_url: &str,
+    session_header: Option<&str>,
     api_key: Option<String>,
     env_key: Option<EnvKeys>,
 ) -> (IndexMap<String, ModelEntry>, Vec<String>) {
     let mut mapped = IndexMap::new();
     let mut skipped = Vec::new();
-    let parsed: serde_json::Value = match serde_json::from_str(vendor.snapshot_json) {
+    let parsed: serde_json::Value = match serde_json::from_str(snapshot_json) {
         Ok(value) => value,
         Err(error) => {
-            tracing::warn!(vendor = vendor.id, %error, "vendor snapshot is not valid JSON; skipping");
+            tracing::warn!(vendor = vendor_id, %error, "vendor snapshot is not valid JSON; skipping");
             return (mapped, skipped);
         }
     };
@@ -383,7 +469,7 @@ fn map_vendor_snapshot(
                 // Skip it like the rest, but loudly: extending support (or the
                 // explicit unsupported list) is a conscious decision.
                 tracing::warn!(
-                    vendor = vendor.id,
+                    vendor = vendor_id,
                     model = id,
                     api,
                     "vendor model skipped: unknown api backend"
@@ -395,20 +481,20 @@ fn map_vendor_snapshot(
         let base_url = model
             .get("baseUrl")
             .and_then(|v| v.as_str())
-            .unwrap_or(vendor.default_base_url);
+            .unwrap_or(default_base_url);
         let mut info = ModelInfo::fallback(id);
         info.base_url = normalize_base_url(base_url, &api_backend);
         info.name = model
             .get("name")
             .and_then(|v| v.as_str())
-            .map(|name| format!("{name} ({}/{id})", vendor.id));
+            .map(|name| format!("{name} ({vendor_id}/{id})"));
         info.api_backend = api_backend;
         info.context_window = context_window_of(model);
         info.max_completion_tokens = model
             .get("maxTokens")
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
-        info.session_header = Some(OPENCODE_SESSION_HEADER.to_string());
+        info.session_header = session_header.map(str::to_string);
         if let Some(menu) = vendor_effort_menu(model) {
             info.supports_reasoning_effort = true;
             info.reasoning_efforts = menu;
@@ -421,14 +507,113 @@ fn map_vendor_snapshot(
             auth_provider: None,
             api_base_url: None,
         };
-        mapped.insert(format!("{}/{id}", vendor.id), entry);
+        mapped.insert(format!("{vendor_id}/{id}"), entry);
     }
     (mapped, skipped)
 }
 
-/// Enabled builtin vendor models. Keys are namespaced; user `[model.*]` entries take
-/// precedence (see `resolve_model_list`). Disabled vendors contribute nothing, so
-/// their env keys are never read.
+/// Resolved snapshot source for one enabled vendor: catalog JSON, fallback
+/// base URL, and optional per-conversation routing header.
+struct ResolvedVendor {
+    id: String,
+    snapshot_json: String,
+    default_base_url: String,
+    session_header: Option<String>,
+}
+
+/// Resolve the snapshot source for an enabled vendor: builtin `include_str!`
+/// snapshot by default, a runtime `snapshot_file` when set (relative paths
+/// resolve against the pig home). `base_url` / `session_header` overrides win
+/// over builtin defaults; custom vendors fall back to no routing header.
+/// `None` means skip with a warning (fail closed, like a malformed snapshot).
+fn resolve_vendor_source(
+    id: &str,
+    cfg: &VendorConfig,
+    builtin: Option<&Vendor>,
+) -> Option<ResolvedVendor> {
+    let default_base_url = match cfg.base_url.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(url) => url.to_string(),
+        None => builtin.map(|b| b.default_base_url.to_string())?,
+    };
+    let snapshot_json = match cfg
+        .snapshot_file
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(path) => match read_snapshot_file(path) {
+            Some(json) => json,
+            None => {
+                tracing::warn!(
+                    vendor = id,
+                    "vendor snapshot_file unreadable; skipping vendor"
+                );
+                return None;
+            }
+        },
+        None => builtin.map(|b| b.snapshot_json.to_string())?,
+    };
+    let session_header = match cfg
+        .session_header
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+    {
+        Some(header) => Some(header.to_string()),
+        None => builtin.map(|_| OPENCODE_SESSION_HEADER.to_string()),
+    };
+    Some(ResolvedVendor {
+        id: id.to_string(),
+        snapshot_json,
+        default_base_url,
+        session_header,
+    })
+}
+
+fn read_snapshot_file(path: &str) -> Option<String> {
+    let raw = std::path::Path::new(path);
+    let full = if raw.is_absolute() {
+        raw.to_path_buf()
+    } else {
+        crate::util::grok_home::grok_home().join(raw)
+    };
+    std::fs::read_to_string(&full).ok()
+}
+
+fn load_vendor_into(
+    all: &mut IndexMap<String, ModelEntry>,
+    id: &str,
+    cfg: &VendorConfig,
+    builtin: Option<&Vendor>,
+) {
+    let Some(src) = resolve_vendor_source(id, cfg, builtin) else {
+        return;
+    };
+    let (models, skipped) = map_vendor_snapshot(
+        &src.id,
+        &src.snapshot_json,
+        &src.default_base_url,
+        src.session_header.as_deref(),
+        cfg.api_key.clone(),
+        cfg.env_key.clone(),
+    );
+    tracing::debug!(
+        vendor = id,
+        mapped = models.len(),
+        skipped = skipped.len(),
+        "loaded vendor catalog snapshot"
+    );
+    if !skipped.is_empty() {
+        tracing::debug!(
+            vendor = id,
+            skipped = ?skipped,
+            "vendor models skipped: unsupported api backend"
+        );
+    }
+    all.extend(models);
+}
+
+/// Enabled vendor models, builtin and custom. Keys are namespaced; user
+/// `[model.*]` entries take precedence (see `resolve_model_list`). Disabled
+/// vendors contribute nothing, so their env keys are never read.
 ///
 /// Display names are derived, not verbatim: the suffix ` (<vendor>/<model-id>)` is
 /// always appended, so every surface (`/model` picker, settings panel, status bar)
@@ -437,31 +622,27 @@ fn map_vendor_snapshot(
 /// The suffix is the catalog key users already type in config and on the command
 /// line, so what you see is what you can submit. Nameless entries keep `None` and
 /// fall back to their (already unique) id downstream.
-pub fn builtin_vendor_models(
-    vendors: &IndexMap<String, VendorConfig>,
-) -> IndexMap<String, ModelEntry> {
+pub fn vendor_models(vendors: &IndexMap<String, VendorConfig>) -> IndexMap<String, ModelEntry> {
     let mut all = IndexMap::new();
     for vendor in VENDORS {
         let Some(cfg) = vendors.get(vendor.id).filter(|v| v.enabled) else {
             tracing::debug!(vendor = vendor.id, "vendor not enabled; skipping snapshot");
             continue;
         };
-        let (models, skipped) =
-            map_vendor_snapshot(vendor, cfg.api_key.clone(), cfg.env_key.clone());
-        tracing::debug!(
-            vendor = vendor.id,
-            mapped = models.len(),
-            skipped = skipped.len(),
-            "loaded vendor catalog snapshot"
-        );
-        if !skipped.is_empty() {
-            tracing::debug!(
-                vendor = vendor.id,
-                skipped = ?skipped,
-                "vendor models skipped: unsupported api backend"
-            );
+        load_vendor_into(&mut all, vendor.id, cfg, Some(vendor));
+    }
+    for (id, cfg) in vendors {
+        if VENDORS.iter().any(|v| v.id == id.as_str()) || !cfg.enabled {
+            continue;
         }
-        all.extend(models);
+        if !custom_source_complete(cfg) {
+            tracing::debug!(
+                vendor = id.as_str(),
+                "custom vendor incomplete; skipping snapshot"
+            );
+            continue;
+        }
+        load_vendor_into(&mut all, id, cfg, None);
     }
     all
 }
@@ -480,6 +661,7 @@ mod tests {
                         enabled: true,
                         env_key: Some(EnvKeys::single(OPENCODE_ENV_KEY)),
                         api_key: None,
+                        ..Default::default()
                     },
                 )
             })
@@ -488,7 +670,7 @@ mod tests {
 
     #[test]
     fn vendor_snapshots_map_to_namespaced_models() {
-        let models = builtin_vendor_models(&enabled_vendors());
+        let models = vendor_models(&enabled_vendors());
         assert!(!models.is_empty(), "expected mapped vendor models");
         for (key, entry) in &models {
             let (vendor, id) = key.split_once('/').expect("namespaced key");
@@ -521,7 +703,7 @@ mod tests {
 
     #[test]
     fn vendor_display_names_always_carry_catalog_key_suffix() {
-        let models = builtin_vendor_models(&enabled_vendors());
+        let models = vendor_models(&enabled_vendors());
         assert!(!models.is_empty());
         let mut named = 0;
         for (key, entry) in &models {
@@ -539,21 +721,17 @@ mod tests {
 
     #[test]
     fn disabled_vendors_map_nothing() {
-        assert!(builtin_vendor_models(&IndexMap::new()).is_empty());
+        assert!(vendor_models(&IndexMap::new()).is_empty());
         let mut vendors = enabled_vendors();
         vendors.get_mut(VENDOR_OPENCODE).expect("entry").enabled = false;
-        let models = builtin_vendor_models(&vendors);
+        let models = vendor_models(&vendors);
         assert!(!models.is_empty(), "enabled vendor still maps");
         assert!(
             models.keys().all(|k| k.starts_with("opencode-go/")),
             "disabled vendor must contribute no keys"
         );
-        assert!(builtin_vendor_providers(&IndexMap::new()).is_empty());
-        assert!(
-            builtin_vendor_providers(&vendors)
-                .get(VENDOR_OPENCODE)
-                .is_none()
-        );
+        assert!(vendor_providers(&IndexMap::new()).is_empty());
+        assert!(vendor_providers(&vendors).get(VENDOR_OPENCODE).is_none());
     }
 
     #[test]
@@ -565,9 +743,10 @@ mod tests {
                 enabled: true,
                 env_key: Some(EnvKeys::single("MY_VENDOR_KEY")),
                 api_key: None,
+                ..Default::default()
             },
         );
-        let models = builtin_vendor_models(&vendors);
+        let models = vendor_models(&vendors);
         assert!(!models.is_empty());
         for entry in models.values() {
             assert_eq!(
@@ -576,7 +755,7 @@ mod tests {
             );
             assert!(entry.api_key.is_none());
         }
-        let providers = builtin_vendor_providers(&vendors);
+        let providers = vendor_providers(&vendors);
         let preset = providers.get(VENDOR_OPENCODE_GO).expect("preset exists");
         assert_eq!(
             preset
@@ -622,7 +801,14 @@ mod tests {
     #[test]
     fn unsupported_apis_are_skipped_not_fatal() {
         for vendor in VENDORS {
-            let (mapped, skipped) = map_vendor_snapshot(vendor, None, None);
+            let (mapped, skipped) = map_vendor_snapshot(
+                vendor.id,
+                vendor.snapshot_json,
+                vendor.default_base_url,
+                Some(OPENCODE_SESSION_HEADER),
+                None,
+                None,
+            );
             assert!(!mapped.is_empty(), "{} mapped nothing", vendor.id);
             for entry in &skipped {
                 let api = entry
@@ -639,7 +825,14 @@ mod tests {
         }
         // opencode serves Gemini via google-generative-ai, which pig explicitly
         // does not support.
-        let (_, skipped) = map_vendor_snapshot(&VENDORS[0], None, None);
+        let (_, skipped) = map_vendor_snapshot(
+            VENDORS[0].id,
+            VENDORS[0].snapshot_json,
+            VENDORS[0].default_base_url,
+            Some(OPENCODE_SESSION_HEADER),
+            None,
+            None,
+        );
         assert!(
             skipped.iter().any(|s| s.contains("google-generative-ai")),
             "expected google-generative-ai skips, got {skipped:?}"
@@ -697,7 +890,7 @@ mod tests {
 
     #[test]
     fn provider_preset_carries_session_header() {
-        let providers = builtin_vendor_providers(&enabled_vendors());
+        let providers = vendor_providers(&enabled_vendors());
         for id in [VENDOR_OPENCODE, VENDOR_OPENCODE_GO] {
             let preset = providers.get(id).expect("preset exists");
             assert_eq!(
@@ -763,7 +956,7 @@ mod tests {
 
     #[test]
     fn vendor_snapshots_carry_effort_support() {
-        let models = builtin_vendor_models(&enabled_vendors());
+        let models = vendor_models(&enabled_vendors());
         assert!(!models.is_empty(), "expected mapped vendor models");
         // Raw snapshot entries keyed `<vendor>/<model-id>`. pi retires model
         // ids regularly (e.g. opencode-go dropped kimi-k2.6/glm-5.1 in
@@ -858,5 +1051,158 @@ mod tests {
             .filter_map(|o| o.get("value").and_then(|v| v.as_str()))
             .collect();
         assert_eq!(values, expected_ids);
+    }
+
+    const CUSTOM_SNAPSHOT_FIXTURE: &str = r#"[
+        {"id": "custom-chat", "name": "Custom Chat", "api": "openai-completions",
+         "baseUrl": "https://custom.example/v1", "contextWindow": 64000, "maxTokens": 8000},
+        {"id": "fallback-chat", "name": "Fallback Chat", "api": "anthropic-messages",
+         "contextWindow": 32000},
+        {"id": "custom-image", "name": "Custom Image", "api": "openai-completions",
+         "type": "image", "contextWindow": 32000}
+    ]"#;
+
+    fn write_temp_snapshot(name: &str, contents: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "pig-vendor-test-{}-{}-{}.json",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+            name
+        ));
+        std::fs::write(&path, contents).expect("write temp snapshot");
+        path
+    }
+
+    fn custom_vendor_config(snapshot: &std::path::Path) -> VendorConfig {
+        VendorConfig {
+            enabled: true,
+            env_key: Some(EnvKeys::single("MYCORP_API_KEY")),
+            api_key: None,
+            base_url: Some("https://models.mycorp.example/v1".to_string()),
+            snapshot_file: Some(snapshot.to_string_lossy().into_owned()),
+            session_header: Some("x-mycorp-session".to_string()),
+        }
+    }
+
+    #[test]
+    fn custom_vendor_maps_snapshot_file() {
+        let snapshot = write_temp_snapshot("basic", CUSTOM_SNAPSHOT_FIXTURE);
+        let mut vendors = IndexMap::new();
+        vendors.insert("mycorp".to_string(), custom_vendor_config(&snapshot));
+        let models = vendor_models(&vendors);
+        // Image entries never map; chat entries namespace under the custom id.
+        assert_eq!(models.len(), 2, "unexpected keys: {:?}", models.keys());
+        let chat = models.get("mycorp/custom-chat").expect("mapped");
+        assert_eq!(chat.info.base_url, "https://custom.example/v1");
+        assert_eq!(
+            chat.info.name.as_deref(),
+            Some("Custom Chat (mycorp/custom-chat)")
+        );
+        assert_eq!(
+            chat.env_key.as_ref().and_then(EnvKeys::primary).as_deref(),
+            Some("MYCORP_API_KEY")
+        );
+        assert_eq!(
+            chat.info.session_header.as_deref(),
+            Some("x-mycorp-session")
+        );
+        // Entries without baseUrl fall back to the vendor base_url, with the
+        // same /v1 normalization builtins get.
+        let fallback = models.get("mycorp/fallback-chat").expect("mapped");
+        assert_eq!(fallback.info.base_url, "https://models.mycorp.example/v1");
+        assert_eq!(fallback.info.api_backend, ApiBackend::Messages);
+        // The preset carries the same declared wiring for model_provider use.
+        let providers = vendor_providers(&vendors);
+        let preset = providers.get("mycorp").expect("preset exists");
+        assert_eq!(
+            preset.base_url.as_deref(),
+            Some("https://models.mycorp.example/v1")
+        );
+        assert_eq!(preset.session_header.as_deref(), Some("x-mycorp-session"));
+        assert!(is_enabled_vendor("mycorp", &vendors));
+        std::fs::remove_file(&snapshot).ok();
+    }
+
+    #[test]
+    fn custom_vendor_needs_base_url_and_snapshot_file() {
+        let raw: toml::Value = toml::from_str(
+            r#"
+            [vendors.mycorp]
+            enabled = true
+            base_url = "https://models.mycorp.example/v1"
+            snapshot_file = "/tmp/mycorp.json"
+            env_key = "MYCORP_API_KEY"
+
+            [vendors.half]
+            enabled = true
+            base_url = "https://half.example/v1"
+
+            [vendors.typo]
+            enabled = true
+            "#,
+        )
+        .unwrap();
+        let (vendors, warnings) = parse_vendor_configs(&raw);
+        assert!(vendors.get("mycorp").expect("entry").enabled);
+        assert!(
+            !vendors.contains_key("half"),
+            "enabled custom vendor without snapshot_file is skipped"
+        );
+        assert!(
+            !vendors.contains_key("typo"),
+            "unknown id without custom fields still warns as unknown"
+        );
+        assert!(
+            warnings.iter().any(|w| w.reason.contains("needs both")),
+            "incomplete custom vendor warns, got {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.reason.contains("unknown vendor")),
+            "typo guard intact, got {warnings:?}"
+        );
+        assert!(is_enabled_vendor("mycorp", &vendors));
+        assert!(!is_enabled_vendor("half", &vendors));
+    }
+
+    #[test]
+    fn custom_vendor_with_unreadable_snapshot_maps_nothing() {
+        let mut vendors = IndexMap::new();
+        let mut cfg = custom_vendor_config(std::path::Path::new("unused"));
+        cfg.snapshot_file = Some("/nonexistent/pig-vendor-test-missing.json".to_string());
+        vendors.insert("mycorp".to_string(), cfg);
+        // Fail closed at load time: no models, no panic. The declared preset
+        // still registers so model_provider wiring stays predictable.
+        assert!(vendor_models(&vendors).is_empty());
+        assert!(vendor_providers(&vendors).contains_key("mycorp"));
+    }
+
+    #[test]
+    fn builtin_snapshot_file_override_replaces_snapshot() {
+        let snapshot = write_temp_snapshot("override", CUSTOM_SNAPSHOT_FIXTURE);
+        let mut vendors = IndexMap::new();
+        vendors.insert(
+            VENDOR_OPENCODE.to_string(),
+            VendorConfig {
+                enabled: true,
+                env_key: Some(EnvKeys::single(OPENCODE_ENV_KEY)),
+                api_key: None,
+                base_url: None,
+                snapshot_file: Some(snapshot.to_string_lossy().into_owned()),
+                session_header: None,
+            },
+        );
+        let models = vendor_models(&vendors);
+        // The override replaces the builtin snapshot; nothing merges.
+        assert_eq!(models.len(), 2, "unexpected keys: {:?}", models.keys());
+        assert!(models.contains_key("opencode/custom-chat"));
+        // Builtin defaults still apply where the override says nothing.
+        let chat = models.get("opencode/custom-chat").expect("mapped");
+        assert_eq!(
+            chat.info.session_header.as_deref(),
+            Some(OPENCODE_SESSION_HEADER)
+        );
+        std::fs::remove_file(&snapshot).ok();
     }
 }

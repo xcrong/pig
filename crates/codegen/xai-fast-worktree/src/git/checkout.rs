@@ -299,8 +299,8 @@ fn snapshot_worktree_to_ref_inner(
     message: &str,
 ) -> Result<String> {
     // Synthetic identity scoped to this call so it is never written to git config.
-    const NAME: &str = "Grok Snapshot";
-    const EMAIL: &str = "grok-snapshot@example.com";
+    const NAME: &str = "Pig Agent Snapshot";
+    const EMAIL: &str = "pig-agent-snapshot@example.com";
 
     let tree = write_worktree_tree(worktree_path, IndexSeed::Head)?;
 

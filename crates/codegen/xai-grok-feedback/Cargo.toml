@@ -3,7 +3,7 @@ license = "Apache-2.0"
 name = "xai-grok-feedback"
 version = "0.1.0"
 edition.workspace = true
-description = "Shared feedback taxonomy, durable local draft storage, and the session trace archive builder for Grok Build"
+description = "Shared feedback taxonomy, durable local draft storage, and the session trace archive builder for Pig Agent"
 
 [dependencies]
 flate2 = { workspace = true }

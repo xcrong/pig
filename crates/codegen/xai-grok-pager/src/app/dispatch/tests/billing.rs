@@ -497,7 +497,7 @@ fn upsell_non_max_unified_shows_buy_credits() {
     assert_eq!(option_at(q, 1).label, "Buy more credits");
     assert_eq!(
         option_at(q, 1).description,
-        "Purchase credits to keep using Grok Build"
+        "Purchase credits to keep using Pig Agent"
     );
     assert_eq!(option_at(q, 2).label, "Try Again");
 }
@@ -1300,7 +1300,7 @@ fn free_usage_upsell_shows_three_options_with_exact_labels() {
         ),
         (
             "Upgrade to SuperGrok Heavy",
-            "Get the most out of Grok Build. Highest usage limits.",
+            "Get the most out of Pig Agent. Highest usage limits.",
             Some(UPSELL_URL_UPGRADE),
         ),
     ];

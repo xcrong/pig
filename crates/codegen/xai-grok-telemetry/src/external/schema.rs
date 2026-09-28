@@ -437,6 +437,10 @@ pub(crate) const KNOWN_CLIENT_IDENTIFIERS: &[&str] = &[
     "grok-agent-sdk",
     "nebula",
     "zed",
+    // pig fork identifiers (see client_identity.rs); old values stay for back-compat.
+    "pig-agent",
+    "pig-pager",
+    "pig-tui",
 ];
 
 pub(crate) fn sanitize_client_identifier(raw: &str) -> &'static str {

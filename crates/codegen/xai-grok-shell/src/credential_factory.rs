@@ -24,7 +24,7 @@ pub fn build_storage_client_for_proxy(
     auth_manager: Option<Arc<AuthManager>>,
     user_token: Option<String>,
     session_id: Option<String>,
-    client_identifier: &str, // "grok-shell" or "grok-pager" etc.
+    client_identifier: &str, // "pig-agent" or "pig-pager" etc.
 ) -> xai_file_utils::storage_client::StorageClient {
     let http_client = xai_grok_http::shared_upload_client();
     if let Some(am) = auth_manager {

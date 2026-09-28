@@ -1534,7 +1534,7 @@ default = "company-grok"
 [model.company-grok]
 model = "grok-build"
 base_url = "https://grok-proxy.acme.com/"
-name = "Grok Build Latest (Proxy)"
+name = "Pig Agent Latest (Proxy)"
 context_window = 256000
 
 [features]

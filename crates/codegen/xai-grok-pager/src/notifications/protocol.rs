@@ -67,7 +67,7 @@ fn notification_sequence(
         // OSC 777 already uses the tab title as subtitle, so keep "Grok".
         NotificationProtocol::Osc9 => format!("\x1b]9;{body} \u{b7} {title}\x07").into(),
         NotificationProtocol::Osc99 => format!("\x1b]99;i=grok;{body} \u{b7} {title}\x1b\\").into(),
-        NotificationProtocol::Osc777 => format!("\x1b]777;notify;Grok;{body}\x1b\\").into(),
+        NotificationProtocol::Osc777 => format!("\x1b]777;notify;Pig Agent;{body}\x1b\\").into(),
         NotificationProtocol::Bel => Cow::Borrowed("\x07"),
         NotificationProtocol::None => return None,
     })
@@ -214,7 +214,10 @@ mod tests {
         let (writer, rx) = capture_writer();
         emit_notification(NotificationProtocol::Osc777, "title", "body", &ctx, &writer);
         let payload = rx.try_recv().expect("one payload enqueued");
-        assert_eq!(payload.data(), "\x1b]777;notify;Grok;body\x1b\\".as_bytes());
+        assert_eq!(
+            payload.data(),
+            "\x1b]777;notify;Pig Agent;body\x1b\\".as_bytes()
+        );
     }
 
     #[test]
@@ -244,7 +247,7 @@ mod tests {
 
         let osc777 = notification_sequence(NotificationProtocol::Osc777, "ignored\x1b", "b\x1body")
             .expect("osc777 yields a sequence");
-        assert_eq!(osc777.as_ref(), "\x1b]777;notify;Grok;body\x1b\\");
+        assert_eq!(osc777.as_ref(), "\x1b]777;notify;Pig Agent;body\x1b\\");
     }
 
     #[test]

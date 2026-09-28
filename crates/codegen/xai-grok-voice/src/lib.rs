@@ -1,4 +1,4 @@
-//! Voice input for Grok Build CLI: an xAI streaming STT client and the [`run_voice_pipeline`] task that emits [`VoiceEvent`]s for the pager.
+//! Voice input for Pig Agent CLI: an xAI streaming STT client and the [`run_voice_pipeline`] task that emits [`VoiceEvent`]s for the pager.
 //!
 //! Voice is dictation only: the mic streams to STT and the transcript lands in the prompt box.
 //!

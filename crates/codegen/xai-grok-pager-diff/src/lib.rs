@@ -1,4 +1,4 @@
-//! Diff hunk construction for the Grok Build TUI.
+//! Diff hunk construction for the Pig Agent TUI.
 //!
 //! Turns edit-tool output into line-tagged [`DiffHunk`]s for the pager to render, and back into unified-diff text.
 //! The input is structured `SearchReplaceEditDetail` records, ACP `ToolCall` payloads, or plain before/after text.

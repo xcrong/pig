@@ -136,7 +136,7 @@ After drafting feedback and ending your turn, tell the user the draft is saved l
 ${%- if feedback_drafts_path %}\n\
 This session's drafts file is ${{ feedback_drafts_path }}.\n\
 ${%- endif %}\n\
-If the user's feedback can be answered from the docs (for example UI element locations or setup), read the Grok Build docs locally or online and answer alongside the created draft.\n\n\
+If the user's feedback can be answered from the docs (for example UI element locations or setup), read the Pig Agent docs locally or online and answer alongside the created draft.\n\n\
 ",
     );
     template.push_str(&xai_grok_feedback::taxonomy_prompt());

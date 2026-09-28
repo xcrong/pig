@@ -319,7 +319,7 @@ env_key = "TOGETHER_API_KEY"
 
 ### OpenCode Zen / OpenCode Go (opt-in vendor catalog)
 
-Grok ships pi-compatible snapshots of the OpenCode Zen (`opencode`) and OpenCode Go (`opencode-go`) catalogs, refreshed from pi's served catalog (`https://pi.dev/api/models/providers/<id>`; see `scripts/sync-pi-vendors.sh`). Vendors are **opt-in**: nothing is loaded and no environment variable is read until you explicitly enable one in `config.toml`. The credential key is always explicit config, never a builtin default:
+Pig Agent ships pi-compatible snapshots of the OpenCode Zen (`opencode`) and OpenCode Go (`opencode-go`) catalogs, refreshed from pi's served catalog (`https://pi.dev/api/models/providers/<id>`; see `scripts/sync-pi-vendors.sh`). Vendors are **opt-in**: nothing is loaded and no environment variable is read until you explicitly enable one in `config.toml`. The credential key is always explicit config, never a builtin default:
 
 ```toml
 [vendors.opencode-go]
@@ -329,7 +329,7 @@ env_key = "OPENCODE_API_KEY"   # explicit: read name-driven when a vendor model 
 
 ```bash
 export OPENCODE_API_KEY="..."
-grok -p "Hello" -m opencode-go/kimi-k2.6
+pig -p "Hello" -m opencode-go/kimi-k2.6
 ```
 
 Enabled snapshot models appear in the picker as `opencode/<model-id>` and `opencode-go/<model-id>`, and the vendor registers a `[model_providers]` preset (base_url, your `env_key`, session header), so no hand-written provider block is needed. Display names are derived from pi's catalog with the catalog key appended (`Name (<vendor>/<model-id>)`), so rows stay distinguishable in the picker, the settings panel, and the status bar even when pi reuses names across vendors -- and what you see is what you can submit:
@@ -343,11 +343,31 @@ model_provider = "opencode-go"
 
 Without `env_key` (or `api_key`) on the `[vendors.<id>]` block, the models still load but resolve with no credential (BYOK) and never borrow your session token -- pig warns about the missing credential at startup so it stays a conscious state. To disable again, set `enabled = false` or delete the block: the snapshot leaves the catalog and the key is never read. Overrides (`--config` patches, campaign/remote patches) cannot enable vendors; only the trusted config file can.
 
-Both vendors require the per-conversation `x-opencode-session` routing header. Grok sends it automatically (value: the session id) for any model with `session_header` set -- via the vendor preset, the snapshot entries, or your own `[model.*]` / `[model_providers.*]` value. A matching `extra_headers` entry (any casing) overrides the automatic value. Like other third-party entries these models are BYOK: without `OPENCODE_API_KEY` they resolve with no credential and never borrow your session token.
+Both vendors require the per-conversation `x-opencode-session` routing header. Pig Agent sends it automatically (value: the session id) for any model with `session_header` set -- via the vendor preset, the snapshot entries, or your own `[model.*]` / `[model_providers.*]` value. A matching `extra_headers` entry (any casing) overrides the automatic value. Like other third-party entries these models are BYOK: without `OPENCODE_API_KEY` they resolve with no credential and never borrow your session token.
 
 Snapshot models also inherit pi's thinking levels: `/effort` and `/model <model> <level>` work on any snapshot entry whose catalog data advertises reasoning, with the menu derived from its `thinkingLevelMap` (a `null` entry removes that level; `xhigh`/`max` need an explicit entry; entries with `compat.supportsReasoningEffort: false`, such as `kimi-k2.6`, offer no levels). No hand-written effort config is needed -- the snapshot is the source of truth, so a re-sync picks up new levels automatically.
 
 > Explicitly unsupported: snapshot models served by pi on `google-generative-ai` (e.g. Gemini) are filtered out of the catalog by design -- pig's sampler only speaks `chat_completions`, `responses`, and `messages`. They never appear in the picker. If pi starts serving a new shape, the sync reports it under `skippedApis` and it stays excluded until support is deliberately added.
+
+### Custom vendors (mirror any pi provider)
+
+Beyond the two builtins, any `[vendors.<id>]` block with `base_url` + `snapshot_file` becomes a custom vendor mapped through the same snapshot path. Save a pi.dev `/api/models/providers/<provider>?types=chat` response to a file and point at it:
+
+```bash
+curl -fsSL "https://pi.dev/api/models/providers/anthropic?types=chat" \
+  -o ~/.config/pig/vendors/anthropic.json
+```
+
+```toml
+[vendors.acme]
+enabled = true
+base_url = "https://models.acme.example/v1"   # fallback for entries without baseUrl
+snapshot_file = "vendors/acme.json"           # relative to ~/.config/pig, or absolute
+env_key = "ACME_API_KEY"                       # explicit credential, read name-driven
+session_header = "x-acme-session"              # optional per-conversation routing header
+```
+
+Custom models appear as `acme/<model-id>` with the same derived display names (`Name (acme/<model-id>)`), thinking-level menus, and BYOK credential rules as builtins, and the vendor registers a `[model_providers]` preset so `model_provider = "acme"` works with no hand-written block. Unknown ids *without* these fields still warn as typos instead of loading anything, and `--config` / campaign / remote patches cannot enable vendors -- only the trusted config file can.
 
 > Enterprise lockdown: custom-endpoint deployments (`GROK_MODELS_BASE_URL`) skip the vendor snapshots, like the bundled defaults -- all inference routes through the pinned gateway.
 

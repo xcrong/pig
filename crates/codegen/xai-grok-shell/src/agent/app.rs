@@ -408,7 +408,7 @@ pub async fn run_headless(
         if !did_browser_flow {
             eprintln!();
             eprintln!(
-                "Open Grok Build: {} (press Enter to open in browser)",
+                "Open Pig Agent: {} (press Enter to open in browser)",
                 grok_code_url
             );
             eprintln!();

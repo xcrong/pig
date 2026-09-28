@@ -74,7 +74,7 @@ pub(crate) fn print_welcome_card(
     let mut info: Vec<Line<'static>> = Vec::new();
     info.push(Line::from(vec![
         Span::styled(
-            "Grok Build",
+            "Pig Agent",
             Style::default()
                 .fg(theme.accent_user)
                 .add_modifier(Modifier::BOLD),

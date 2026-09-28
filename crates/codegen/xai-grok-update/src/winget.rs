@@ -65,11 +65,11 @@ pub(crate) fn hand_off_message(target: Target<'_>, channel: &str) -> String {
     let command = target.command();
     let channel_note = ignored_channel_note(channel);
     format!(
-        "Grok Build was installed with WinGet, so WinGet manages its updates.\n\
+        "Pig Agent was installed with WinGet, so WinGet manages its updates.\n\
          {channel_note}\
-         Quit all running Grok sessions (`grok leader kill` stops a background leader), then run:\n  \
+         Quit all running Pig Agent sessions (`pig leader kill` stops a background leader), then run:\n  \
          {command}\n\
-         Use an administrator terminal if WinGet installed Grok for all users.\n\
+         Use an administrator terminal if WinGet installed Pig Agent for all users.\n\
          New releases can take a few days to reach WinGet. \
          If WinGet does not list the version yet, try again later.\n"
     )
@@ -86,7 +86,7 @@ pub(crate) fn ignored_channel_note(channel: &str) -> String {
     }
 }
 
-/// Follows "A new version of Grok Build is available" in headless runs and `grok update --check`.
+/// Follows "A new version of Pig Agent is available" in headless runs and `pig update --check`.
 pub(crate) fn update_available_note(target: Target<'_>) -> String {
     format!(
         "Installed with WinGet: quit Grok and run `{}` \

@@ -1085,7 +1085,7 @@ pub(crate) fn execute(
                         Some(auth_manager.clone()),
                         None,
                         Some(session_id.clone()),
-                        "grok-pager",
+                        "pig-pager",
                     );
                     Some((auth_manager, registry, storage))
                 });

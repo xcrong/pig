@@ -6,7 +6,7 @@ license = "Apache-2.0"
 authors = ["xAI"]
 default-run = "pig"
 
-# Composition-root binary for the Grok Build TUI. The artifact is named `pig`
+# Composition-root binary for the Pig Agent TUI. The artifact is named `pig`
 # (pig fork brand mapping; crate keeps its upstream name for clean merges).
 # This package exists so the binary can link both the pager library and the
 # optional `xai-grok-pager-minimal` render mode: `minimal` depends on

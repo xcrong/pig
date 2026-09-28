@@ -14,7 +14,7 @@ const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Per-host config; everything that varies between binaries lives here.
 pub struct Config {
-    /// Sentry tag `client`, e.g. `"grok-pager"`.
+    /// Sentry tag `client`, e.g. `"pig-pager"`.
     pub client: &'static str,
     pub client_version: &'static str,
     pub release: &'static str,

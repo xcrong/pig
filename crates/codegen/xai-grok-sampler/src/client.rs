@@ -45,10 +45,10 @@ use xai_grok_auth::bearer_suffix;
 pub use xai_grok_sampling_types::ApiBackend;
 
 /// Process-level fallback for the `x-grok-client-identifier` header.
-const DEFAULT_CLIENT_IDENTIFIER: &str = "grok-shell";
+const DEFAULT_CLIENT_IDENTIFIER: &str = "pig-agent";
 
 /// Product identifier baked into User-Agent strings.
-const AGENT_PRODUCT: &str = "grok-shell";
+const AGENT_PRODUCT: &str = "pig-agent";
 const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 128_000;
 
 /// Per-request `x-grok-*` headers. Optional fields are skipped when empty/`None`.
@@ -3099,8 +3099,8 @@ mod tests {
             version: None,
         };
         let ua = user_agent_string_for(&origin);
-        // No slash between product and the grok-shell agent product.
-        assert!(ua.starts_with("my-client grok-shell/"));
+        // No slash between product and the pig-agent agent product.
+        assert!(ua.starts_with("my-client pig-agent/"));
     }
 
     #[test]

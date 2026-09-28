@@ -108,13 +108,13 @@ pub struct CreditLimitUpsellClicked {
 }
 
 /// Emitted when a previously access-gated user re-authenticates and the gate is lifted, i.e. they subscribed (externally on grok.com) and came back.
-/// This is the actual conversion signal for SuperGrok Heavy subscriptions attributed to Grok Build.
-/// The user saw the gate in Grok Build, went and paid, then returned with access.
+/// This is the actual conversion signal for SuperGrok Heavy subscriptions attributed to Pig Agent.
+/// The user saw the gate in Pig Agent, went and paid, then returned with access.
 #[derive(Serialize)]
 pub struct SubscriptionActivated {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub auth_method: Option<String>,
     /// Whether the subscribe CTA was shown in this session before the gate was lifted (`access_gate_shown_logged`).
-    /// When `true`, the conversion is strongly attributable to Grok Build's upsell surface.
+    /// When `true`, the conversion is strongly attributable to Pig Agent's upsell surface.
     pub upsell_shown_this_session: bool,
 }

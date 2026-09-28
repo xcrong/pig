@@ -3,7 +3,7 @@ license = "Apache-2.0"
 name = "xai-grok-otel"
 version = "0.1.0"
 edition.workspace = true
-description = "OpenTelemetry foundation for Grok Build: W3C trace-context propagation, the OTLP HTTP client, and the tracing->OTLP span layer/provider"
+description = "OpenTelemetry foundation for Pig Agent: W3C trace-context propagation, the OTLP HTTP client, and the tracing->OTLP span layer/provider"
 authors = ["xAI"]
 
 [features]

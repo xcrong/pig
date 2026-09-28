@@ -73,13 +73,13 @@ pub enum ClientType {
 impl ClientType {
     pub fn user_agent_label(&self) -> &'static str {
         match self {
-            Self::Generic => "grok-shell",
-            Self::GrokTUI => "grok-tui",
+            Self::Generic => "pig-agent",
+            Self::GrokTUI => "pig-tui",
             Self::GrokWeb => "grok-web",
             Self::Nebula => "nebula",
             Self::Extension => "grok-code-extension",
-            Self::GrokPager => "grok-pager",
-            Self::Desktop => "grok-desktop",
+            Self::GrokPager => "pig-pager",
+            Self::Desktop => "pig-desktop",
         }
     }
     pub fn from_client_identifier(id: Option<&str>) -> Self {
@@ -87,8 +87,8 @@ impl ClientType {
             Some("grok-web") => Self::GrokWeb,
             Some("nebula") => Self::Nebula,
             Some("grok-code-extension") => Self::Extension,
-            Some("grok-desktop") => Self::Desktop,
-            Some("grok-pager") => Self::GrokPager,
+            Some("grok-desktop") | Some("pig-desktop") => Self::Desktop,
+            Some("grok-pager") | Some("pig-pager") => Self::GrokPager,
             _ => Self::Generic,
         }
     }

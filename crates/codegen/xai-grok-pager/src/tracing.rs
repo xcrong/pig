@@ -336,7 +336,7 @@ pub fn init_tracing() -> TracingHandle {
         .with_writer(make_writer);
     let otel_layer = xai_grok_telemetry::otel_layer::build_otel_layer(
         xai_grok_telemetry::otel_layer::OtelClientInfo {
-            client_name: "grok-pager",
+            client_name: "pig-pager",
             client_version: xai_grok_version::VERSION,
             service_version: xai_grok_version::full_version(),
             app_entrypoint: "tui",

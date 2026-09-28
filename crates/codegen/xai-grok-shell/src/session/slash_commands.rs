@@ -1342,7 +1342,7 @@ impl BuiltinAction {
         }
     }
 }
-/// `RewriteToRun` (default): replace `/foo args` with `"run /foo args"`, matching today's Grok Build flow that calls our dedicated `skill` tool.
+/// `RewriteToRun` (default): replace `/foo args` with `"run /foo args"`, matching today's Pig Agent flow that calls our dedicated `skill` tool.
 /// `Passthrough`: leave the prompt verbatim.
 /// Some templates use this: the model is trained to spot a leading `/<name>` and look it up in the `<agent_skills>` listing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

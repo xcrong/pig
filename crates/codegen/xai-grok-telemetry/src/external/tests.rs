@@ -264,12 +264,17 @@ fn client_identifier_allowlist_is_pinned() {
         "grok-agent-sdk",
         "nebula",
         "zed",
+        // pig fork identifiers; old values stay for back-compat.
+        "pig-agent",
+        "pig-pager",
+        "pig-tui",
     ];
     assert_eq!(schema::KNOWN_CLIENT_IDENTIFIERS, expected);
     assert_eq!(
         schema::sanitize_client_identifier("grok-pager"),
         "grok-pager"
     );
+    assert_eq!(schema::sanitize_client_identifier("pig-agent"), "pig-agent");
     assert_eq!(
         schema::sanitize_client_identifier("Evil Corp Internal Tool v2"),
         "other",

@@ -3376,7 +3376,7 @@ pub(crate) fn resolve_model_list(
     // Skipped for custom-endpoint (enterprise lockdown) deployments, like the
     // bundled defaults: all inference there routes through the pinned gateway.
     if !cfg.endpoints.has_custom_endpoint() {
-        let vendor_models = super::vendors::builtin_vendor_models(&cfg.vendors);
+        let vendor_models = super::vendors::vendor_models(&cfg.vendors);
         tracing::debug!(
             count = vendor_models.len(),
             "loaded vendor catalog snapshots"
