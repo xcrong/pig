@@ -29,6 +29,7 @@
 
 ## 模型目录相关约定
 
+- 显式优先（硬性）：模型目录、凭证来源、请求行为一律不做隐式加载与隐式读取。新增模型来源必须提供显式 opt-in 开关且默认关闭；环境变量 KEY 必须写在受信配置文件里按名读取，不得扫描环境、不得内建默认值；`--config` 补丁、campaign/远端补丁一律不得开启这类来源（见 `PATCH_STRIP_KEYS`）。先例：`[vendors.<id>] enabled` + `env_key`（默认关闭，未启用时快照不进目录、不注册 preset、不读变量）。
 - `resolve_model_list` 分层：`默认/预取 → vendor 快照 → [model.*]`（用户永远最高）；企业锁定（custom endpoint）跳过 vendor。
 - vendor 快照只用 `scripts/sync-pi-vendors.sh` 更新（含 `--check` 漂移门禁），提交前务必人工审 diff；`manifest.json` 记录来源与哈希。
 - `google-generative-ai` 明确不支持并过滤；若 pi 出现新 api 形状，`vendors` 的收敛测试会失败，此时必须有意识地决定映射或加名单，不得静默丢弃。
