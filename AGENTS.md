@@ -14,7 +14,10 @@
 - 配置目录：`$PIG_HOME` → `$GROK_HOME`（兼容旧用户）→ `~/.config/pig`，收口于 `xai-dirs`；纯默认路径下首次创建时一次性迁移旧 `~/.grok`（只拷不删）；UI 展示为 `~/.config/pig` / `$PIG_HOME`。
 - 二进制产物：`xai-grok-pager-bin` 的 `[[bin]]` 名为 `pig`；clap `bin_name` 白名单含 `grok/agent/pig`，缺省 `pig`；测试脚手架经 `CARGO_BIN_EXE_pig` / `PAGER_BINARY` 找二进制。
 - 界面产品名统一为 `Pig Agent`：欢迎页版本徽标、副标题、信任提示等用户可见文案不再保留上游 `Grok Build` 字样；合并上游时冲突优先保留本 fork 文案。
-- 刻意不动（v2 品牌 pass 再议）：`GROK_*` 环境变量全改名、`grok-shell` User-Agent、文档中 `~/.grok` 路径、自更新（仍指向上游产物，fork 用户应设 `[cli] auto_update = false`）。
+- 客户端身份统一为 `pig-agent` / `pig-pager`：User-Agent 形状为 `pig-agent/<version> (os; arch)`，默认 `x-grok-client-identifier`、`ClientType::user_agent_label`、遥测 `KNOWN_CLIENT_IDENTIFIERS`（新值追加，旧值保留兼容）、sentry/otel client 名同步；后端定义的键（auth scope、`x-grok-client-version` 门禁头、serde wire 名、第三方标识）一律不动。
+- `[vendors.<id>]` 支持自定义 provider：`base_url` + `snapshot_file`（pi 形目录 JSON，相对路径按 pig home 解析）+ 可选 `session_header`；未知 id 无自定义字段仍按拼写错误警告；`PATCH_STRIP_KEYS` 剥离整个 `vendors` 表，天然覆盖。
+- `[cli].auto_update` 默认关闭（未设置视为关闭，三处门禁只在显式 `true` 时放行，首次运行回写 `false`）；更新源仍指向上游，手动 `pig update` 与显式 opt-in 不受影响；分发主要靠包管理器。
+- 刻意不动（v2 品牌 pass 再议）：`GROK_*` 环境变量全改名、文档中 `~/.grok` 路径、自更新源切换（仍指向上游产物）。
 
 ## 构建与测试
 
