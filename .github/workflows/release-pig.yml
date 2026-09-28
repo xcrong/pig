@@ -1,0 +1,109 @@
+# pig fork 的 tag 自动构建 + 发布。
+#
+# 分支隔离说明：main 分支是上游 grok-build 的镜像，里面没有这个文件；
+# GitHub Actions 只会运行 tag 所指提交树里存在的工作流，因此 main 上打的
+# tag 不会触发这里。只有从 pig 分支打出的 `pig-v*` tag 会触发。
+#
+# 用法：git tag pig-v1.0.41 && git push origin pig-v1.0.41
+# 版本号与官方版本对齐：tag 后缀即上游版本号，也就是
+# crates/codegen/xai-grok-pager-bin/Cargo.toml 的 version。
+# 它会被注入为 GROK_VERSION 编进二进制（`pig --version` 可见）。
+
+name: pig release
+
+on:
+  push:
+    tags:
+      - "pig-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            artifact: pig-linux-x86_64.tar.gz
+          - runner: ubuntu-24.04-arm
+            artifact: pig-linux-aarch64.tar.gz
+          - runner: macos-14
+            artifact: pig-macos-arm64.tar.gz
+          - runner: macos-15-intel
+            artifact: pig-macos-x86_64.tar.gz
+          - runner: windows-2022
+            artifact: pig-windows-x86_64.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # 完整历史：pager-bin 的 build.rs 用 git 嵌提交短哈希做版本戳
+          fetch-depth: 0
+
+      - name: Resolve version from tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#pig-v}"
+          echo "GROK_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Building pig $VERSION"
+
+      - name: Install protoc (Linux)
+        if: startsWith(runner.os, 'Linux')
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: startsWith(runner.os, 'macOS')
+        run: brew install protobuf
+
+      - name: Install protoc (Windows)
+        if: startsWith(runner.os, 'Windows')
+        run: choco install protoc -y
+
+      - name: Install Rust toolchain
+        # 遵循仓库根目录 rust-toolchain.toml 的版本 pin
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release binary
+        run: cargo build --release -p xai-grok-pager-bin
+
+      - name: Package (unix)
+        if: "!startsWith(runner.os, 'Windows')"
+        shell: bash
+        run: |
+          cd target/release
+          tar -czf "$GITHUB_WORKSPACE/${{ matrix.artifact }}" pig
+
+      - name: Package (Windows)
+        if: startsWith(runner.os, 'Windows')
+        shell: pwsh
+        run: |
+          cd target/release
+          Compress-Archive -Path pig.exe -DestinationPath "$env:GITHUB_WORKSPACE/${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create release and attach binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: pig-*
