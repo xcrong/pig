@@ -142,11 +142,7 @@ pub(crate) fn parse_vendor_configs(
                 ConfigWarningKind::UnknownField,
                 format!(
                     "unknown vendor '{id}'; supported vendors are {}. Entry ignored.",
-                    VENDORS
-                        .iter()
-                        .map(|v| v.id)
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    VENDORS.iter().map(|v| v.id).collect::<Vec<_>>().join(", ")
                 ),
             ));
             continue;
@@ -172,7 +168,8 @@ pub(crate) fn parse_vendor_configs(
                     warnings.push(ConfigWarning::config_key(
                         format!("vendors.{id}"),
                         ConfigWarningKind::ConflictingFields,
-                        "api_key shadows env_key; the static key always takes precedence".to_owned(),
+                        "api_key shadows env_key; the static key always takes precedence"
+                            .to_owned(),
                     ));
                 } else if entry.enabled
                     && !has_static_key
@@ -369,6 +366,15 @@ fn map_vendor_snapshot(
 /// Enabled builtin vendor models. Keys are namespaced; user `[model.*]` entries take
 /// precedence (see `resolve_model_list`). Disabled vendors contribute nothing, so
 /// their env keys are never read.
+///
+/// Display names are derived, not verbatim: pi reuses the same names across vendors
+/// (`opencode/kimi-k2.6` vs `opencode-go/kimi-k2.6`), and every surface renders the
+/// name (`/model` picker, settings panel, status bar). A name shared by more than
+/// one entry gains a ` (<vendor>/<model-id>)` suffix -- the catalog key, unique by
+/// construction -- so rows stay distinguishable everywhere; unique names render
+/// untouched. Matching is case-insensitive, mirroring resolution. Suffixes depend
+/// on the enabled set: enabling a second vendor with overlapping ids renames the
+/// collided rows, which is exactly when disambiguation becomes necessary.
 pub fn builtin_vendor_models(
     vendors: &IndexMap<String, VendorConfig>,
 ) -> IndexMap<String, ModelEntry> {
@@ -395,7 +401,36 @@ pub fn builtin_vendor_models(
         }
         all.extend(models);
     }
+    disambiguate_vendor_names(&mut all);
     all
+}
+
+/// Append ` (<vendor>/<model-id>)` to display names shared by more than one entry.
+/// The suffix is the catalog key users already type in config, so it is unique by
+/// construction -- even same-vendor duplicates stay distinguishable. Entries whose
+/// name is unique keep the verbatim pi name.
+fn disambiguate_vendor_names(all: &mut IndexMap<String, ModelEntry>) {
+    use std::collections::HashMap;
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for entry in all.values() {
+        if let Some(name) = entry.info.name.as_deref() {
+            *counts.entry(name.to_lowercase()).or_default() += 1;
+        }
+    }
+    for (key, entry) in all.iter_mut() {
+        let shared = entry
+            .info
+            .name
+            .as_deref()
+            .and_then(|name| counts.get(&name.to_lowercase()))
+            .is_some_and(|&n| n > 1);
+        // Nameless entries fall back to their (already unique) id downstream; leave them alone.
+        if shared {
+            if let Some(name) = entry.info.name.take() {
+                entry.info.name = Some(format!("{name} ({key})"));
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -452,6 +487,53 @@ mod tests {
     }
 
     #[test]
+    fn shared_display_names_gain_catalog_key_suffix() {
+        let models = builtin_vendor_models(&enabled_vendors());
+        assert!(!models.is_empty());
+
+        // Group by pre-derivation name: entries suffixed with " (<key>)" map back
+        // to their base name by stripping that suffix.
+        let mut by_base: IndexMap<String, Vec<&String>> = IndexMap::new();
+        for (key, entry) in &models {
+            let Some(name) = entry.info.name.as_deref() else {
+                continue;
+            };
+            let base = name
+                .strip_suffix(&format!(" ({key})"))
+                .unwrap_or(name)
+                .to_lowercase();
+            by_base.entry(base).or_default().push(key);
+        }
+        let shared = by_base
+            .values()
+            .find(|keys| keys.len() > 1)
+            .expect("snapshots must contain a cross-vendor name collision for this test");
+        for key in shared {
+            let name = models[*key]
+                .info
+                .name
+                .as_deref()
+                .expect("collided entry is named");
+            assert!(
+                name.ends_with(&format!(" ({key})")),
+                "collided row {key} must carry its catalog key, got {name}"
+            );
+        }
+        let unique = by_base
+            .iter()
+            .find(|(_, keys)| keys.len() == 1)
+            .expect("snapshots must contain a unique name for this test");
+        let (only_key, name) = (
+            unique.1[0],
+            models[unique.1[0]].info.name.as_deref().unwrap_or("?"),
+        );
+        assert!(
+            !name.ends_with(')'),
+            "{only_key} is unique and must keep its verbatim name, got {name}"
+        );
+    }
+
+    #[test]
     fn disabled_vendors_map_nothing() {
         assert!(builtin_vendor_models(&IndexMap::new()).is_empty());
         let mut vendors = enabled_vendors();
@@ -463,7 +545,11 @@ mod tests {
             "disabled vendor must contribute no keys"
         );
         assert!(builtin_vendor_providers(&IndexMap::new()).is_empty());
-        assert!(builtin_vendor_providers(&vendors).get(VENDOR_OPENCODE).is_none());
+        assert!(
+            builtin_vendor_providers(&vendors)
+                .get(VENDOR_OPENCODE)
+                .is_none()
+        );
     }
 
     #[test]
@@ -489,7 +575,11 @@ mod tests {
         let providers = builtin_vendor_providers(&vendors);
         let preset = providers.get(VENDOR_OPENCODE_GO).expect("preset exists");
         assert_eq!(
-            preset.env_key.as_ref().and_then(EnvKeys::primary).as_deref(),
+            preset
+                .env_key
+                .as_ref()
+                .and_then(EnvKeys::primary)
+                .as_deref(),
             Some("MY_VENDOR_KEY")
         );
     }

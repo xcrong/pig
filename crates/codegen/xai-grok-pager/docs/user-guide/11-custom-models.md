@@ -332,7 +332,7 @@ export OPENCODE_API_KEY="..."
 grok -p "Hello" -m opencode-go/kimi-k2.6
 ```
 
-Enabled snapshot models appear in the picker as `opencode/<model-id>` and `opencode-go/<model-id>`, and the vendor registers a `[model_providers]` preset (base_url, your `env_key`, session header), so no hand-written provider block is needed:
+Enabled snapshot models appear in the picker as `opencode/<model-id>` and `opencode-go/<model-id>`, and the vendor registers a `[model_providers]` preset (base_url, your `env_key`, session header), so no hand-written provider block is needed. Display names come from pi's catalog; when more than one entry shares a name across the enabled vendors, pig derives `Name (<vendor>/<model-id>)` so rows stay distinguishable in the picker, the settings panel, and the status bar -- unique names render untouched:
 
 ```toml
 # Minimal override: inherit the vendor preset (base_url, env_key, session_header)

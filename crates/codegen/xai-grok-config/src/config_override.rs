@@ -488,10 +488,7 @@ mod tests {
             "model_providers".into(),
             toml::Value::Table(toml::Table::new()),
         );
-        p.insert(
-            "vendors".into(),
-            toml::Value::Table(toml::Table::new()),
-        );
+        p.insert("vendors".into(), toml::Value::Table(toml::Table::new()));
         p.insert("keep".into(), toml::Value::Boolean(true));
         apply_patches(&mut cfg2, std::iter::once(p), PATCH_STRIP_KEYS);
         assert!(cfg2.get("version_overrides").is_none());
