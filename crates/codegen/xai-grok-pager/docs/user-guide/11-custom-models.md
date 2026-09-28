@@ -345,6 +345,8 @@ Without `env_key` (or `api_key`) on the `[vendors.<id>]` block, the models still
 
 Both vendors require the per-conversation `x-opencode-session` routing header. Grok sends it automatically (value: the session id) for any model with `session_header` set -- via the vendor preset, the snapshot entries, or your own `[model.*]` / `[model_providers.*]` value. A matching `extra_headers` entry (any casing) overrides the automatic value. Like other third-party entries these models are BYOK: without `OPENCODE_API_KEY` they resolve with no credential and never borrow your session token.
 
+Snapshot models also inherit pi's thinking levels: `/effort` and `/model <model> <level>` work on any snapshot entry whose catalog data advertises reasoning, with the menu derived from its `thinkingLevelMap` (a `null` entry removes that level; `xhigh`/`max` need an explicit entry; entries with `compat.supportsReasoningEffort: false`, such as `kimi-k2.6`, offer no levels). No hand-written effort config is needed -- the snapshot is the source of truth, so a re-sync picks up new levels automatically.
+
 > Explicitly unsupported: snapshot models served by pi on `google-generative-ai` (e.g. Gemini) are filtered out of the catalog by design -- pig's sampler only speaks `chat_completions`, `responses`, and `messages`. They never appear in the picker. If pi starts serving a new shape, the sync reports it under `skippedApis` and it stays excluded until support is deliberately added.
 
 > Enterprise lockdown: custom-endpoint deployments (`GROK_MODELS_BASE_URL`) skip the vendor snapshots, like the bundled defaults -- all inference routes through the pinned gateway.

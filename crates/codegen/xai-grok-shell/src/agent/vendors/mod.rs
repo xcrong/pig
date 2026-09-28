@@ -33,6 +33,7 @@ use super::config::{EnvKeys, ModelEntry, ModelInfo};
 use super::config_model_override_parse::{ConfigWarning, ConfigWarningKind};
 use super::model_providers::ModelProviderConfig;
 use crate::sampling::ApiBackend;
+use crate::sampling::types::{ReasoningEffort, ReasoningEffortOption, effort_label};
 
 /// Per-conversation routing header required by OpenCode Zen / OpenCode Go.
 /// Mirrors pi's `withOpenCodeSessionHeader`
@@ -277,6 +278,64 @@ fn context_window_of(value: &serde_json::Value) -> NonZeroU64 {
         })
 }
 
+/// pi thinking levels, ascending, each paired with pig's canonical effort.
+/// pi `off` is pig `ReasoningEffort::None`; the other six spell identically.
+const PI_THINKING_LEVELS: [(&str, ReasoningEffort); 7] = [
+    ("off", ReasoningEffort::None),
+    ("minimal", ReasoningEffort::Minimal),
+    ("low", ReasoningEffort::Low),
+    ("medium", ReasoningEffort::Medium),
+    ("high", ReasoningEffort::High),
+    ("xhigh", ReasoningEffort::Xhigh),
+    ("max", ReasoningEffort::Max),
+];
+
+/// Derive the effort menu for one pi snapshot entry, purely data-driven.
+/// Mirrors pi's `getSupportedThinkingLevels`
+/// (`pi/packages/ai/src/models.ts`):
+/// * `reasoning: false` (or absent) offers no level.
+/// * `compat.supportsReasoningEffort: false` is an explicit opt-out.
+/// * `thinkingLevelMap[level] === null` marks that level unsupported.
+/// * `xhigh`/`max` need an explicit non-null entry; the other five default to
+///   offered when the map says nothing about them.
+/// Returns `None` when the model offers no level at all, so `/effort` keeps
+/// refusing it exactly like a non-reasoning model.
+fn vendor_effort_menu(model: &serde_json::Value) -> Option<Vec<ReasoningEffortOption>> {
+    if !model
+        .get("reasoning")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    if model
+        .get("compat")
+        .and_then(|c| c.get("supportsReasoningEffort"))
+        .and_then(|v| v.as_bool())
+        == Some(false)
+    {
+        return None;
+    }
+    let map = model.get("thinkingLevelMap").and_then(|v| v.as_object());
+    let mut menu = Vec::new();
+    for (level, effort) in PI_THINKING_LEVELS {
+        match map.and_then(|m| m.get(level)) {
+            Some(serde_json::Value::Null) => continue,
+            None if matches!(effort, ReasoningEffort::Xhigh | ReasoningEffort::Max) => {
+                continue;
+            }
+            _ => menu.push(ReasoningEffortOption {
+                id: effort.as_ref().to_string(),
+                value: effort,
+                label: effort_label(effort),
+                description: None,
+                default: false,
+            }),
+        }
+    }
+    if menu.is_empty() { None } else { Some(menu) }
+}
+
 /// Parse one vendor snapshot into catalog entries keyed `<vendor>/<model-id>`.
 /// Credentials come from the explicit `[vendors.<id>]` config: `None`/`None`
 /// loads the models credential-less (BYOK). Returns `(mapped, skipped_by_api)`
@@ -350,6 +409,10 @@ fn map_vendor_snapshot(
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok());
         info.session_header = Some(OPENCODE_SESSION_HEADER.to_string());
+        if let Some(menu) = vendor_effort_menu(model) {
+            info.supports_reasoning_effort = true;
+            info.reasoning_efforts = menu;
+        }
         let entry = ModelEntry {
             info,
             mtls_cert_dir: None,
@@ -643,5 +706,102 @@ mod tests {
                 "{id} preset must opt into the session header"
             );
         }
+    }
+
+    fn effort_ids(menu: &[ReasoningEffortOption]) -> Vec<&str> {
+        menu.iter().map(|opt| opt.id.as_str()).collect()
+    }
+
+    #[test]
+    fn effort_menu_mirrors_pi_thinking_levels() {
+        // deepseek-v4-flash shape: explicit nulls drop minimal/medium, xhigh
+        // needs an entry so it stays out, max is mapped in.
+        let model = serde_json::json!({
+            "reasoning": true,
+            "thinkingLevelMap": {
+                "minimal": null, "low": "low", "medium": null, "high": "high", "max": "max"
+            },
+        });
+        let menu = vendor_effort_menu(&model).expect("menu");
+        assert_eq!(effort_ids(&menu), ["none", "low", "high", "max"]);
+    }
+
+    #[test]
+    fn effort_menu_defaults_without_thinking_level_map() {
+        // No thinkingLevelMap: pi offers the base five, xhigh/max stay out.
+        let model = serde_json::json!({"reasoning": true});
+        let menu = vendor_effort_menu(&model).expect("menu");
+        assert_eq!(
+            effort_ids(&menu),
+            ["none", "minimal", "low", "medium", "high"]
+        );
+    }
+
+    #[test]
+    fn effort_menu_respects_explicit_opt_outs() {
+        // compat.supportsReasoningEffort: false (kimi-k2.6 shape).
+        let model = serde_json::json!({
+            "reasoning": true,
+            "compat": {"supportsReasoningEffort": false},
+        });
+        assert!(vendor_effort_menu(&model).is_none());
+        // reasoning: false offers nothing.
+        let model = serde_json::json!({"reasoning": false});
+        assert!(vendor_effort_menu(&model).is_none());
+        // An absent reasoning flag means unknown, not supported.
+        assert!(vendor_effort_menu(&serde_json::json!({})).is_none());
+        // Every level nulled out leaves no menu.
+        let model = serde_json::json!({
+            "reasoning": true,
+            "thinkingLevelMap": {
+                "off": null, "minimal": null, "low": null, "medium": null,
+                "high": null, "xhigh": null, "max": null
+            },
+        });
+        assert!(vendor_effort_menu(&model).is_none());
+    }
+
+    #[test]
+    fn vendor_snapshots_carry_effort_support() {
+        let models = builtin_vendor_models(&enabled_vendors());
+        // deepseek-v4-flash: low/high/max plus off-as-none.
+        let flash = models.get("opencode-go/deepseek-v4-flash").expect("mapped");
+        assert!(flash.info.supports_reasoning_effort);
+        assert_eq!(
+            effort_ids(&flash.info.reasoning_efforts),
+            ["none", "low", "high", "max"]
+        );
+        // kimi-k2.6 explicitly opts out via compat.
+        let kimi = models.get("opencode-go/kimi-k2.6").expect("mapped");
+        assert!(!kimi.info.supports_reasoning_effort);
+        assert!(kimi.info.reasoning_efforts.is_empty());
+        // No thinkingLevelMap: base five, no xhigh/max.
+        let glm = models.get("opencode-go/glm-5.1").expect("mapped");
+        assert!(glm.info.supports_reasoning_effort);
+        assert_eq!(
+            effort_ids(&glm.info.reasoning_efforts),
+            ["none", "minimal", "low", "medium", "high"]
+        );
+        // The ACP projection carries the flag + menu, which is what /effort
+        // and /model <model> <level> actually read.
+        let acp_models = super::super::config::to_acp_model_info(&models);
+        let flash_acp = acp_models
+            .iter()
+            .find(|(id, _)| id.0.as_ref() == "opencode-go/deepseek-v4-flash")
+            .map(|(_, info)| info)
+            .expect("projected");
+        let meta = flash_acp.meta.as_ref().expect("meta");
+        assert_eq!(
+            meta.get("supportsReasoningEffort"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        let values: Vec<&str> = meta
+            .get("reasoningEfforts")
+            .and_then(|v| v.as_array())
+            .expect("menu")
+            .iter()
+            .filter_map(|o| o.get("value").and_then(|v| v.as_str()))
+            .collect();
+        assert_eq!(values, ["none", "low", "high", "max"]);
     }
 }
