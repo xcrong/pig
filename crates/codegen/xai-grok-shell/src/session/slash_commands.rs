@@ -489,8 +489,6 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "hooks-trust",
     "hooks-untrust",
     "howto",
-    "imagine",
-    "imagine-video",
     "import-claude",
     "jump",
     "login",

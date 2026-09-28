@@ -626,15 +626,6 @@ impl ModelOverrideConfig {
         result
     }
 }
-/// Raw `[tools.media_gen]` counts; resolve via [`ToolsConfig::resolve_max_parallel_image_gen_calls`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(default)]
-pub struct MediaGenToolsConfig {
-    #[serde(default)]
-    pub max_parallel_image_gen_calls: Option<i64>,
-    #[serde(default)]
-    pub max_parallel_video_gen_calls: Option<i64>,
-}
 /// Tool behavior configuration (`[tools]` in config.toml).
 /// Controls cross-cutting tool behavior such as `.gitignore` filtering.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -643,21 +634,9 @@ pub struct ToolsConfig {
     /// When `true`, all tools (including `read_file`) filter gitignored files.
     /// When `false` (default), each tool picks its own default.
     pub respect_gitignore: bool,
-    /// Restrict tools whose xAI API requires server-side artifact storage (currently just the video tools).
-    /// Without a valid `[tools.zdr_video_output_s3]` bucket they stay advertised but return setup guidance at call time.
-    /// Intended for ZDR-bound teams via `~/.grok/managed_config.toml`. Defaults to `false`.
-    pub disable_zdr_incompatible_tools: bool,
-    /// Optional S3 bucket config for ZDR video output. When present (and valid), video tools presign an upload URL and pass it to the API.
-    /// The generated video then lands in a team-owned bucket instead of being downloaded locally. Only effective when `disable_zdr_incompatible_tools` is `true`. Populated from `[tools.zdr_video_output_s3]` in config.
-    pub zdr_video_output_s3:
-        Option<xai_grok_tools::implementations::grok_build::video_gen::ZdrVideoOutputS3Config>,
-    pub media_gen: MediaGenToolsConfig,
 }
 impl ToolsConfig {
-    pub const ENV_MAX_PARALLEL_IMAGE_GEN_CALLS: &'static str = "GROK_MAX_PARALLEL_IMAGE_GEN_CALLS";
-    pub const ENV_MAX_PARALLEL_VIDEO_GEN_CALLS: &'static str = "GROK_MAX_PARALLEL_VIDEO_GEN_CALLS";
-    /// Resolve the final tools config, in priority order: Env vars `GROK_RESPECT_GITIGNORE` and `GROK_DISABLE_ZDR_INCOMPATIBLE_TOOLS` (`0`/`false` off, `1`/`true` on). `[tools]` block from the merged effective config.
-    /// Defaults (both `false`). Fields are read individually. A malformed `[tools.zdr_video_output_s3]` therefore cannot wipe `disable_zdr_incompatible_tools` or any other tools flag.
+    /// Resolve the final tools config, in priority order: Env var `GROK_RESPECT_GITIGNORE` (`0`/`false` off, `1`/`true` on). `[tools]` block from the merged effective config.
     pub fn resolve(config: &toml::Value) -> Self {
         let tools = config.get("tools");
         let mut result = Self {
@@ -665,43 +644,6 @@ impl ToolsConfig {
                 .and_then(|t| t.get("respect_gitignore"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
-            disable_zdr_incompatible_tools: tools
-                .and_then(|t| t.get("disable_zdr_incompatible_tools"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            zdr_video_output_s3: tools
-                .and_then(|t| t.get("zdr_video_output_s3"))
-                .and_then(|s3_val| match s3_val
-                    .clone()
-                    .try_into::<
-                        xai_grok_tools::implementations::grok_build::video_gen::ZdrVideoOutputS3Config,
-                    >()
-                {
-                    Ok(cfg) if cfg.is_valid() => Some(cfg),
-                    Ok(_) => {
-                        tracing::warn!(
-                                "tools.zdr_video_output_s3 is present but incomplete; ignoring ZDR video output config"
-                            );
-                        None
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                                error = %e,
-                                "tools.zdr_video_output_s3 failed to parse; ignoring ZDR video output config"
-                            );
-                        None
-                    }
-                }),
-            media_gen: MediaGenToolsConfig {
-                max_parallel_image_gen_calls: tools
-                    .and_then(|t| t.get("media_gen"))
-                    .and_then(|m| m.get("max_parallel_image_gen_calls"))
-                    .and_then(|v| v.as_integer()),
-                max_parallel_video_gen_calls: tools
-                    .and_then(|t| t.get("media_gen"))
-                    .and_then(|m| m.get("max_parallel_video_gen_calls"))
-                    .and_then(|v| v.as_integer()),
-            },
         };
         match std::env::var("GROK_RESPECT_GITIGNORE").as_deref() {
             Ok("0") | Ok("false") => {
@@ -712,72 +654,8 @@ impl ToolsConfig {
             }
             _ => {}
         }
-        match std::env::var("GROK_DISABLE_ZDR_INCOMPATIBLE_TOOLS").as_deref() {
-            Ok("0") | Ok("false") => {
-                result.disable_zdr_incompatible_tools = false;
-            }
-            Ok("1") | Ok("true") => {
-                result.disable_zdr_incompatible_tools = true;
-            }
-            _ => {}
-        }
         result
     }
-    pub(crate) fn resolve_max_parallel_image_gen_calls(
-        env: Option<&str>,
-        config: Option<i64>,
-        remote: Option<u32>,
-    ) -> usize {
-        resolve_clamped_count(
-            Self::ENV_MAX_PARALLEL_IMAGE_GEN_CALLS,
-            env,
-            config,
-            remote,
-            xai_grok_tools::media_gen_limits::DEFAULT_MAX_PARALLEL_IMAGE_GEN,
-        )
-    }
-    pub(crate) fn resolve_max_parallel_video_gen_calls(
-        env: Option<&str>,
-        config: Option<i64>,
-        remote: Option<u32>,
-    ) -> usize {
-        resolve_clamped_count(
-            Self::ENV_MAX_PARALLEL_VIDEO_GEN_CALLS,
-            env,
-            config,
-            remote,
-            xai_grok_tools::media_gen_limits::DEFAULT_MAX_PARALLEL_VIDEO_GEN,
-        )
-    }
-}
-/// Media-gen ladder: env > TOML > remote > default, with every numeric layer clamping `< 1` to `1`.
-/// Non-numeric env warns and falls through.
-fn resolve_clamped_count(
-    env_name: &str,
-    env: Option<&str>,
-    config: Option<i64>,
-    remote: Option<u32>,
-    default: usize,
-) -> usize {
-    if let Some(raw) = env {
-        match raw.trim().parse::<i64>() {
-            Ok(v) => return clamp_positive_count(v, "env", env_name),
-            Err(_) => {
-                tracing::warn!(
-                    name = env_name,
-                    %raw,
-                    "invalid env value (expected a whole number); ignoring"
-                );
-            }
-        }
-    }
-    if let Some(v) = config {
-        return clamp_positive_count(v, "config", env_name);
-    }
-    if let Some(v) = remote {
-        return clamp_positive_count(i64::from(v), "remote", env_name);
-    }
-    default
 }
 /// Positive whole-number ladder: env > TOML > remote > default.
 /// Invalid/non-positive env warns and falls through; TOML/remote `< 1` clamp to 1.
@@ -1134,17 +1012,6 @@ fn apply_requirements_inner(
             source: source.clone(),
         });
     };
-    macro_rules! pin_feature {
-        ($name:ident) => {
-            if let Some(val) = req_bool(req, "features", stringify!($name)) {
-                config.requirements.$name.pin(val, source.clone());
-                config.features.$name = Some(val);
-                // Unconditional, like the registry loop
-                // A later layer repeating the pin must report, or the dedupe keeps the first layer that asked instead of the one that decided
-                push(concat!("features.", stringify!($name)), format!("{val}"));
-            }
-        };
-    }
     macro_rules! enforce_opt {
         ($section:expr, $key:expr, $field:expr) => {
             if let Some(val) = req_bool(req, $section, $key)
@@ -1184,9 +1051,6 @@ fn apply_requirements_inner(
             }
         };
     }
-    pin_feature!(image_gen);
-    pin_requirement_only!(image_edit);
-    pin_feature!(video_gen);
     for spec in crate::agent::config::FEATURES {
         let Some(value) = req
             .get("features")

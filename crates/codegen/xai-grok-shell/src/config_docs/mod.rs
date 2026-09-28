@@ -409,11 +409,7 @@ mod tests {
     fn requirements_only_keys_are_table_rows() {
         let (config, req, _) = page();
         let config_keys: BTreeSet<_> = config.iter().map(|r| r.key.as_str()).collect();
-        for key in [
-            "fail_closed",
-            "features.image_edit",
-            "ui.disable_bypass_permissions_mode",
-        ] {
+        for key in ["fail_closed", "ui.disable_bypass_permissions_mode"] {
             assert!(
                 req.iter().any(|r| r.key == key),
                 "missing requirements-only row {key}"
@@ -431,10 +427,7 @@ mod tests {
         for row in config.iter().chain(req.iter()) {
             if matches!(
                 row.key.as_str(),
-                "features.remote_fetch"
-                    | "features.managed_config"
-                    | "features.zdr_access_enabled"
-                    | "features.image_edit"
+                "features.remote_fetch" | "features.managed_config" | "features.zdr_access_enabled"
             ) {
                 assert!(
                     !row.details.contains("GROK_CONFIG"),

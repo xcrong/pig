@@ -657,20 +657,6 @@ pub struct RemoteSettings {
     /// Remote fallback for `[features] subagent_model_inheritance`; absent or null means off.
     #[serde(default)]
     pub subagent_model_inheritance_enabled: Option<bool>,
-    /// Gates `image_gen` and `/imagine`. `None` falls through env, `[features]`, then the default (on).
-    #[serde(default)]
-    pub image_gen_enabled: Option<bool>,
-    /// Remote settings flag: optional Imagine model override for `image_gen`.
-    /// When present and non-empty, `image_gen` uses this model slug (e.g. `grok-imagine-image`) instead of the default `grok-imagine-image-quality`.
-    /// Absent or empty uses the default model.
-    #[serde(default)]
-    pub image_gen_model_override: Option<String>,
-    /// Optional Imagine model override for `image_edit`. Absent or empty uses the default.
-    #[serde(default)]
-    pub image_edit_model_override: Option<String>,
-    /// Gates the video tools and `/imagine-video`. `None` falls through env, `[features]`, then the default (on).
-    #[serde(default)]
-    pub video_gen_enabled: Option<bool>,
     /// When `Some(true)`, enable the process-wide image normalize cache, which shares decode, integrity-check, and re-encode work across SessionActors.
     /// Default: disabled. See `session::normalize_cache`.
     #[serde(default)]
@@ -868,12 +854,6 @@ pub struct RemoteSettings {
     pub subagents_limit_behavior: Option<String>,
     #[serde(default)]
     pub workflow_max_concurrent_agents: Option<u32>,
-    /// Max parallel `image_gen` and `image_edit` tool calls in one model step (`grok_build_settings.max_parallel_image_gen_calls`).
-    #[serde(default)]
-    pub max_parallel_image_gen_calls: Option<u32>,
-    /// Max parallel video-gen tool calls in one model step (`grok_build_settings.max_parallel_video_gen_calls`).
-    #[serde(default)]
-    pub max_parallel_video_gen_calls: Option<u32>,
     /// Global system-prompt identity label. A per-model override wins; see `resolve_system_prompt_label`.
     #[serde(default)]
     pub system_prompt_label: Option<String>,
@@ -894,12 +874,6 @@ pub struct RemoteSettings {
     pub compaction_verbatim_input: Option<bool>,
     #[serde(default)]
     pub compaction_tool_choice: Option<String>,
-    /// Remote settings denylist of optional imagine tools to disable (e.g. `["image_edit"]`).
-    /// When a tool is listed it is removed from the toolset and local env/config can't re-enable it.
-    /// Absent or not listed means each tool keeps its own default.
-    /// See `Config::resolve_image_edit`.
-    #[serde(default)]
-    pub imagine_tools_disabled: Option<Vec<String>>,
     /// Remote settings gate for the `grok workspace` CLI command (Computer Hub workspace exposure).
     /// It comes from `grok_build_settings.workspace_command_enabled`.
     /// `Some(true)` enables it; `None` or `Some(false)` (the default) keep it off.
@@ -933,16 +907,6 @@ pub enum RemoteRequestEncoding {
     /// Forward-compat: an encoding this build does not know.
     #[serde(other)]
     Unknown,
-}
-impl RemoteSettings {
-    /// Denylist check for an optional imagine tool.
-    /// Returns `true` when the server sent `imagine_tools_disabled` and it contains `tool` (force-off).
-    /// Otherwise `false`, deferring to the tool's own default.
-    pub fn imagine_tool_disabled(&self, tool: &str) -> bool {
-        self.imagine_tools_disabled
-            .as_ref()
-            .is_some_and(|list| list.iter().any(|t| t == tool))
-    }
 }
 /// Remote enable tier for the per-tip contextual hints (mirrors the client's `[ui.contextual_hints]` shape).
 /// Each field is a soft default for one tip; `None` defers to the client default (on).

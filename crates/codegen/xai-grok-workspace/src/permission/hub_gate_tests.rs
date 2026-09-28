@@ -117,17 +117,6 @@ fn daemon_tool_table() -> Vec<(&'static str, Value, Class)> {
             json!({"url": "https://example.com"}),
             Class::WebFetch,
         ),
-        ("image_gen", json!({"prompt": "cat"}), Class::Tool),
-        (
-            "image_to_video",
-            json!({"image": "/tmp/a.png"}),
-            Class::Tool,
-        ),
-        (
-            "reference_to_video",
-            json!({"prompt": "p", "images": ["/tmp/a.png"], "aspect_ratio": "16:9"}),
-            Class::Tool,
-        ),
         ("memory_search", json!({"query": "q"}), Class::Read),
         ("memory_get", json!({"path": "notes.md"}), Class::Read),
         (

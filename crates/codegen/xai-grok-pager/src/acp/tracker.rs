@@ -192,10 +192,6 @@ impl WritingToolCall {
                             ToolKind::Plan => Some("Updating todo list"),
                             ToolKind::Workflow => Some("Writing workflow"),
                             ToolKind::Feedback => Some("Writing feedback draft"),
-                            ToolKind::ImageGen => Some("Writing image prompt"),
-                            ToolKind::ImageToVideo | ToolKind::ReferenceToVideo => {
-                                Some("Writing video prompt")
-                            }
                             ToolKind::AskUser => Some("Preparing question"),
                             _ => None,
                         }

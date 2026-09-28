@@ -2516,10 +2516,6 @@ fn activity_writing_tool_call_labels_first_party_writing_tools() {
         ("todo_write", "Updating todo list…"),
         ("todowrite", "Updating todo list…"),
         ("workflow", "Writing workflow…"),
-        ("image_gen", "Writing image prompt…"),
-        ("image_edit", "Writing image prompt…"),
-        ("image_to_video", "Writing video prompt…"),
-        ("reference_to_video", "Writing video prompt…"),
         ("ask_user_question", "Preparing question…"),
         ("read_file", "Preparing read_file…"),
     ] {
@@ -3599,7 +3595,7 @@ fn meta_summary_handles_missing_fields() {
 }
 #[test]
 fn build_and_parse_tools_meta_round_trip() {
-    let names = vec!["scheduler_create".to_string(), "image_gen".to_string()];
+    let names = vec!["scheduler_create".to_string(), "read_file".to_string()];
     let wire = serde_json::json!({ "tools": names });
     assert_eq!(parse_tools_meta(wire.as_object()), Some(names));
 }

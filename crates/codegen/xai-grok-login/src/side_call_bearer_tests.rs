@@ -3,11 +3,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use chrono::{Duration, Utc};
 use pretty_assertions::assert_eq;
-use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 use xai_grok_test_support::EnvGuard;
-use xai_grok_tools::implementations::grok_build::image_gen::{ImageGenClient, ImageGenConfig};
-use xai_grok_tools::implementations::grok_build::media_bearer::SIDE_CALL_BEARER_ERROR_CODE;
 use xai_grok_tools::types::api_key_provider::SideCallBearerError;
 
 use super::{SharedAuthKeyProvider, is_xai_side_call_principal};
@@ -233,88 +229,4 @@ fn an_expired_xai_login_is_missing_in_the_sync_path() {
     );
 
     assert_eq!(Err(SideCallBearerError::Missing), mgr.side_call_bearer());
-}
-
-fn image_client(base_url: &str, mgr: &Arc<AuthManager>) -> ImageGenClient {
-    let config = ImageGenConfig::Enabled {
-        api_key: None,
-        base_url: base_url.to_owned(),
-        extra_headers: indexmap::IndexMap::new(),
-        image_gen_enabled: true,
-        image_edit_enabled: true,
-        model_override: None,
-        edit_model_override: None,
-        tier_restricted: false,
-    };
-    ImageGenClient::new(&config, Some(Arc::new(SharedAuthKeyProvider(mgr.clone())))).unwrap()
-}
-
-fn image_response() -> ResponseTemplate {
-    let b64 = base64::engine::general_purpose::STANDARD.encode(b"jpeg-bytes");
-    ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [{ "b64_json": b64 }] }))
-}
-
-#[tokio::test]
-#[serial_test::serial]
-async fn imagine_request_carries_only_an_xai_bearer() {
-    let _guards = static_key_guards();
-    let dir = tempfile::tempdir().unwrap();
-    let server = MockServer::start().await;
-    let mgr = manager(
-        &dir,
-        Some(session(
-            &foreign_access_token(),
-            AuthMode::Oidc,
-            Some(FOREIGN_ISSUER),
-        )),
-    );
-    let client = image_client(&server.uri(), &mgr);
-
-    let error = client
-        .generate("a cat", "auto")
-        .await
-        .expect_err("a foreign session must not reach the imagine api");
-    assert_eq!(
-        Some(SIDE_CALL_BEARER_ERROR_CODE),
-        error
-            .details
-            .as_ref()
-            .and_then(|d| d.get("code"))
-            .and_then(serde_json::Value::as_str)
-    );
-    assert!(
-        server.received_requests().await.unwrap().is_empty(),
-        "no HTTP request may leave on a foreign session"
-    );
-
-    Mock::given(method("POST"))
-        .and(path("/images/generations"))
-        .and(header("authorization", "Bearer xai-plain-key"))
-        .respond_with(image_response())
-        .expect(1)
-        .mount(&server)
-        .await;
-    mgr.hot_swap(api_key("xai-plain-key"));
-    assert_eq!(
-        b"jpeg-bytes".to_vec(),
-        client.generate("a cat", "auto").await.unwrap()
-    );
-    server.reset().await;
-
-    Mock::given(method("POST"))
-        .and(path("/images/generations"))
-        .and(header("authorization", "Bearer xai-session"))
-        .respond_with(image_response())
-        .expect(1)
-        .mount(&server)
-        .await;
-    mgr.hot_swap(session(
-        "xai-session",
-        AuthMode::Oidc,
-        Some(XAI_OAUTH2_ISSUER),
-    ));
-    assert_eq!(
-        b"jpeg-bytes".to_vec(),
-        client.generate("a cat", "auto").await.unwrap()
-    );
 }

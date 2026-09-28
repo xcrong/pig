@@ -282,7 +282,6 @@ impl MvpAgent {
             parent_depth,
             subagents_max_depth: self.cfg.borrow().subagents_max_depth,
             workflow_max_concurrent_agents: self.cfg.borrow().workflow_max_concurrent_agents,
-            media_gen_batch_limits: self.cfg.borrow().media_gen_batch_limits,
             inference_idle_timeout_secs,
             parent_compaction: crate::session::CompactionPins::default(),
             auto_compact_threshold_tiers:
@@ -305,8 +304,6 @@ impl MvpAgent {
                 }),
             web_search_sampling_config: self.prepare_web_search_sampling_config(),
             web_fetch_config: self.prepare_web_fetch_config(),
-            image_gen_config: self.prepare_image_gen_config(),
-            video_gen_config: self.prepare_video_gen_config(),
             app_builder_deployer_config: self.prepare_app_builder_deployer_config(),
             write_file_enabled: self
                 .cfg

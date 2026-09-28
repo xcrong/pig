@@ -578,9 +578,6 @@ impl<T: Clone> Constrained<T> {
 pub struct Requirements {
     pub telemetry: Constrained<TelemetryMode>,
     pub trace_upload: Constrained<bool>,
-    pub image_gen: Constrained<bool>,
-    pub image_edit: Constrained<bool>,
-    pub video_gen: Constrained<bool>,
     pub sandbox_auto_allow_bash: Constrained<bool>,
     pub sandbox_profile: Constrained<String>,
     pub respect_gitignore: Constrained<bool>,
@@ -1397,8 +1394,6 @@ pub struct Config {
         xai_grok_tools::implementations::grok_build::task::admission::LimitBehavior,
     #[serde(skip)]
     pub workflow_max_concurrent_agents: usize,
-    #[serde(skip)]
-    pub media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits,
     /// Per-subagent model ID overrides from `[subagents.models]` in config.toml.
     /// Keys are agent names, values are model IDs.
     /// Set alongside `subagents_enabled` from `SubagentsConfig::resolve()`.
@@ -1433,17 +1428,6 @@ pub struct Config {
     /// Resolved by [`crate::config::ToolsConfig::resolve`].
     #[serde(skip)]
     pub respect_gitignore: bool,
-    /// When `true` (and no valid `zdr_video_output_s3` bucket is set), `MvpAgent::prepare_video_gen_config` marks the video tools zdr-restricted.
-    /// They stay advertised but short-circuit at call time with setup guidance.
-    /// Resolved by [`crate::config::ToolsConfig::resolve`].
-    #[serde(skip)]
-    pub disable_zdr_incompatible_tools: bool,
-    /// S3 config for ZDR video output (presigned upload to team bucket).
-    /// Only used when `disable_zdr_incompatible_tools` is `true` and the config is valid.
-    /// Resolved by [`crate::config::ToolsConfig::resolve`].
-    #[serde(skip)]
-    pub zdr_video_output_s3:
-        Option<xai_grok_tools::implementations::grok_build::video_gen::ZdrVideoOutputS3Config>,
     /// Whether to enrich path-not-found errors with CWD reminders, "dropped repo folder" correction, and similar-name suggestions. Default `false`. Enabled via remote settings.
     /// Serialized to `config.json` on GCS so traces can distinguish which sessions had path-not-found hints active.
     #[serde(default)]
@@ -1677,8 +1661,6 @@ impl Default for Config {
             subagents_limit_behavior: Default::default(),
             workflow_max_concurrent_agents:
                 crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
-            media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits::default(
-            ),
             subagent_model_overrides: std::collections::HashMap::new(),
             subagent_toggle: std::collections::HashMap::new(),
             subagent_roles: std::collections::HashMap::new(),
@@ -1687,8 +1669,6 @@ impl Default for Config {
             todo_gate: false,
             laziness_debug_log: None,
             respect_gitignore: false,
-            disable_zdr_incompatible_tools: false,
-            zdr_video_output_s3: None,
             path_not_found_hints: false,
             memory_enabled_override: None,
             cli_subagents: None,
@@ -1707,7 +1687,7 @@ impl Default for Config {
     }
 }
 /// `[features]` booleans read straight off the raw TOML, with no [`Features`] field. The catch-all in [`Features`] types every such key, so this list only decides which of them are known enough not to warn.
-/// A key missing from it costs a visible false alarm, not a silent hole in the check. `image_edit` is left out on purpose, because only a pin sets it, so a plain entry in a user's config stays an unrecognized key.
+/// A key missing from it costs a visible false alarm, not a silent hole in the check.
 pub(crate) const UNMIRRORED_BOOLEAN_FEATURES: &[&str] = &[
     "campaigns",
     "remember_mode",
@@ -2157,7 +2137,7 @@ impl Config {
         );
     }
     /// Resolve all `#[serde(skip)]` runtime fields that have resolver functions.
-    /// Call immediately after `new_from_toml_cfg()`. Fields resolved: subagents base layers (6 fields) via `SubagentsConfig::resolve` respect_gitignore via `ToolsConfig::resolve` disable_zdr_incompatible_tools via `ToolsConfig::resolve` media_gen_batch_limits via `ToolsConfig::resolve_max_parallel_*` managed_mcps_enabled via `ManagedMcpsConfig::resolve` web_search_model / session_summary_model / image_description_model / prompt_suggest_model_pin via `ModelOverrideConfig::resolve` memory_config via typed `Config::resolve_memory` disable_web_search (CLI flag ORed with config.toml) storage_mode via `StorageMode::resolve` path_not_found_hints from remote_settings
+    /// Call immediately after `new_from_toml_cfg()`. Fields resolved: subagents base layers (6 fields) via `SubagentsConfig::resolve` respect_gitignore via `ToolsConfig::resolve` managed_mcps_enabled via `ManagedMcpsConfig::resolve` web_search_model / session_summary_model / image_description_model / prompt_suggest_model_pin via `ModelOverrideConfig::resolve` memory_config via typed `Config::resolve_memory` disable_web_search (CLI flag ORed with config.toml) storage_mode via `StorageMode::resolve` path_not_found_hints from remote_settings
     /// Note: `worktree_type` is resolved directly in `MvpAgent::new` via `resolve_worktree_type` since it's an agent-level field, not a Config field.
     pub fn resolve_runtime_fields(&mut self, ctx: &RuntimeResolutionContext<'_>) {
         self.cli_subagents = ctx.cli_subagents;
@@ -2197,26 +2177,6 @@ impl Config {
         self.respect_gitignore = match self.requirements.respect_gitignore.pinned() {
             Some(pinned) => pinned,
             None => tools.respect_gitignore,
-        };
-        self.disable_zdr_incompatible_tools = tools.disable_zdr_incompatible_tools;
-        self.zdr_video_output_s3 = tools.zdr_video_output_s3;
-        self.media_gen_batch_limits = xai_grok_tools::media_gen_limits::MediaGenBatchLimits {
-            max_image: crate::config::ToolsConfig::resolve_max_parallel_image_gen_calls(
-                std::env::var(crate::config::ToolsConfig::ENV_MAX_PARALLEL_IMAGE_GEN_CALLS)
-                    .ok()
-                    .as_deref(),
-                tools.media_gen.max_parallel_image_gen_calls,
-                ctx.remote_settings
-                    .and_then(|r| r.max_parallel_image_gen_calls),
-            ),
-            max_video: crate::config::ToolsConfig::resolve_max_parallel_video_gen_calls(
-                std::env::var(crate::config::ToolsConfig::ENV_MAX_PARALLEL_VIDEO_GEN_CALLS)
-                    .ok()
-                    .as_deref(),
-                tools.media_gen.max_parallel_video_gen_calls,
-                ctx.remote_settings
-                    .and_then(|r| r.max_parallel_video_gen_calls),
-            ),
         };
         let mcps = crate::config::ManagedMcpsConfig::resolve(
             ctx.raw_config,
@@ -2559,98 +2519,6 @@ impl Config {
             .feature_flag(ff)
             .default(self.is_feature_enabled(Feature::TurnSummary))
             .resolve()
-    }
-    /// `image_gen` (and `/imagine`). Default on.
-    /// `imagine_tools_disabled` is a remote force-off (env/config cannot re-enable).
-    /// Otherwise: requirement > env > `[features]` > remote > default.
-    pub(crate) fn resolve_image_gen(&self) -> Resolved<bool> {
-        use xai_grok_tools::implementations::grok_build::IMAGE_GEN_TOOL_NAME;
-        if let Some(pinned) = self.requirements.image_gen.pinned() {
-            return Resolved::new(pinned, ConfigSource::Requirement);
-        }
-        if self
-            .remote_settings
-            .as_ref()
-            .is_some_and(|s| s.imagine_tool_disabled(IMAGE_GEN_TOOL_NAME))
-        {
-            return Resolved::new(false, ConfigSource::Remote);
-        }
-        BoolFlag::env("GROK_IMAGE_GEN")
-            .config(self.features.image_gen)
-            .feature_flag(
-                self.remote_settings
-                    .as_ref()
-                    .and_then(|s| s.image_gen_enabled),
-            )
-            .default(true)
-            .resolve()
-    }
-    /// `image_edit` tool gate.
-    /// Same denylist / requirement pattern as [`Self::resolve_image_gen`]; no `[features]` key (defaults on).
-    pub(crate) fn resolve_image_edit(&self) -> Resolved<bool> {
-        use xai_grok_tools::implementations::grok_build::IMAGE_EDIT_TOOL_NAME;
-        if let Some(pinned) = self.requirements.image_edit.pinned() {
-            return Resolved::new(pinned, ConfigSource::Requirement);
-        }
-        if self
-            .remote_settings
-            .as_ref()
-            .is_some_and(|s| s.imagine_tool_disabled(IMAGE_EDIT_TOOL_NAME))
-        {
-            return Resolved::new(false, ConfigSource::Remote);
-        }
-        BoolFlag::env("GROK_IMAGE_EDIT").default(true).resolve()
-    }
-    /// `image_to_video` / `reference_to_video` (and `/imagine-video`). Default on.
-    /// Registered as a pair; denylisting either tool name (or `video_gen`) disables both.
-    /// Otherwise same precedence as [`Self::resolve_image_gen`].
-    pub(crate) fn resolve_video_gen(&self) -> Resolved<bool> {
-        use xai_grok_tools::implementations::grok_build::{
-            IMAGE_TO_VIDEO_TOOL_NAME, REFERENCE_TO_VIDEO_TOOL_NAME,
-        };
-        if let Some(pinned) = self.requirements.video_gen.pinned() {
-            return Resolved::new(pinned, ConfigSource::Requirement);
-        }
-        if self.remote_settings.as_ref().is_some_and(|s| {
-            s.imagine_tool_disabled(IMAGE_TO_VIDEO_TOOL_NAME)
-                || s.imagine_tool_disabled(REFERENCE_TO_VIDEO_TOOL_NAME)
-                || s.imagine_tool_disabled("video_gen")
-        }) {
-            return Resolved::new(false, ConfigSource::Remote);
-        }
-        BoolFlag::env("GROK_VIDEO_GEN")
-            .config(self.features.video_gen)
-            .feature_flag(
-                self.remote_settings
-                    .as_ref()
-                    .and_then(|s| s.video_gen_enabled),
-            )
-            .default(true)
-            .resolve()
-    }
-    /// Precedence: env `GROK_IMAGE_GEN_MODEL_OVERRIDE` > `[features] image_gen_model_override` config > remote settings `image_gen_model_override`.
-    /// `None` falls back to the default model (`grok-imagine-image-quality`).
-    pub(crate) fn resolve_image_gen_model_override(&self) -> Option<String> {
-        resolve_string_flag(
-            None,
-            "GROK_IMAGE_GEN_MODEL_OVERRIDE",
-            self.features.image_gen_model_override.as_deref(),
-            self.remote_settings
-                .as_ref()
-                .and_then(|s| s.image_gen_model_override.as_deref()),
-        )
-        .map(|r| r.value)
-    }
-    pub(crate) fn resolve_image_edit_model_override(&self) -> Option<String> {
-        resolve_string_flag(
-            None,
-            "GROK_IMAGE_EDIT_MODEL_OVERRIDE",
-            self.features.image_edit_model_override.as_deref(),
-            self.remote_settings
-                .as_ref()
-                .and_then(|s| s.image_edit_model_override.as_deref()),
-        )
-        .map(|r| r.value)
     }
     /// Goal mode (`/goal`) master switch. Default ON.
     /// Deployments that can't reach cli-chat-proxy `/v1/settings` never receive the remote settings `goal_enabled` flag.
@@ -4659,18 +4527,6 @@ pub struct Features {
     /// Early-session auto-title refresh. `None` defers to `resolve_title_refresh`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_refresh: Option<bool>,
-    /// `image_gen` / `/imagine`. `None` defers to env / remote / default (`true`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_gen: Option<bool>,
-    /// Video tools / `/imagine-video`. `None` defers to env / remote / default (`true`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub video_gen: Option<bool>,
-    /// `image_gen` Imagine model override.
-    /// `None`/empty defers to remote settings (`image_gen_model_override`) / env / default (`grok-imagine-image-quality`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_gen_model_override: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub image_edit_model_override: Option<String>,
     /// `summary` | `transcript` | `segments` (default).
     /// `None` defers to CLI / env (`GROK_COMPACTION_MODE`).
     /// Parsed via `CompactionMode::parse`.

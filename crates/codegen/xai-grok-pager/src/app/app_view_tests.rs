@@ -2172,18 +2172,8 @@ fn expected_tier_restricted_commands() -> Vec<String> {
         .collect()
 }
 /// The present/absent assertions must exercise the deny list, not incidental fail-closed hiding:
-/// `/imagine`, `/imagine-video` are `required_tools()`-gated, so advertise their tools (otherwise the registry fail-closes them).
 /// `/voice` is fail-closed hidden until the remote flag turns it on, so reveal it via the registry directly.
 fn advertise_media_tools(app: &mut AppView) {
-    app.welcome_prompt
-        .slash_controller
-        .registry_mut()
-        .set_available_tools(
-            ["image_gen", "image_to_video"]
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-        );
     app.welcome_prompt.set_voice_visible(true);
 }
 fn assert_tier_restricted_commands_absent(app: &AppView) {

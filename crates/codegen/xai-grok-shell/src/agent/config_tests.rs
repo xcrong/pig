@@ -287,33 +287,6 @@ fn parses_toolset_bash_float_timeout() {
     assert_eq!(cfg.toolset.bash.timeout_secs, Some(30.5));
 }
 #[test]
-fn resolve_runtime_fields_propagates_disable_zdr_incompatible_tools() {
-    fn ctx(raw: &toml::Value) -> RuntimeResolutionContext<'_> {
-        RuntimeResolutionContext {
-            raw_config: raw,
-            remote_settings: None,
-            is_headless: false,
-            cli_subagents: None,
-            cli_web_search_model: None,
-            cli_session_summary_model: None,
-            memory_enabled_override: None,
-            disable_web_search: false,
-            todo_gate: false,
-            laziness_debug_log: None,
-            storage_mode: None,
-        }
-    }
-    let empty: toml::Value = toml::Value::Table(toml::map::Map::new());
-    let mut cfg = Config::new_from_toml_cfg(&empty).unwrap();
-    cfg.resolve_runtime_fields(&ctx(&empty));
-    assert!(!cfg.disable_zdr_incompatible_tools);
-    let zdr: toml::Value =
-        toml::from_str("[tools]\ndisable_zdr_incompatible_tools = true").unwrap();
-    let mut cfg = Config::new_from_toml_cfg(&zdr).unwrap();
-    cfg.resolve_runtime_fields(&ctx(&zdr));
-    assert!(cfg.disable_zdr_incompatible_tools);
-}
-#[test]
 fn re_resolve_runtime_fields_refreshes_typed_memory_from_raw_config() {
     let initial: toml::Value = toml::from_str(
             "[memory]\nenabled = true\n[memory.search]\nmax_results = 6\n[memory_v2]\nenabled = false\ncapture_status_enabled = false",
@@ -3886,10 +3859,12 @@ fn non_boolean_value_fails_the_load_for_a_key_with_no_field() {
 }
 /// What no list could cover: a key this build has never heard of is typed all the same.
 /// That means the next boolean added to `[features]` is checked before anyone writes it down.
-/// `image_edit` takes the same path, which is why it is kept out of the list that only suppresses the unrecognized-key warning.
 #[test]
 fn non_boolean_value_fails_the_load_for_an_unregistered_key() {
-    for key in ["image_edit", "a_key_no_build_has_ever_had"] {
+    for key in [
+        "a_key_no_build_has_ever_had",
+        "another_key_no_build_has_had",
+    ] {
         let raw: toml::Value = toml::from_str(&format!("[features]\n{key} = \"false\"\n")).unwrap();
         let err = Config::new_from_toml_cfg(&raw)
             .expect_err(&format!("{key}: a quoted value must not read as absent"));
@@ -3976,7 +3951,7 @@ source = { source = "git", url = "https://github.com/corp/other.git" }
 /// The non-row keys that do have a field are turned away by serde, whatever it words the failure as.
 #[test]
 fn non_boolean_value_fails_the_load_for_a_key_with_a_field() {
-    for key in ["title_refresh", "image_gen", "video_gen"] {
+    for key in ["title_refresh"] {
         let raw: toml::Value = toml::from_str(&format!("[features]\n{key} = \"false\"\n")).unwrap();
         Config::new_from_toml_cfg(&raw)
             .expect_err(&format!("{key}: a quoted value must not read as absent"));
@@ -4596,164 +4571,6 @@ fn resolve_workflows_env_wins() {
         "env must be able to kill the default-on workflows"
     );
     unsafe { std::env::remove_var("GROK_WORKFLOWS") };
-}
-#[test]
-#[serial]
-fn resolve_image_gen_model_override_remote_settings_or_config() {
-    unsafe { std::env::remove_var("GROK_IMAGE_GEN_MODEL_OVERRIDE") };
-    let with = |config: Option<&str>, gb: Option<&str>| Config {
-        features: Features {
-            image_gen_model_override: config.map(String::from),
-            ..Default::default()
-        },
-        remote_settings: Some(crate::util::config::RemoteSettings {
-            image_gen_model_override: gb.map(String::from),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    assert_eq!(Config::default().resolve_image_gen_model_override(), None);
-    assert_eq!(
-        with(None, Some("grok-imagine-image")).resolve_image_gen_model_override(),
-        Some("grok-imagine-image".to_owned())
-    );
-    assert_eq!(
-        with(Some("grok-imagine-image-pro"), Some("grok-imagine-image"))
-            .resolve_image_gen_model_override(),
-        Some("grok-imagine-image-pro".to_owned())
-    );
-}
-#[test]
-#[serial]
-fn resolve_image_edit_model_override_remote_settings_or_config() {
-    unsafe { std::env::remove_var("GROK_IMAGE_EDIT_MODEL_OVERRIDE") };
-    let with = |config: Option<&str>, gb: Option<&str>| Config {
-        features: Features {
-            image_edit_model_override: config.map(String::from),
-            ..Default::default()
-        },
-        remote_settings: Some(crate::util::config::RemoteSettings {
-            image_edit_model_override: gb.map(String::from),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    assert_eq!(Config::default().resolve_image_edit_model_override(), None);
-    assert_eq!(
-        with(None, Some("grok-imagine-image")).resolve_image_edit_model_override(),
-        Some("grok-imagine-image".to_owned())
-    );
-    assert_eq!(
-        with(Some("grok-imagine-image-pro"), Some("grok-imagine-image"))
-            .resolve_image_edit_model_override(),
-        Some("grok-imagine-image-pro".to_owned())
-    );
-    let gen_only = Config {
-        remote_settings: Some(crate::util::config::RemoteSettings {
-            image_gen_model_override: Some("grok-imagine-image".to_owned()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    assert_eq!(gen_only.resolve_image_edit_model_override(), None);
-}
-#[test]
-#[serial]
-fn imagine_tools_disabled_gates_image_edit() {
-    unsafe { std::env::remove_var("GROK_IMAGE_EDIT") };
-    let with_list = |tools: Vec<&str>| Config {
-        remote_settings: Some(crate::util::config::RemoteSettings {
-            imagine_tools_disabled: Some(tools.into_iter().map(String::from).collect()),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    unsafe { std::env::set_var("GROK_IMAGE_EDIT", "1") };
-    let off = with_list(vec!["image_edit"]).resolve_image_edit();
-    assert!(!off.value);
-    assert_eq!(off.source, ConfigSource::Remote);
-    unsafe { std::env::remove_var("GROK_IMAGE_EDIT") };
-    assert!(with_list(vec!["image_to_video"]).resolve_image_edit().value);
-    assert!(Config::default().resolve_image_edit().value);
-}
-#[test]
-#[serial]
-fn resolve_image_gen_gates() {
-    unsafe { std::env::remove_var("GROK_IMAGE_GEN") };
-    assert!(Config::default().resolve_image_gen().value);
-    assert!(
-        !Config {
-            features: Features {
-                image_gen: Some(false),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-        .resolve_image_gen()
-        .value
-    );
-    assert!(
-        !Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
-                image_gen_enabled: Some(false),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-        .resolve_image_gen()
-        .value
-    );
-    unsafe { std::env::set_var("GROK_IMAGE_GEN", "1") };
-    let denied = Config {
-        remote_settings: Some(crate::util::config::RemoteSettings {
-            imagine_tools_disabled: Some(vec!["image_gen".into()]),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }
-    .resolve_image_gen();
-    assert!(!denied.value);
-    assert_eq!(denied.source, ConfigSource::Remote);
-    unsafe { std::env::remove_var("GROK_IMAGE_GEN") };
-}
-#[test]
-#[serial]
-fn resolve_video_gen_gates() {
-    unsafe { std::env::remove_var("GROK_VIDEO_GEN") };
-    assert!(Config::default().resolve_video_gen().value);
-    assert!(
-        !Config {
-            features: Features {
-                video_gen: Some(false),
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-        .resolve_video_gen()
-        .value
-    );
-    assert!(
-        !Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
-                video_gen_enabled: Some(false),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-        .resolve_video_gen()
-        .value
-    );
-    assert!(
-        !Config {
-            remote_settings: Some(crate::util::config::RemoteSettings {
-                imagine_tools_disabled: Some(vec!["image_to_video".into()]),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-        .resolve_video_gen()
-        .value
-    );
 }
 /// Clear every env var the goal/companion resolvers read so tests start from a known baseline regardless of run order.
 fn clear_goal_envs() {

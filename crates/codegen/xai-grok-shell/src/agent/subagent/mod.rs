@@ -214,7 +214,6 @@ pub(crate) struct SubagentSpawnContext {
     pub parent_depth: u32,
     pub subagents_max_depth: u32,
     pub workflow_max_concurrent_agents: usize,
-    pub media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits,
     /// Inference idle timeout (secs), resolved from the parent's model config at spawn-context creation time.
     pub inference_idle_timeout_secs: u64,
     pub parent_compaction: crate::session::CompactionPins,
@@ -249,8 +248,6 @@ pub(crate) struct SubagentSpawnContext {
     pub memory_mode: crate::config::MemoryMode,
     pub web_search_sampling_config: Option<xai_grok_sampler::SamplerConfig>,
     pub web_fetch_config: xai_grok_tools::implementations::grok_build::web_fetch::WebFetchConfig,
-    pub image_gen_config: xai_grok_tools::implementations::grok_build::image_gen::ImageGenConfig,
-    pub video_gen_config: xai_grok_tools::implementations::grok_build::video_gen::VideoGenConfig,
     pub app_builder_deployer_config:
         xai_grok_tools::implementations::grok_build::app_builder::AppBuilderDeployerConfig,
     pub write_file_enabled: bool,

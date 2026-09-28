@@ -9,12 +9,6 @@ pub use xai_grok_auth::bearer_fragment::BEARER_SUFFIX_LEN;
 /// Which tool endpoint produced the 401.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
 pub enum ToolConsumer {
-    #[strum(serialize = "ImageGen")]
-    ImageGen,
-    #[strum(serialize = "VideoGen.start")]
-    VideoGenStart,
-    #[strum(serialize = "VideoGen.poll")]
-    VideoGenPoll,
     #[strum(serialize = "WebSearch")]
     WebSearch,
 }
@@ -47,9 +41,6 @@ mod tests {
 
     #[test]
     fn tool_consumer_as_str_stable_identifiers() {
-        assert_eq!(ToolConsumer::ImageGen.as_ref(), "ImageGen");
-        assert_eq!(ToolConsumer::VideoGenStart.as_ref(), "VideoGen.start");
-        assert_eq!(ToolConsumer::VideoGenPoll.as_ref(), "VideoGen.poll");
         assert_eq!(ToolConsumer::WebSearch.as_ref(), "WebSearch");
     }
 }

@@ -58,10 +58,6 @@ impl ToolKind {
             ToolKind::EnterPlan => "Enter Plan Mode",
             ToolKind::ExitPlan => "Exit Plan Mode",
             ToolKind::AskUser => "Ask User",
-            ToolKind::ImageGen => "Generate Image",
-            ToolKind::VideoGen => "Generate Video",
-            ToolKind::ImageToVideo => "Generate Video",
-            ToolKind::ReferenceToVideo => "Generate Video",
             ToolKind::DeployApp => "Deploy App",
             ToolKind::InitOrUpdateApp => "Init or Update App",
             ToolKind::SearchTool => "Search Tools",
@@ -102,10 +98,6 @@ impl ToolKind {
             | ToolKind::Skill
             | ToolKind::Task
             | ToolKind::ActiveAgentMessage
-            | ToolKind::ImageGen
-            | ToolKind::VideoGen
-            | ToolKind::ImageToVideo
-            | ToolKind::ReferenceToVideo
             | ToolKind::DeployApp
             | ToolKind::InitOrUpdateApp
             | ToolKind::SearchTool
@@ -134,10 +126,6 @@ pub const WRITING_TOOL_WIRE_NAMES: &[(&str, ToolKind)] = &[
     ("todowrite", ToolKind::Plan),
     ("workflow", ToolKind::Workflow),
     ("send_feedback", ToolKind::Feedback),
-    ("image_gen", ToolKind::ImageGen),
-    ("image_edit", ToolKind::ImageGen),
-    ("image_to_video", ToolKind::ImageToVideo),
-    ("reference_to_video", ToolKind::ReferenceToVideo),
     ("ask_user_question", ToolKind::AskUser),
 ];
 /// [`ToolKind`] of a wire name in [`WRITING_TOOL_WIRE_NAMES`]. Keyed by wire name because that is
@@ -264,10 +252,6 @@ mod tests {
         covered(crate::implementations::grok_build::BashTool);
         covered(crate::implementations::grok_build::TodoWriteTool);
         covered(crate::implementations::grok_build::WorkflowTool);
-        covered(crate::implementations::grok_build::ImageGenTool);
-        covered(crate::implementations::grok_build::ImageEditTool);
-        covered(crate::implementations::grok_build::ImageToVideoTool);
-        covered(crate::implementations::grok_build::ReferenceToVideoTool);
         covered(crate::implementations::grok_build::AskUserQuestionTool);
         covered(crate::implementations::opencode::OpenCodeWriteTool);
         covered(crate::implementations::opencode::OpenCodeEditTool);

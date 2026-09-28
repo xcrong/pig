@@ -2016,12 +2016,6 @@ mod mcp_connecting_reminder_tests;
 #[path = "acp_session_tests/mcp_failed_reminder_tests.rs"]
 mod mcp_failed_reminder_tests;
 #[cfg(test)]
-#[path = "acp_session_tests/media_gen_auth_retry_tests.rs"]
-mod media_gen_auth_retry_tests;
-#[cfg(test)]
-#[path = "acp_session_tests/media_gen_batch_limit_tests.rs"]
-mod media_gen_batch_limit_tests;
-#[cfg(test)]
 #[path = "acp_session_tests/memory_config_tests.rs"]
 mod memory_config_tests;
 #[cfg(test)]

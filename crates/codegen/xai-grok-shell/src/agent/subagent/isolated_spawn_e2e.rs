@@ -71,8 +71,6 @@ fn spawn_ctx(parent_cwd: PathBuf) -> SubagentSpawnContext {
         memory_mode: crate::config::MemoryMode::Legacy,
         web_search_sampling_config: None,
         web_fetch_config: Default::default(),
-        image_gen_config: Default::default(),
-        video_gen_config: Default::default(),
         app_builder_deployer_config: Default::default(),
         write_file_enabled: true,
         active_agent_messages_enabled: false,
@@ -108,7 +106,6 @@ fn spawn_ctx(parent_cwd: PathBuf) -> SubagentSpawnContext {
         subagents_max_depth: xai_grok_tools::implementations::grok_build::task::MAX_SUBAGENT_DEPTH,
         workflow_max_concurrent_agents:
             crate::session::workflow::host_service::DEFAULT_WORKFLOW_MAX_CONCURRENT_AGENTS,
-        media_gen_batch_limits: xai_grok_tools::media_gen_limits::MediaGenBatchLimits::default(),
         inference_idle_timeout_secs: 600,
         parent_compaction: crate::session::CompactionPins::default(),
         auto_compact_threshold_tiers: super::AutoCompactThresholdTiers::default(),

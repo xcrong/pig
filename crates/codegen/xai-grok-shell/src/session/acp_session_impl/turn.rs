@@ -2707,7 +2707,6 @@ impl SessionActor {
         let transient_retry_enabled = self.transient_retry_enabled;
         let mut turn_span_totals = TurnSpanTotals::default();
         let mut structured_output_retries: u32 = 0;
-        let mut media_gen_resamples: u32 = 0;
         let structured_output_validator = json_schema.as_ref().map(|schema| {
             jsonschema::validator_for(schema).map_err(|e| format!("invalid output schema: {e}"))
         });
@@ -3414,47 +3413,6 @@ impl SessionActor {
                 ));
             }
             let mut tool_calls = response.tool_calls().to_vec();
-            let over_cap = self.media_gen_over_cap(&tool_calls);
-            if xai_grok_tools::media_gen_limits::should_resample_egregious(
-                &over_cap,
-                media_gen_resamples,
-                MAX_MEDIA_GEN_OVER_CAP_RESAMPLES,
-            ) {
-                media_gen_resamples += 1;
-                let egregious: Vec<_> = over_cap.into_iter().filter(|o| o.is_egregious()).collect();
-                let reminder = xai_grok_tools::media_gen_limits::resample_reminder(&egregious);
-                tracing::warn!(
-                    session_id = %self.session_info.id,
-                    resample = media_gen_resamples,
-                    "media_gen 2x over-cap — discarding generation and resampling"
-                );
-                xai_grok_telemetry::unified_log::info(
-                    "shell.media_gen.batch_resampled",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "over": egregious.iter().map(|o| serde_json::json!({
-                            "tool_name": o.name,
-                            "total": o.total,
-                            "max": o.max,
-                        })).collect::<Vec<_>>(),
-                        "attempt": media_gen_resamples,
-                        "max_retries": MAX_MEDIA_GEN_OVER_CAP_RESAMPLES,
-                    })),
-                );
-                self.send_xai_notification(XaiSessionUpdate::RetryState(
-                    crate::extensions::notification::RetryState::Retrying {
-                        attempt: media_gen_resamples,
-                        max_retries: MAX_MEDIA_GEN_OVER_CAP_RESAMPLES,
-                        reason: "Too many parallel media-gen calls; retrying".to_string(),
-                        error_type: None,
-                    },
-                ))
-                .await;
-                self.push_system_reminder(&reminder);
-                self.turn_phases.discard_uncommitted_first_token();
-                self.turn_phases.discard_uncommitted_first_meaningful();
-                continue;
-            }
             metrics_drop_guard.record_model_response(tool_calls.len());
             if !tool_calls.is_empty() {
                 self.record_turn_first_token(None);
@@ -3865,8 +3823,6 @@ impl SessionActor {
         }
     }
 }
-/// Discard an egregious (2x cap) media-gen generation and re-sample this many times; later over-caps in the same turn use first-K.
-const MAX_MEDIA_GEN_OVER_CAP_RESAMPLES: u32 = 1;
 /// Tool kinds whose identical repeats are almost never productive, so they get tighter thresholds than everything else.
 /// A production turn repeated one `ToolKind::Plan` call (`todo_write`) with byte-identical arguments 12 times (224 in the turn).
 /// Names are client-renameable and vary by toolset (`read_file`, `hashline_read`, `Read`; `todo_write`, `todowrite`); the registered kind does not.

@@ -12,19 +12,12 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use xai_computer_hub_sdk::{AuthCredential, SharedAuthProvider};
-use xai_grok_tools::implementations::grok_build::image_gen::ImageGenClient;
-use xai_grok_tools::implementations::grok_build::video_gen::VideoGenClient;
 use xai_grok_tools::implementations::web_search::WebSearchConfig;
 use xai_grok_tools::implementations::web_search::client::WebSearchClient;
 use xai_grok_tools::registry::types::{FinalizedToolset, ToolServerConfig};
 use xai_tool_protocol::SessionId;
 /// The tools a hub-only host must not offer: each one calls the API with the server's own credential.
-const API_BACKED_TOOLS: &[&str] = &[
-    "web_search",
-    "image_gen",
-    "image_to_video",
-    "reference_to_video",
-];
+const API_BACKED_TOOLS: &[&str] = &["web_search"];
 const API_BASE_URL: &str = "https://api.invalid/v1";
 /// Tool ids without their namespace, in catalog order.
 fn unqualified_ids(config: &ToolServerConfig) -> Vec<&str> {
@@ -111,8 +104,6 @@ async fn only_a_sandbox_session_carries_the_credential() {
             factory.build_terminal_backend().backend().clone(),
         );
         assert_eq!(expected, ctx.auth_provider.is_some(), "{host:?}");
-        assert_eq!(expected, ctx.image_gen_config.has_credentials(), "{host:?}");
-        assert_eq!(expected, ctx.video_gen_config.is_enabled(), "{host:?}");
         assert_eq!(
             expected,
             matches!(ctx.web_search_config, WebSearchConfig::Enabled { .. }),
@@ -125,8 +116,6 @@ async fn only_a_sandbox_session_carries_the_credential() {
             resources.contains::<SharedAuthProvider>(),
             "{host:?}"
         );
-        assert_eq!(expected, resources.contains::<ImageGenClient>(), "{host:?}");
-        assert_eq!(expected, resources.contains::<VideoGenClient>(), "{host:?}");
         assert_eq!(
             expected,
             resources.contains::<WebSearchClient>(),
@@ -186,25 +175,15 @@ fn a_daemon_host_serves_pinned_toolsets_only_and_can_neither_upload_nor_deploy()
         let resolver = bind_resolver_fixture(&handle);
         let served = resolver(
             SessionId::new("daemon-pinned").unwrap(),
-            Some(pinned(&[
-                "GrokBuild:read_file",
-                "GrokBuild:web_search",
-                "GrokBuild:image_gen",
-            ])),
+            Some(pinned(&["GrokBuild:read_file", "GrokBuild:web_search"])),
         )
         .await
         .expect("a pinned bind is served");
         let names = handler_names(&served);
         assert!(names.iter().any(|n| n == "read_file"), "{names:?}");
-        assert!(
-            !names.iter().any(|n| n == "web_search" || n == "image_gen"),
-            "{names:?}"
-        );
+        assert!(!names.iter().any(|n| n == "web_search"), "{names:?}");
         assert_eq!(
-            vec![
-                "GrokBuild:image_gen".to_owned(),
-                "GrokBuild:web_search".to_owned()
-            ],
+            vec!["GrokBuild:web_search".to_owned()],
             served.unserved_tool_ids
         );
         assert_eq!(None, served.resolve_error);
