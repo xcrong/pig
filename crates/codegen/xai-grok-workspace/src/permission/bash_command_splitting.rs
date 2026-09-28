@@ -1368,7 +1368,7 @@ mod tests {
             })
         );
 
-        let environment_key_command = "XAI_API_KEY='xai-some-key' cargo run --bin xai-grok-pager";
+        let environment_key_command = "XAI_API_KEY='xai-some-key' cargo run --bin pig";
         assert_eq!(
             primary_command_from_script(environment_key_command),
             Some(BashCommandHighlights {
@@ -1377,7 +1377,7 @@ mod tests {
                     "cargo".to_owned(),
                     "run".to_owned(),
                     "--bin".to_owned(),
-                    "xai-grok-pager".to_owned()
+                    "pig".to_owned()
                 ],
                 suffix: vec![],
             })
@@ -1406,7 +1406,7 @@ mod tests {
             })
         );
 
-        let redirection_command = "cargo build --bin xai-grok-pager 2>&1";
+        let redirection_command = "cargo build --bin pig 2>&1";
         assert_eq!(
             primary_command_from_script(redirection_command),
             Some(BashCommandHighlights {
@@ -1415,7 +1415,7 @@ mod tests {
                     "cargo".to_owned(),
                     "build".to_owned(),
                     "--bin".to_owned(),
-                    "xai-grok-pager".to_owned(),
+                    "pig".to_owned(),
                 ],
                 suffix: vec!["2>&1".to_owned(),],
             })

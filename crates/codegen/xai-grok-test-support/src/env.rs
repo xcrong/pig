@@ -215,14 +215,14 @@ pub fn grok_binary() -> PathBuf {
         return std::path::absolute(&p).unwrap_or(p);
     }
 
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_xai-grok-pager") {
+    if let Ok(path) = std::env::var("CARGO_BIN_EXE_pig") {
         let p = PathBuf::from(path);
         if p.exists() {
             return p;
         }
     }
 
-    ensure_cargo_bin("xai-grok-pager-bin", "xai-grok-pager")
+    ensure_cargo_bin("xai-grok-pager-bin", "pig")
 }
 
 pub fn git_workdir() -> TestSandbox {

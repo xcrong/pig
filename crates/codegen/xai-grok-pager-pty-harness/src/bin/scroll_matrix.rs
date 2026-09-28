@@ -47,7 +47,7 @@ struct Cli {
     artifacts: PathBuf,
 
     /// Pager binary.
-    /// Defaults to PAGER_BINARY, CARGO_BIN_EXE_xai-grok-pager, or a locally-built debug binary.
+    /// Defaults to PAGER_BINARY, CARGO_BIN_EXE_pig, or a locally-built debug binary.
     #[arg(long, value_name = "PATH")]
     binary: Option<PathBuf>,
 }
