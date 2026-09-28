@@ -4,8 +4,9 @@
 # GitHub Actions 只会运行 tag 所指提交树里存在的工作流，因此 main 上打的
 # tag 不会触发这里。只有从 pig 分支打出的 `pig-v*` tag 会触发。
 #
-# 用法：git tag pig-v1.0.41 && git push origin pig-v1.0.41
-# 版本号与官方版本对齐：tag 后缀即上游版本号，也就是
+# 用法：git tag pig-v1.0.42-1 && git push origin pig-v1.0.42-1
+# 稳定版版本号与上游版本对齐；上游下一版本发布前，可以使用
+# `pig-v1.0.42-1`、`pig-v1.0.42-2` 等预发布序列。tag 后缀即
 # crates/codegen/xai-grok-pager-bin/Cargo.toml 的 version。
 # 它会被注入为 GROK_VERSION 编进二进制（`pig --version` 可见）。
 
@@ -124,4 +125,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: pig-*
