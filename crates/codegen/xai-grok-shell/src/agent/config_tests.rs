@@ -2791,7 +2791,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
     assert_eq!(info.inference_idle_timeout_secs, Some(120));
 }
 #[test]
-fn telemetry_config_parses_custom_values_from_toml() {
+fn telemetry_config_ignores_removed_first_party_keys() {
     let raw: toml::Value = toml::from_str(
         r#"
             [telemetry]
@@ -2799,20 +2799,16 @@ fn telemetry_config_parses_custom_values_from_toml() {
             events_api_key = "custom-key"
             mixpanel_token = "custom-token"
             mixpanel_enabled = false
+            trace_upload = true
+            otel_endpoint = "https://collector.example:4318"
             "#,
     )
     .unwrap();
     let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
     assert_eq!(
-        cfg.telemetry.events_url.as_deref(),
-        Some("https://custom.example.com/events")
+        cfg.telemetry.otel_endpoint.as_deref(),
+        Some("https://collector.example:4318")
     );
-    assert_eq!(cfg.telemetry.events_api_key.as_deref(), Some("custom-key"));
-    assert_eq!(
-        cfg.telemetry.mixpanel_token.as_deref(),
-        Some("custom-token")
-    );
-    assert!(!cfg.telemetry.mixpanel_enabled);
 }
 #[test]
 fn telemetry_otel_timeout_accepts_toml_integer_and_string() {
@@ -2845,9 +2841,9 @@ fn telemetry_otel_timeout_accepts_toml_integer_and_string() {
         Some("60000")
     );
 }
-/// Empty/whitespace values must become `None`, not reach the HTTP client as empty strings.
+/// Removed first-party keys must parse without effect, not reach any client.
 #[test]
-fn telemetry_empty_string_disables_sink() {
+fn telemetry_removed_keys_parse_without_effect() {
     let raw: toml::Value = toml::from_str(
         r#"
             [telemetry]
@@ -2858,28 +2854,31 @@ fn telemetry_empty_string_disables_sink() {
     )
     .unwrap();
     let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
-    assert!(cfg.telemetry.events_url.is_none());
-    assert!(cfg.telemetry.events_api_key.is_none());
-    assert!(cfg.telemetry.mixpanel_token.is_none());
+    assert_eq!(
+        cfg.telemetry.otel_endpoint, None,
+        "no first-party sink may be configured"
+    );
 }
 #[test]
 fn telemetry_partial_override_retains_defaults() {
     let raw: toml::Value = toml::from_str(
         r#"
             [telemetry]
-            events_url = "https://my-proxy/events"
+            otel_endpoint = "https://my-collector/events"
             "#,
     )
     .unwrap();
     let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
     assert_eq!(
-        cfg.telemetry.events_url.as_deref(),
-        Some("https://my-proxy/events")
+        cfg.telemetry.otel_endpoint.as_deref(),
+        Some("https://my-collector/events")
     );
     let defaults = TelemetryConfig::default();
-    assert_eq!(cfg.telemetry.events_api_key, defaults.events_api_key);
-    assert_eq!(cfg.telemetry.mixpanel_token, defaults.mixpanel_token);
-    assert_eq!(cfg.telemetry.mixpanel_enabled, defaults.mixpanel_enabled);
+    assert_eq!(
+        cfg.telemetry.otel_metrics_exporter,
+        defaults.otel_metrics_exporter
+    );
+    assert_eq!(cfg.telemetry.otel_timeout, defaults.otel_timeout);
 }
 #[test]
 fn auth_alias_maps_to_grok_com_config() {
@@ -4359,7 +4358,6 @@ fn resolve_doom_loop_recovery_clamps_tunables() {
 #[serial]
 fn resolve_trace_upload_disabled_when_telemetry_off_despite_remote_flag() {
     unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    unsafe { std::env::remove_var("GROK_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
     cfg.features.telemetry = Some(TelemetryMode::Disabled);
     cfg.remote_settings = Some(crate::util::config::RemoteSettings {
@@ -4367,34 +4365,33 @@ fn resolve_trace_upload_disabled_when_telemetry_off_despite_remote_flag() {
         ..Default::default()
     });
     let r = cfg.resolve_trace_upload();
-    assert!(!r.value, "telemetry off must force trace upload off");
+    assert!(
+        !r.value,
+        "trace upload is always off (no first-party pipeline)"
+    );
     assert!(!cfg.is_trace_upload_enabled());
 }
 #[test]
 #[serial]
-fn resolve_trace_upload_explicit_config_wins_over_telemetry_off() {
+fn resolve_trace_upload_always_off_despite_config_and_pins() {
     unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    unsafe { std::env::remove_var("GROK_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
     cfg.features.telemetry = Some(TelemetryMode::Disabled);
-    cfg.telemetry.trace_upload = Some(true);
     let r = cfg.resolve_trace_upload();
     assert!(
-        r.value,
-        "explicit trace_upload config wins over telemetry off"
+        !r.value,
+        "trace upload stays off without a first-party pipeline"
     );
-    assert_eq!(r.source, ConfigSource::Config);
-    cfg.telemetry.trace_upload = None;
+    assert_eq!(r.source, ConfigSource::Default);
     cfg.requirements
         .trace_upload
         .pin(true, crate::config::RequirementSource::Unknown);
-    assert!(cfg.resolve_trace_upload().value);
+    assert!(!cfg.resolve_trace_upload().value);
 }
 #[test]
 #[serial]
-fn trace_upload_decision_debug_reports_winning_source() {
+fn trace_upload_decision_debug_reports_always_off() {
     unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    unsafe { std::env::remove_var("GROK_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
     cfg.features.telemetry = Some(TelemetryMode::Disabled);
     cfg.remote_settings = Some(crate::util::config::RemoteSettings {
@@ -4415,43 +4412,20 @@ fn trace_upload_decision_debug_reports_winning_source() {
         Some(&serde_json::json!(serde_json::json!("false")))
     );
     assert_eq!(
-        d.get("in_remote_trace_upload_enabled"),
-        Some(&serde_json::json!(serde_json::json!(true)))
-    );
-    assert_eq!(
         d.get("has_remote_settings"),
-        Some(&serde_json::json!(serde_json::json!(true)))
-    );
-    cfg.telemetry.trace_upload = Some(true);
-    let d = cfg.trace_upload_decision_debug();
-    assert_eq!(
-        d.get("trace_upload"),
-        Some(&serde_json::json!(serde_json::json!(true)))
-    );
-    assert_eq!(
-        d.get("trace_upload_source"),
-        Some(&serde_json::json!(serde_json::json!("config")))
-    );
-    assert_eq!(
-        d.get("in_cfg_telemetry_trace_upload"),
         Some(&serde_json::json!(serde_json::json!(true)))
     );
 }
 #[test]
 #[serial]
-fn resolve_trace_upload_honors_config_when_telemetry_on() {
+fn resolve_trace_upload_stays_off_when_telemetry_on() {
     unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
     unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
-    unsafe { std::env::remove_var("GROK_TELEMETRY_TRACE_UPLOAD") };
     let mut cfg = Config::default();
     cfg.features.telemetry = Some(TelemetryMode::Enabled);
-    cfg.telemetry.trace_upload = Some(false);
     let r = cfg.resolve_trace_upload();
     assert!(!r.value);
-    assert_eq!(r.source, ConfigSource::Config);
-    cfg.telemetry.trace_upload = None;
-    let r = cfg.resolve_trace_upload();
-    assert!(r.value, "defaults on when telemetry fully enabled");
+    assert_eq!(r.source, ConfigSource::Default);
 }
 #[test]
 #[serial]
@@ -5476,7 +5450,7 @@ fn config_accepts_all_known_sections() {
             auto_compact_threshold_percent = 85
             [telemetry]
             enabled = true
-            trace_upload = true
+            otel_enabled = true
             [agent]
             name = "custom"
             [skills]

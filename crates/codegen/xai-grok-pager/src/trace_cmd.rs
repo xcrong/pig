@@ -60,13 +60,10 @@ pub async fn run(args: TraceArgs, agent_config: &AgentConfig) -> Result<()> {
     if !agent_config.is_trace_upload_enabled() {
         tracing::warn!(
             session_id = %args.session_id,
-            "trace_cmd: trace uploads disabled in config"
+            "trace_cmd: trace uploads disabled (no first-party pipeline)"
         );
         if !args.json {
-            eprintln!(
-                "Trace uploads disabled. Set [telemetry] trace_upload = true in {}",
-                crate::util::display_user_grok_path(xai_grok_config::USER_CONFIG_FILENAME)
-            );
+            eprintln!("Trace uploads are disabled in Pig Agent.");
             eprintln!("Falling back to local export.");
         }
         return run_export(
@@ -186,7 +183,7 @@ struct TraceConfigSnapshot {
 fn build_trace_config_snapshot(agent_config: &AgentConfig) -> TraceConfigSnapshot {
     TraceConfigSnapshot {
         trace_upload_enabled: agent_config.is_trace_upload_enabled(),
-        telemetry_trace_upload: agent_config.telemetry.trace_upload,
+        telemetry_trace_upload: None,
         custom_upload_url: agent_config.endpoints.trace_upload_url.is_some(),
         bucket_url_source: match agent_config.endpoints.resolve_trace_bucket_url() {
             Some(resolved) => format!("{}", resolved.source),

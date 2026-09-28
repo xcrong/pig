@@ -3,7 +3,7 @@ license = "Apache-2.0"
 name = "xai-grok-telemetry"
 version = "0.1.0"
 edition.workspace = true
-description = "Telemetry engine: product events + Mixpanel emission + Sentry error reporting for Pig Agent sessions"
+description = "Telemetry engine: user-owned external OTEL and local observability for Pig Agent sessions"
 authors = ["xAI"]
 
 [features]
@@ -31,31 +31,16 @@ git2 = { version = "0.20", default-features = false, features = [
 ] }
 reqwest = { workspace = true }
 xai-grok-secrets = { workspace = true }
-xai-mixpanel = { workspace = true }
 xai-grok-config = { workspace = true }
 xai-grok-extra-ca = { workspace = true }
 xai-grok-sampler = { workspace = true }
 xai-token-estimation = { workspace = true }
 xai-dirs = { workspace = true }
 xai-grok-env = { workspace = true }
-sentry = { version = "0.42.0", default-features = false, features = [
-    "panic",
-    "anyhow",
-    "tracing",
-    "backtrace",
-    "contexts",
-    "reqwest",
-    "rustls",
-    "debug-images",
-] }
 # Single cross-edge: `events::ToolCallCompleted.outcome` reuses
 # `xai_grok_session_events::types::ToolOutcome` so the local event log and
 # the product telemetry event share the same enum surface.
 xai-grok-session-events = { workspace = true }
-# `session_metrics::TraceUploadReason::from_upload_method` matches on the shared
-# `UploadMethod` enum (small, dependency-light types crate) so the reason->wire
-# mapping lives next to the trace-upload lifecycle events it labels.
-xai-file-utils = { path = "../xai-file-utils" }
 xai-tty-utils = { workspace = true }
 xai-grok-version = { workspace = true }
 whoami = { workspace = true }

@@ -1284,24 +1284,6 @@ fn unmapped_events_produce_nothing() {
     assert!(ev.external_record().is_none());
 }
 
-/// Events emitted exclusively via `EmitterOrigin::Workspace` (`log_session_event_with_origin`) must not carry an external
-/// mapping. The fan-out hook deliberately lives only in the Shell-origin wrappers. The workspace-only events today are
-/// the xai-grok-workspace sampler events.
-#[test]
-fn workspace_only_events_have_no_external_mapping() {
-    use crate::events::TelemetryEvent as _;
-    // Trace-upload events stay in internal session metrics
-    assert!(
-        crate::session_metrics::TraceUploadAttempted {
-            session_id: String::new(),
-            turn_number: 0,
-            upload_method: "proxy".into(),
-        }
-        .external_record()
-        .is_none()
-    );
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Emit-path behavior: ctx injection, sequence, identity, truncation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1580,10 +1562,10 @@ fn deny_tool_decision_exports_gated_params_and_full_command() {
             tool_use_id: Some("call-deny-1".into()),
         },
     };
-    let mixpanel = serde_json::to_string(&ev).unwrap();
+    let payload = serde_json::to_string(&ev).unwrap();
     assert!(
-        !mixpanel.contains("ls -la") && !mixpanel.contains("call-deny-1"),
-        "Mixpanel must not receive deny-path tool args: {mixpanel}"
+        !payload.contains("ls -la") && !payload.contains("call-deny-1"),
+        "external collector must not receive deny-path tool args: {payload}"
     );
     let off = build(gates_off());
     emit_event_into(&off, &ev);
@@ -1648,12 +1630,12 @@ fn content_without_details_exports_bodies_not_preview() {
     ev.tool_use_id = Some("call-c".into());
     ev.tool_output = Some("CANARY_OUTPUT".into());
     ev.error_message = Some("CANARY_ERR".into());
-    let mixpanel = serde_json::to_string(&ev).unwrap();
+    let payload = serde_json::to_string(&ev).unwrap();
     assert!(
-        !mixpanel.contains("CANARY_OUTPUT")
-            && !mixpanel.contains("CANARY_ERR")
-            && !mixpanel.contains("echo hi"),
-        "Mixpanel must skip content fields: {mixpanel}"
+        !payload.contains("CANARY_OUTPUT")
+            && !payload.contains("CANARY_ERR")
+            && !payload.contains("echo hi"),
+        "external collector must skip content fields: {payload}"
     );
     let stream = build(ContentGates {
         log_tool_content: true,
@@ -1688,7 +1670,7 @@ fn command_name_is_always_on_metadata() {
             command_name: Some("compact".into()),
         },
     );
-    let mixpanel = serde_json::to_string(&events::PromptSubmitted {
+    let payload = serde_json::to_string(&events::PromptSubmitted {
         prompt_length: 6,
         model_id: "grok-4".into(),
         client_identifier: None,
@@ -1698,8 +1680,8 @@ fn command_name_is_always_on_metadata() {
     })
     .unwrap();
     assert!(
-        !mixpanel.contains("CANARY_PROMPT") && !mixpanel.contains("compact"),
-        "Mixpanel must skip prompt/command_name: {mixpanel}"
+        !payload.contains("CANARY_PROMPT") && !payload.contains("compact"),
+        "external collector must skip prompt/command_name: {payload}"
     );
     let exported = exported_events(&stream);
     let Some(ev) = exported.first() else {

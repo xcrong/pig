@@ -75,8 +75,6 @@ impl From<Option<xai_chat_state::TurnCapture>> for TurnMessages {
         }
     }
 }
-/// Why trace uploads are enabled or disabled for a given prompt.
-pub(crate) use xai_grok_telemetry::session_metrics::TraceUploadReason;
 #[derive(Clone)]
 pub(crate) struct PromptTraceContext {
     pub(crate) gcs_config: TraceExportConfig,
@@ -262,14 +260,6 @@ pub(crate) async fn complete_prompt_trace(
 ) -> anyhow::Result<bool> {
     use super::manifest::{build_manifest, resolve_upload_method, write_upload_manifest};
     let upload_method = resolve_upload_method(&ctx.gcs_config);
-    let method_str = upload_method.as_ref();
-    xai_grok_telemetry::session_ctx::log_session_event(
-        crate::agent::session_metrics::TraceUploadAttempted {
-            session_id: ctx.session_info.id.0.to_string(),
-            turn_number: ctx.turn_number,
-            upload_method: method_str.to_owned(),
-        },
-    );
     let queue_failed_count = || {
         ctx.upload_queue.as_ref().map_or(0, |q| {
             q.stats().failed.load(std::sync::atomic::Ordering::Relaxed)
@@ -304,12 +294,12 @@ pub(crate) async fn complete_prompt_trace(
         UploadWait::Confirm => 0,
         UploadWait::Defer { .. } => queue_failed_count().saturating_sub(failed_before),
     };
-    let terminal_failure: Option<(String, Option<u16>)> = if let UploadOutcome::Failed {
+    let _terminal_failure: Option<(String, Option<u16>)> = if let UploadOutcome::Failed {
         reason,
-        status_code,
+        status_code: _,
     } = &upload_outcome
     {
-        Some(((*reason).to_owned(), *status_code))
+        Some(((*reason).to_owned(), None))
     } else if gated_artifact_failure.is_some() {
         gated_artifact_failure
     } else if !turn_messages_ok {
@@ -321,29 +311,6 @@ pub(crate) async fn complete_prompt_trace(
     } else {
         None
     };
-    match terminal_failure {
-        Some((error_category, status_code)) => {
-            xai_grok_telemetry::session_ctx::log_session_event(
-                crate::agent::session_metrics::TraceUploadFailed {
-                    session_id: ctx.session_info.id.0.to_string(),
-                    turn_number: ctx.turn_number,
-                    error_category,
-                    status_code,
-                    upload_method: method_str.to_owned(),
-                },
-            );
-        }
-        None => {
-            xai_grok_telemetry::session_ctx::log_session_event(
-                crate::agent::session_metrics::TraceUploadSucceeded {
-                    session_id: ctx.session_info.id.0.to_string(),
-                    turn_number: ctx.turn_number,
-                    upload_method: method_str.to_owned(),
-                    fully_uploaded: true,
-                },
-            );
-        }
-    }
     match wait {
         UploadWait::Confirm => write_upload_manifest(&ctx, &manifest).await,
         UploadWait::Defer { deadline } => {

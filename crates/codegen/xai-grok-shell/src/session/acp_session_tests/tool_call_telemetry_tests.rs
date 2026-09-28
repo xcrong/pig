@@ -149,11 +149,7 @@ struct ResetTelemetry;
 
 impl Drop for ResetTelemetry {
     fn drop(&mut self) {
-        let config = xai_grok_telemetry::config::TelemetryConfig {
-            mixpanel_enabled: false,
-            mixpanel_token: None,
-            ..xai_grok_telemetry::config::TelemetryConfig::default()
-        };
+        let config = xai_grok_telemetry::config::TelemetryConfig::default();
         xai_grok_telemetry::init(
             config,
             TelemetryMode::Disabled,
@@ -169,13 +165,10 @@ impl Drop for ResetTelemetry {
 }
 
 fn init_product(server: &xai_grok_test_support::MockInferenceServer, mode: TelemetryMode) {
-    let config = xai_grok_telemetry::config::TelemetryConfig {
-        events_url: Some(format!("{}/events", server.url())),
-        events_api_key: Some("test-key".into()),
-        mixpanel_enabled: false,
-        mixpanel_token: None,
-        ..xai_grok_telemetry::config::TelemetryConfig::default()
-    };
+    // No first-party sinks remain: the mock events route must stay silent.
+    // The config carries no endpoint; mode init is retained for compatibility.
+    let _ = server.url();
+    let config = xai_grok_telemetry::config::TelemetryConfig::default();
     // `shared_client` keeps idle sockets process-wide. `TcpListener::bind` can
     // recycle a loopback port onto a dead connection, and `track` drops that error.
     let client = reqwest::Client::builder()
@@ -297,6 +290,14 @@ fn span_for<'a>(spans: &'a [CapturedSpan], call_id: &str) -> &'a CapturedSpan {
         .unwrap_or_else(|| panic!("no tool.execution for {call_id}"))
 }
 
+fn assert_no_first_party_rows(rows: &[Value], call_id: &str) {
+    assert!(
+        rows.is_empty(),
+        "{call_id}: no first-party telemetry rows may be emitted: {rows:?}"
+    );
+}
+
+#[allow(dead_code)]
 fn product_event<'a>(rows: &'a [Value], invocation_id: &str) -> &'a Value {
     rows.iter()
         .find(|event| {
@@ -311,6 +312,7 @@ fn product_event<'a>(rows: &'a [Value], invocation_id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no product row for {invocation_id}"))
 }
 
+#[allow(dead_code)]
 fn row_metadata<'a>(rows: &'a [Value], invocation_id: &str) -> &'a serde_json::Map<String, Value> {
     product_event(rows, invocation_id)
         .get("event_metadata")
@@ -318,6 +320,7 @@ fn row_metadata<'a>(rows: &'a [Value], invocation_id: &str) -> &'a serde_json::M
         .unwrap_or_else(|| panic!("no metadata for {invocation_id}"))
 }
 
+#[allow(dead_code)]
 fn meta_str<'a>(metadata: &'a serde_json::Map<String, Value>, key: &str) -> Option<&'a str> {
     metadata.get(key).and_then(Value::as_str)
 }
@@ -330,90 +333,53 @@ fn assert_grep(
     reason: Option<&str>,
     outcome: &str,
 ) {
+    // No first-party sinks remain: execution spans stay local, nothing posts.
+    assert_no_first_party_rows(rows, call_id);
     let span = span_for(spans, call_id);
-    let invocation = field(span, "invocation_id").unwrap_or_else(|| panic!("{call_id} invocation"));
-    let event = product_event(rows, invocation);
-    let metadata = row_metadata(rows, invocation);
+    let _invocation =
+        field(span, "invocation_id").unwrap_or_else(|| panic!("{call_id} invocation"));
     assert_eq!(field(span, "model_id"), Some(MODEL), "{call_id}");
-    assert_eq!(meta_str(metadata, "model_id"), Some(MODEL), "{call_id}");
-    assert_eq!(
-        meta_str(metadata, "invocation_id"),
-        Some(invocation),
-        "{call_id}"
-    );
     assert_eq!(field(span, "tool_id"), Some("GrokBuild:grep"), "{call_id}");
-    assert_eq!(
-        meta_str(metadata, "tool_id"),
-        Some("GrokBuild:grep"),
-        "{call_id}"
-    );
     assert_eq!(field(span, "tool_version"), Some("current"), "{call_id}");
-    assert_eq!(
-        meta_str(metadata, "tool_version"),
-        Some("current"),
-        "{call_id}"
-    );
     assert_eq!(field(span, "source_status"), Some(status), "{call_id}");
-    assert_eq!(
-        meta_str(metadata, "source_status"),
-        Some(status),
-        "{call_id}"
-    );
     assert_eq!(field(span, "source_reason"), reason, "{call_id}");
-    assert_eq!(meta_str(metadata, "source_reason"), reason, "{call_id}");
     assert_eq!(field(span, "outcome"), Some(outcome), "{call_id}");
     assert!(field(span, "read_file_role").is_none(), "{call_id}");
-    assert!(metadata.get("read_file_role").is_none(), "{call_id}");
-    assert_eq!(meta_str(metadata, "outcome"), Some(outcome), "{call_id}");
     assert_eq!(
         field(span, "success"),
         Some(if outcome == "error" { "false" } else { "true" }),
         "{call_id}"
     );
-    assert_eq!(
-        meta_str(metadata, "tool_name"),
-        Some("search_code"),
-        "{call_id}"
-    );
     assert!(field(span, "session_id").is_some(), "{call_id}");
     assert!(!span.fields.contains_key("path_scope"), "{call_id}");
-    assert!(!metadata.contains_key("path_scope"), "{call_id}");
-    assert!(!event.to_string().contains("secret-project"), "{call_id}");
+    assert!(
+        !format!("{:?}", span.fields).contains("secret-project"),
+        "{call_id}"
+    );
 }
 
 fn assert_tmp(
     spans: &[CapturedSpan],
     rows: &[Value],
     call_id: &str,
-    tool_name: &str,
+    _tool_name: &str,
     tool_id: &str,
 ) {
+    assert_no_first_party_rows(rows, call_id);
     let span = span_for(spans, call_id);
-    let invocation = field(span, "invocation_id").unwrap_or_else(|| panic!("{call_id} invocation"));
-    let event = product_event(rows, invocation);
-    let metadata = row_metadata(rows, invocation);
-    assert_eq!(meta_str(metadata, "path_scope"), Some("tmp"), "{call_id}");
-    assert_eq!(
-        meta_str(metadata, "tool_name"),
-        Some(tool_name),
-        "{call_id}"
-    );
+    let _invocation =
+        field(span, "invocation_id").unwrap_or_else(|| panic!("{call_id} invocation"));
     assert_eq!(field(span, "tool_id"), Some(tool_id), "{call_id}");
-    assert_eq!(meta_str(metadata, "tool_id"), Some(tool_id), "{call_id}");
     assert_eq!(field(span, "model_id"), Some(MODEL), "{call_id}");
-    assert_eq!(meta_str(metadata, "model_id"), Some(MODEL), "{call_id}");
-    assert_eq!(
-        meta_str(metadata, "invocation_id"),
-        Some(invocation),
-        "{call_id}"
-    );
     assert!(!span.fields.contains_key("path_scope"), "{call_id}");
     assert!(
         !format!("{:?}", span.fields).contains("secret-project"),
         "{call_id}"
     );
-    assert!(!event.to_string().contains("secret-project"), "{call_id}");
-    assert!(!event.to_string().contains("CANARY_BODY"), "{call_id}");
+    assert!(
+        !format!("{:?}", span.fields).contains("CANARY_BODY"),
+        "{call_id}"
+    );
 }
 
 #[serial_test::serial(tool_call_telemetry)]
@@ -591,13 +557,8 @@ async fn execute_tool_calls_records_the_product_row_and_execution_span() {
             assert_tmp(&captured, &rows, "write-tmp", "write", "OpenCode:write");
             assert_no_read_profile(&captured, &rows, "write-tmp");
             let blank = span_for(&captured, "read-blank");
-            let blank_id = field(blank, "invocation_id").expect("blank invocation");
-            let blank_event = product_event(&rows, blank_id);
-            let blank_row = row_metadata(&rows, blank_id);
-            assert_eq!(blank_row.get("path_scope"), None);
-            assert_eq!(meta_str(blank_row, "tool_name"), Some("read_note"));
-            assert_eq!(meta_str(blank_row, "tool_id"), Some("GrokBuild:read_file"));
-            assert!(!blank_event.to_string().contains("secret-project"));
+            let _blank_id = field(blank, "invocation_id").expect("blank invocation");
+            assert_no_first_party_rows(&rows, "read-blank");
             let _ = std::fs::remove_dir_all(scratch);
             let _ = std::fs::remove_dir_all(repo);
         })
@@ -605,55 +566,19 @@ async fn execute_tool_calls_records_the_product_row_and_execution_span() {
 }
 
 fn assert_no_read_profile(spans: &[CapturedSpan], rows: &[Value], call_id: &str) {
+    assert_no_first_party_rows(rows, call_id);
     let span = span_for(spans, call_id);
-    let invocation = field(span, "invocation_id").unwrap_or_else(|| panic!("{call_id} invocation"));
-    let metadata = row_metadata(rows, invocation);
+    let _invocation =
+        field(span, "invocation_id").unwrap_or_else(|| panic!("{call_id} invocation"));
     assert!(field(span, "read_file_role").is_none(), "{call_id}");
-    assert!(metadata.get("read_file_role").is_none(), "{call_id}");
-    assert!(metadata.get("read_limit_kind").is_none(), "{call_id}");
 }
 
 fn assert_read_agrees(spans: &[CapturedSpan], rows: &[Value], call_id: &str, canary: &str) {
+    assert_no_first_party_rows(rows, call_id);
     let span = span_for(spans, call_id);
-    let invocation = field(span, "invocation_id").unwrap_or_else(|| panic!("{call_id} invocation"));
-    let metadata = row_metadata(rows, invocation);
-    for key in [
-        "tool_id",
-        "source_status",
-        "source_reason",
-        "output_limit",
-        "read_file_role",
-        "read_skill_match",
-        "read_skill_source",
-        "read_selection",
-        "read_limit_kind",
-        "read_lines_applicability",
-        "read_lines_disposition",
-        "read_bytes_applicability",
-        "read_bytes_disposition",
-        "read_tokens_applicability",
-        "read_tokens_disposition",
-    ] {
-        assert_eq!(field(span, key), meta_str(metadata, key), "{call_id} {key}");
-    }
-    for key in [
-        "read_lines_limit",
-        "read_lines_observed",
-        "read_bytes_limit",
-        "read_bytes_observed",
-        "read_tokens_limit",
-        "read_tokens_observed",
-        "read_source_bytes",
-        "read_returned_lines",
-        "read_returned_bytes",
-    ] {
-        match (field(span, key), metadata.get(key).and_then(Value::as_i64)) {
-            (None, None) => {}
-            (Some(text), Some(number)) => assert_eq!(text, number.to_string(), "{call_id} {key}"),
-            (span_value, meta_value) => panic!("{call_id} {key}: {span_value:?} {meta_value:?}"),
-        }
-    }
-    let rendered = format!("{metadata:?} {:?}", span.fields);
+    let _invocation =
+        field(span, "invocation_id").unwrap_or_else(|| panic!("{call_id} invocation"));
+    let rendered = format!("{:?}", span.fields);
     assert!(!rendered.contains(canary), "{call_id} {rendered}");
 }
 
@@ -778,55 +703,44 @@ async fn read_profile_agrees_on_the_product_row_and_span() {
             assert_read_agrees(&captured, &rows, "read-both", canary);
             assert_no_read_profile(&captured, &rows, "edit-other");
 
-            let ok = row_metadata(
-                &rows,
-                field(span_for(&captured, "read-ok"), "invocation_id").expect("ok invocation"),
-            );
-            assert_eq!(meta_str(ok, "tool_id"), Some("GrokBuild:read_file"));
-            assert_eq!(meta_str(ok, "tool_name"), Some("read_note"));
-            assert_eq!(meta_str(ok, "read_file_role"), Some("ordinary"));
-            assert_eq!(meta_str(ok, "source_status"), Some("succeeded"));
-            assert_eq!(meta_str(ok, "read_limit_kind"), Some("none"));
-            assert_eq!(meta_str(ok, "read_lines_disposition"), Some("within_limit"));
-            assert_eq!(meta_str(ok, "read_tokens_disposition"), Some("within_limit"));
+            let ok = span_for(&captured, "read-ok");
+            assert_eq!(field(ok, "tool_id"), Some("GrokBuild:read_file"));
+            assert_eq!(field(ok, "read_file_role"), Some("ordinary"));
+            assert_eq!(field(ok, "source_status"), Some("succeeded"));
+            assert_eq!(field(ok, "read_limit_kind"), Some("none"));
+            assert_eq!(field(ok, "read_lines_disposition"), Some("within_limit"));
+            assert_eq!(field(ok, "read_tokens_disposition"), Some("within_limit"));
 
-            let missing_row = row_metadata(
-                &rows,
-                field(span_for(&captured, "read-missing"), "invocation_id")
-                    .expect("missing invocation"),
-            );
-            assert_eq!(meta_str(missing_row, "tool_id"), Some("GrokBuild:read_file"));
-            assert_eq!(meta_str(missing_row, "read_file_role"), Some("skill_entry"));
-            assert_eq!(meta_str(missing_row, "read_skill_match"), Some("unregistered"));
-            assert_eq!(meta_str(missing_row, "source_status"), Some("failed"));
-            assert_eq!(meta_str(missing_row, "source_reason"), Some("read.not_found"));
+            let missing_row = span_for(&captured, "read-missing");
+            assert_eq!(field(missing_row, "tool_id"), Some("GrokBuild:read_file"));
+            assert_eq!(field(missing_row, "read_file_role"), Some("skill_entry"));
             assert_eq!(
-                meta_str(missing_row, "read_tokens_disposition"),
+                field(missing_row, "read_skill_match"),
+                Some("unregistered")
+            );
+            assert_eq!(field(missing_row, "source_status"), Some("failed"));
+            assert_eq!(
+                field(missing_row, "source_reason"),
+                Some("read.not_found")
+            );
+            assert_eq!(
+                field(missing_row, "read_tokens_disposition"),
                 Some("unobserved")
             );
-            assert_ne!(meta_str(missing_row, "read_limit_kind"), Some("tokens"));
-            assert!(missing_row.get("read_tokens_observed").is_none());
+            assert_ne!(field(missing_row, "read_limit_kind"), Some("tokens"));
 
-            let capped = row_metadata(
-                &rows,
-                field(span_for(&captured, "read-cap"), "invocation_id").expect("cap invocation"),
-            );
-            assert_eq!(meta_str(capped, "read_limit_kind"), Some("tokens"));
-            assert_eq!(meta_str(capped, "read_tokens_disposition"), Some("rejected"));
-            assert_eq!(capped.get("read_tokens_limit").and_then(Value::as_i64), Some(25_000));
-            assert!(capped.get("read_tokens_observed").is_none());
-            assert_eq!(meta_str(capped, "source_status"), Some("failed"));
-            assert_eq!(meta_str(capped, "source_reason"), Some("read.token_limit"));
-            assert_eq!(meta_str(capped, "outcome"), Some("error"));
+            let capped = span_for(&captured, "read-cap");
+            assert_eq!(field(capped, "read_limit_kind"), Some("tokens"));
+            assert_eq!(field(capped, "read_tokens_disposition"), Some("rejected"));
+            assert_eq!(field(capped, "source_status"), Some("failed"));
+            assert_eq!(field(capped, "source_reason"), Some("read.token_limit"));
+            assert_eq!(field(capped, "outcome"), Some("error"));
 
-            let both = row_metadata(
-                &rows,
-                field(span_for(&captured, "read-both"), "invocation_id").expect("both invocation"),
-            );
-            assert_eq!(meta_str(both, "read_limit_kind"), Some("multiple"));
-            assert_eq!(meta_str(both, "read_lines_disposition"), Some("truncated"));
-            assert_eq!(meta_str(both, "read_bytes_disposition"), Some("truncated"));
-            assert_eq!(meta_str(both, "tool_id"), Some("GrokBuild:read_file"));
+            let both = span_for(&captured, "read-both");
+            assert_eq!(field(both, "read_limit_kind"), Some("multiple"));
+            assert_eq!(field(both, "read_lines_disposition"), Some("truncated"));
+            assert_eq!(field(both, "read_bytes_disposition"), Some("truncated"));
+            assert_eq!(field(both, "tool_id"), Some("GrokBuild:read_file"));
             let _ = std::fs::remove_dir_all(root);
         })
         .await;

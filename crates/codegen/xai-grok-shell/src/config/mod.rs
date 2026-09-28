@@ -1077,10 +1077,7 @@ fn apply_requirements_inner(
     pin_requirement_only!(title_refresh);
     if let Some(val) = req_bool(req, "telemetry", "trace_upload") {
         config.requirements.trace_upload.pin(val, source.clone());
-        if config.telemetry.trace_upload != Some(val) {
-            config.telemetry.trace_upload = Some(val);
-            push("telemetry.trace_upload", format!("{val}"));
-        }
+        push("telemetry.trace_upload", format!("{val}"));
     }
     enforce_opt!("cli", "auto_update", config.cli.auto_update);
     enforce_opt!("cli", "use_leader", config.cli.use_leader);
@@ -1223,24 +1220,6 @@ fn apply_requirements_inner(
         "endpoints",
         "deployment_key",
         config.endpoints.deployment_key,
-        redacted
-    );
-    enforce_str!("telemetry", "events_url", config.telemetry.events_url);
-    enforce_str!(
-        "telemetry",
-        "events_api_key",
-        config.telemetry.events_api_key,
-        redacted
-    );
-    enforce_val!(
-        "telemetry",
-        "mixpanel_enabled",
-        config.telemetry.mixpanel_enabled
-    );
-    enforce_str!(
-        "telemetry",
-        "mixpanel_token",
-        config.telemetry.mixpanel_token,
         redacted
     );
     enforce_str!(

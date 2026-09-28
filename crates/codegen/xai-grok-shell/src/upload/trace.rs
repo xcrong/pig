@@ -132,15 +132,13 @@ fn upload_failure_log_level(method: &UploadMethod, prior_failures: u64) -> Uploa
         UploadFailureLogLevel::Error
     }
 }
-/// Wire label for the upload backend used by structured session events.
+/// Wire label for the upload backend used by structured logs.
 fn upload_method_label(method: &UploadMethod) -> &'static str {
-    use super::turn::TraceUploadReason;
     match method {
-        UploadMethod::Direct { .. } => TraceUploadReason::DirectGcs,
-        UploadMethod::Proxy { .. } => TraceUploadReason::Proxy,
-        UploadMethod::S3 { .. } => TraceUploadReason::DirectS3,
+        UploadMethod::Direct { .. } => "direct_gcs",
+        UploadMethod::Proxy { .. } => "proxy",
+        UploadMethod::S3 { .. } => "direct_s3",
     }
-    .into()
 }
 /// A confirmed upload ends the session's failure episode; the next failure logs at full detail again.
 fn record_upload_success(ctx: &PromptTraceContext) {

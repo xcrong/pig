@@ -1,4 +1,4 @@
-//! Ambient session context for telemetry: product events and Mixpanel via [`log_event`].
+//! Ambient session context for telemetry: user-owned external OTEL via [`log_event`].
 //! `session_id` and `turn_number` are injected from the task-local [`TelemetryCtx`] active for the duration of a session.
 
 use std::sync::Arc;
@@ -130,7 +130,8 @@ impl EmitterOrigin {
 /// That keeps `client::event_value` from silently skipping a new origin's prefix.
 const _: () = assert!(EmitterOrigin::ALL.len() == <EmitterOrigin as strum::EnumCount>::COUNT);
 
-/// Product analytics event (type-safe). Only fires in `Enabled` mode.
+/// Product analytics event (type-safe). Fans out to the external OTEL stream;
+/// the legacy internal funnel is a no-op.
 /// Unconditionally fans out to the external OTEL stream first; that gate is `external::is_active()`, independent of `TelemetryMode`.
 pub fn log_event<T: TelemetryEvent>(data: T) {
     crate::external::emit(&data);
@@ -151,9 +152,9 @@ pub async fn log_event_now<T: TelemetryEvent>(data: T) {
     emit_event_now(T::NAME, data).await;
 }
 
-/// Emit one event to the external stream always and to the product events/Mixpanel funnel only when `internal_enabled`.
-/// Callers use this when their internal sink is gated more strictly than [`log_event`]'s `Enabled` check (the shell's `Enabled && !ZDR`).
-/// [`log_event`] already fans out externally, so the branch keeps the external emit exactly-once and never sends an internal record under ZDR.
+/// Emit one event to the external stream always. The legacy internal funnel is a no-op.
+/// Callers use this when their internal sink was gated more strictly than [`log_event`]'s `Enabled` check.
+/// [`log_event`] already fans out externally, so the branch keeps the external emit exactly-once.
 pub fn log_event_dual<T: TelemetryEvent>(internal_enabled: bool, data: T) {
     if internal_enabled {
         log_event(data);
@@ -162,7 +163,7 @@ pub fn log_event_dual<T: TelemetryEvent>(internal_enabled: bool, data: T) {
     }
 }
 
-/// Session lifecycle event (type-safe). Fires in both `Enabled` and `SessionMetrics` modes.
+/// Session lifecycle event (type-safe). Fans out to the external OTEL stream.
 /// Emits with the [`EmitterOrigin::Shell`] prefix; workspace-side callers use [`log_session_event_with_origin`].
 /// Unconditionally fans out to the external OTEL stream first (independent gate; see [`log_event`]).
 pub fn log_session_event<T: TelemetryEvent>(data: T) {

@@ -9,7 +9,7 @@ pub enum CompactionTrigger {
     Auto,
 }
 
-/// Mixpanel mode label. Detail is omitted so `segments` never includes it.
+/// Downstream mode label. Detail is omitted so `segments` never includes it.
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CompactionModeLabel {

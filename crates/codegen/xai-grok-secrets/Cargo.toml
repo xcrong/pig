@@ -3,7 +3,7 @@ license = "Apache-2.0"
 edition.workspace = true
 name = "xai-grok-secrets"
 version = "0.1.0"
-description = "Regex sanitizer for Pig Agent outbound data (Sentry / Mixpanel / product-event scrubbing)"
+description = "Regex sanitizer for Pig Agent outbound data (external OTEL / unified-log scrubbing)"
 
 [dependencies]
 regex = { workspace = true }

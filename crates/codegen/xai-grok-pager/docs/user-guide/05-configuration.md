@@ -554,29 +554,18 @@ Keyboard shortcuts are **not** configurable — all bindings are built in. See [
 
 These are independent knobs (see [Monitoring Usage](24-monitoring-usage.md#related-settings)):
 
-- **`[features] telemetry`** / `GROK_TELEMETRY_ENABLED` — the product-analytics master switch. `/privacy` doesn't change it.
+- **`[features] telemetry`** / `GROK_TELEMETRY_ENABLED` — legacy internal mode switch (no first-party sinks remain). `/privacy` doesn't change it.
 - **Coding data, retention, and training** — the Settings row `/privacy` opens; coding-data sharing, separate from telemetry.
-- **`[telemetry] trace_upload`** / `GROK_TELEMETRY_TRACE_UPLOAD` — session traces; follows telemetry when unset.
 - **`[telemetry] otel_*`** / `GROK_EXTERNAL_OTEL` — external OTEL to your own collector (below).
 
-When telemetry is on, enterprises running their own collector can redirect it or turn parts off under `[telemetry]`:
-
-```toml
-[telemetry]
-events_url = "https://telemetry.your-company.com/events"  # send events to your own collector
-events_api_key = "your-collector-token"                   # auth for your collector, if required
-mixpanel_enabled = false                                  # disable Mixpanel product analytics
-trace_upload = false                                      # disable session/trace uploads (inherits the telemetry toggle when unset)
-```
-
-Set these only to point telemetry at your own infrastructure or to switch parts off. The built-in endpoint and credentials are managed by Grok — leave them unset to use the defaults.
-
-The same `[telemetry]` table also configures the **external OpenTelemetry stream**, an independent opt-in (it doesn't require the telemetry toggle above) that ships a curated, content-free usage schema to your *own* OTLP collector. Collector auth comes from `OTEL_EXPORTER_OTLP_HEADERS` and is never stored on disk. See [Monitoring & Usage](24-monitoring-usage.md) for the full schema, env vars, and privacy model.
+Pig Agent ships no first-party telemetry sinks and no trace-upload pipeline.
+Local observability (in-process spans, unified log) stays on-machine. To
+observe usage from your own infrastructure, use the external OTEL stream:
 
 ```toml
 [telemetry]
 otel_enabled = true                                       # external OTEL master switch (= GROK_EXTERNAL_OTEL)
-otel_metrics_exporter = "otlp"                            # otlp | console | none
+otel_metrics_exporter = "otlp"                            # otlp | console | none```
 otel_logs_exporter = "otlp"                               # otlp | console | none
 otel_endpoint = "https://collector.corp.example:4318"     # OTLP base endpoint
 otel_protocol = "http/protobuf"                           # http/protobuf | grpc
@@ -813,9 +802,7 @@ The key ones. See the README for the complete list.
 
 | Variable | Description |
 |----------|-------------|
-| `GROK_TELEMETRY_ENABLED` | Enable/disable telemetry |
-| `GROK_TELEMETRY_TRACE_UPLOAD` | Enable/disable session trace upload |
-| `GROK_TELEMETRY_MIXPANEL_ENABLED` | Enable/disable Mixpanel specifically |
+| `GROK_TELEMETRY_ENABLED` | Legacy internal telemetry mode (no first-party sinks remain) |
 | `GROK_EXTERNAL_OTEL` | External OTEL to your collector (see [24-monitoring-usage.md](24-monitoring-usage.md)) |
 | `GROK_FEEDBACK_ENABLED` | Enable/disable feedback system |
 | `GROK_DEPLOYMENT_KEY` | Management API key for enterprise |

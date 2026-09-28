@@ -449,65 +449,46 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
             crate::extensions::marketplace::ensure_official_marketplace_source(&grok_home);
         }
         let telemetry_mode = cfg.resolve_telemetry_mode();
-        let trace_upload = cfg.resolve_trace_upload();
         let feedback = cfg.feature(config::Feature::Feedback);
         let feedback_url = cfg.endpoints.resolve_feedback_base_url();
-        let trace_upload_url = cfg.endpoints.resolve_trace_upload_url();
         tracing::info!(
             telemetry = %telemetry_mode,
-            trace_upload = %trace_upload,
+            trace_upload = false,
             feedback = %feedback,
             feedback_url = %feedback_url,
             feedback_url_custom = cfg.endpoints.feedback_base_url.is_some(),
-            trace_upload_url = %trace_upload_url,
-            trace_upload_url_custom = cfg.endpoints.trace_upload_url.is_some(),
-            trace_upload_bucket = cfg.endpoints.trace_upload_bucket.as_deref().unwrap_or("none"),
-            trace_upload_region = cfg.endpoints.trace_upload_region.as_deref().unwrap_or("none"),
-            "data capture config resolved",
+            "data capture config resolved (no first-party trace pipeline)",
         );
-        if telemetry_mode.value.is_disabled() && trace_upload.value {
-            tracing::info!(
-                "Telemetry disabled but trace uploads enabled: \
-                 session artifacts will be uploaded, analytics events will not"
-            );
-        }
         update_telemetry_config(cfg, auth_manager);
         xai_grok_telemetry::session_ctx::log_event(limits.into_event());
     });
 }
-/// Apply current telemetry config + auth identity. Tears down the client
-/// when telemetry is disabled, so it's safe to call repeatedly.
-pub fn update_telemetry_config(config: &AgentConfig, auth_manager: &AuthManager) {
+/// Apply current telemetry config. No first-party sinks remain: only the
+/// legacy mode client is (re-)initialized, and auth identity is intentionally
+/// not forwarded anywhere. Safe to call repeatedly.
+pub fn update_telemetry_config(config: &AgentConfig, _auth_manager: &AuthManager) {
     let user_agent = crate::http::process_user_agent_string();
     if reqwest::header::HeaderValue::from_str(&user_agent).is_err() {
         tracing::warn!("telemetry init skipped: GROK_CLIENT_NAME yields an invalid user agent");
         return;
     }
-    let grok_auth = auth_manager.current().filter(|a| a.is_xai_auth());
-    let user_id = grok_auth.as_ref().map(|a| a.user_id.clone());
-    let team_id = grok_auth.as_ref().and_then(|a| a.team_id.clone());
-    let subscription_tier = super::mvp_agent::resolve_subscription_tier_for_telemetry(
-        config
-            .remote_settings
-            .as_ref()
-            .and_then(|rs| rs.subscription_tier_display.clone()),
-        auth_manager.current_or_expired().as_ref(),
-    );
     xai_grok_telemetry::client::init(
         config.telemetry.clone(),
         config.resolve_telemetry_mode().value,
-        user_id,
-        team_id,
-        config.endpoints.deployment_key.clone(),
-        crate::http::origin_client_info_from_env(),
+        None,
+        None,
+        None,
+        None,
         xai_grok_version::VERSION.to_owned(),
-        subscription_tier,
+        None,
         crate::http::shared_client(),
     );
 }
 /// Assemble the default OTel layer config both `xai-grok-pager` and `xai-grok-tui` need at tracing init time.
 ///
-/// Owns the endpoint and exporter assembly here in shell; the bootstrap credential provider comes from auth.
+/// Pig Agent ships no first-party span pipeline: the internal exporter stays
+/// disabled and only in-process instrumentation remains. User-owned external
+/// OTEL is configured separately via `resolve_external_otel_config`.
 pub fn build_default_otel_layer_config() -> xai_grok_telemetry::otel_layer::OtelLayerConfig {
     let endpoints = crate::agent::config::EndpointsConfig::default();
     let (credentials, token_header_value) =
@@ -517,8 +498,7 @@ pub fn build_default_otel_layer_config() -> xai_grok_telemetry::otel_layer::Otel
         extra_headers: endpoints.resolve_otlp_headers(),
         export_interval: endpoints.resolve_otlp_export_interval(),
         timeout: endpoints.resolve_otlp_timeout(),
-        enabled: endpoints.resolve_traces_export_enabled()
-            && !crate::agent::config::is_telemetry_explicitly_disabled_sync(),
+        enabled: false,
     };
     xai_grok_telemetry::otel_layer::OtelLayerConfig {
         credentials,

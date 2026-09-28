@@ -423,22 +423,6 @@ telemetry_event!(
     crate::session_metrics::LongReasoningReminderTurn,
     "long_reasoning_reminder"
 );
-telemetry_event!(
-    crate::session_metrics::TraceUploadAttempted,
-    "trace_upload_attempted"
-);
-telemetry_event!(
-    crate::session_metrics::TraceUploadSucceeded,
-    "trace_upload_succeeded"
-);
-telemetry_event!(
-    crate::session_metrics::TraceUploadSkipped,
-    "trace_upload_skipped"
-);
-telemetry_event!(
-    crate::session_metrics::TraceUploadFailed,
-    "trace_upload_failed"
-);
 
 // Memory subsystem (structs in memory_telemetry)
 telemetry_event!(
@@ -646,14 +630,6 @@ mod tests {
             ("SessionNew", "session_id"),
             ("SessionContextSnapshot", "session_id"),
             ("SessionStarted", "session_id"),
-            ("TraceUploadAttempted", "session_id"),
-            ("TraceUploadAttempted", "turn_number"),
-            ("TraceUploadFailed", "session_id"),
-            ("TraceUploadFailed", "turn_number"),
-            ("TraceUploadSkipped", "session_id"),
-            ("TraceUploadSkipped", "turn_number"),
-            ("TraceUploadSucceeded", "session_id"),
-            ("TraceUploadSucceeded", "turn_number"),
             ("Turn", "session_id"),
             ("Turn", "turn_number"),
             // Intentional: external-stream `session.id` on the event (see `TurnCompleted`).

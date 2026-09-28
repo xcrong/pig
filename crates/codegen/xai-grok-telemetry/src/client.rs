@@ -1,21 +1,18 @@
-//! Core telemetry tracking: product events and Mixpanel.
+//! Legacy internal telemetry client (no first-party sinks).
 //!
-//! All calls route through [`track`].
-//! Precedence: env overrides config, config overrides remote config, remote config overrides the default.
-//!
-//! The HTTP client is injected via [`init`]/[`init_if_needed`].
-//! That keeps this crate from depending on shell's `User-Agent` builder, which couples to the `permission` module.
-use crate::config::{TelemetryConfig, TelemetryMode, deployment_id_from_key};
+//! Pig Agent ships no data to non-user endpoints. [`track`] is a no-op kept
+//! for call-site compatibility; real emission fans out to the user-owned
+//! external OTEL stream via [`crate::external::emit`] before this layer.
+use crate::config::{TelemetryConfig, TelemetryMode};
 use crate::http::OriginClientInfo;
 use crate::session_ctx::EmitterOrigin;
 use chrono::{Local, SecondsFormat};
-use serde_json::json;
-use std::sync::{Arc, Mutex, Once, OnceLock};
-use xai_grok_env::env_bool;
-use xai_mixpanel::Mixpanel;
+use std::sync::{Mutex, OnceLock};
 /// Event property map shared by all telemetry modules.
 pub type Metadata = serde_json::Map<String, serde_json::Value>;
 /// Strips the [`EmitterOrigin`] prefix so shell events keep their historical `event_value` and workspace events collapse to the same bare suffix.
+/// Retained for the emitter-prefix invariant tests; production emission no longer uses it.
+#[allow(dead_code)]
 fn event_value(event_name: &str) -> &str {
     for origin in EmitterOrigin::ALL {
         if let Some(suffix) = event_name.strip_prefix(origin.event_prefix()) {
@@ -24,113 +21,31 @@ fn event_value(event_name: &str) -> &str {
     }
     event_name
 }
-/// Do not put the event name in this field: the sink truncates to 36 chars and rejects most other characters. A truncated
-/// name-prefixed id collapses to a constant and dedups a user's same-second events; one with `:` is dropped and
-/// regenerated. A bare UUID always validates.
-fn product_analytics_insert_id() -> String {
-    uuid::Uuid::new_v4().simple().to_string()
-}
 #[derive(Clone)]
 pub struct TelemetryClient {
     mode: TelemetryMode,
-    events_url: Option<String>,
-    events_api_key: Option<String>,
-    mixpanel: Option<Arc<Mixpanel>>,
-    user_id: Option<String>,
-    team_id: Option<String>,
-    deployment_id: Option<String>,
-    shell_version: String,
-    client_type: Option<String>,
-    client_version: Option<String>,
-    subscription_tier: Option<String>,
-    http_client: reqwest::Client,
 }
 impl std::fmt::Debug for TelemetryClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TelemetryClient")
-            .field("events_url", &self.events_url)
-            .field(
-                "events_api_key",
-                &self.events_api_key.as_ref().map(|_| "***"),
-            )
-            .field("mixpanel", &self.mixpanel.as_ref().map(|_| "configured"))
+            .field("mode", &self.mode)
             .finish()
     }
 }
-/// Opts a dev build (no `GROK_VERSION` at compile time) back into the baked production sinks.
-const ALLOW_DEV_BUILD_ENV: &str = "GROK_TELEMETRY_ALLOW_DEV_BUILD";
-/// `from_config` runs on every (re-)init, up to three times per process; the disarm is logged once.
-static DEV_BUILD_DISARM_LOGGED: Once = Once::new();
 impl TelemetryClient {
     pub fn from_config(
-        mut config: TelemetryConfig,
+        _config: TelemetryConfig,
         mode: TelemetryMode,
-        user_id: Option<String>,
-        team_id: Option<String>,
-        deployment_key: Option<String>,
-        origin_client: Option<OriginClientInfo>,
-        shell_version: String,
-        subscription_tier: Option<String>,
-        http_client: reqwest::Client,
+        _user_id: Option<String>,
+        _team_id: Option<String>,
+        _deployment_key: Option<String>,
+        _origin_client: Option<OriginClientInfo>,
+        _shell_version: String,
+        _subscription_tier: Option<String>,
+        _http_client: reqwest::Client,
     ) -> Self {
-        if xai_grok_version::IS_DEV_BUILD
-            && env_bool(ALLOW_DEV_BUILD_ENV) != Some(true)
-            && config.disarm_baked_sinks()
-        {
-            DEV_BUILD_DISARM_LOGGED
-                .call_once(|| {
-                    tracing::info!(
-                    "TELEMETRY_DEV_BUILD_SINKS_DISARMED: dev build; baked production telemetry sinks cleared (set {ALLOW_DEV_BUILD_ENV}=1 to opt in)"
-                );
-                });
-        }
-        let mixpanel = if config.mixpanel_enabled {
-            config
-                .mixpanel_token
-                .as_ref()
-                .map(|token| Arc::new(Mixpanel::with_client(token.as_str(), http_client.clone())))
-        } else {
-            None
-        };
-        let deployment_id = deployment_key
-            .filter(|s| !s.is_empty())
-            .map(|k| deployment_id_from_key(&k));
-        let (client_type, client_version) = match origin_client {
-            Some(o) => (Some(o.product), o.version),
-            None => (None, None),
-        };
-        Self {
-            mode,
-            events_url: config.events_url,
-            events_api_key: config.events_api_key,
-            mixpanel,
-            user_id,
-            team_id,
-            deployment_id,
-            shell_version,
-            client_type,
-            client_version,
-            subscription_tier: subscription_tier.map(|t| normalize_tier(&t)),
-            http_client,
-        }
+        Self { mode }
     }
-}
-/// Normalize a subscription tier string to a consistent lowercase_underscore format for Mixpanel.
-/// Handles both CCP display names ("SuperGrok Heavy") and JWT-derived keys ("supergrok_heavy").
-fn normalize_tier(tier: &str) -> String {
-    match tier {
-        "SuperGrok Heavy" | "supergrok_heavy" => "supergrok_heavy",
-        "SuperGrok Plus" | "supergrok_plus" => "supergrok_plus",
-        "SuperGrok" | "supergrok" => "supergrok",
-        "SuperGrok Lite" | "supergrok_lite" => "supergrok_lite",
-        "X Premium+" | "x_premium_plus" => "x_premium_plus",
-        "X Premium" | "x_premium" => "x_premium",
-        "X Basic" | "x_basic" => "x_basic",
-        "Free" | "free" => "free",
-        "API Key" | "api_key" => "api_key",
-        other => return other.to_ascii_lowercase().replace(' ', "_"),
-    }
-    .to_string()
 }
 static TELEMETRY_CLIENT: OnceLock<Mutex<Option<TelemetryClient>>> = OnceLock::new();
 /// Returns `true` when telemetry mode is `Enabled`.
@@ -168,11 +83,15 @@ impl UserContext {
         }
     }
 }
+#[allow(dead_code)]
 static IS_CI: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+#[allow(dead_code)]
 fn is_ci_env() -> bool {
     std::env::var("CI").is_ok_and(|v| !v.is_empty() && v != "0" && v.to_lowercase() != "false")
 }
 /// Per-event enrichment; the serde field names are the wire keys.
+/// Retained for the reserved-keys schema test; production emission no longer attaches it.
+#[allow(dead_code)]
 #[derive(serde::Serialize)]
 struct EventEnrichment {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,6 +131,7 @@ struct EventEnrichment {
     uptime_secs: u64,
 }
 impl EventEnrichment {
+    #[allow(dead_code)]
     fn capture() -> Self {
         use crate::process_info::{Interactivity, LeaderMode};
         let identity = crate::process_info::identity();
@@ -271,98 +191,9 @@ pub const RESERVED_EVENT_KEYS: &[&str] = &[
     "session_id",
     "turn_number",
 ];
-/// Core telemetry emitter. Routes to product events and Mixpanel.
-pub async fn track(event_name: &str, request_id: &str, ctx: &UserContext, mut metadata: Metadata) {
-    let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
-    let client = {
-        let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
-        match guard.clone() {
-            Some(c) => c,
-            None => return,
-        }
-    };
-    let agent_id = crate::id::agent_id_async().await;
-    let user_id = client.user_id.as_deref().unwrap_or(&agent_id);
-    metadata.insert("agent_id".into(), json!(agent_id));
-    if let Some(ref team_id) = client.team_id {
-        metadata.insert("team_id".into(), json!(team_id));
-    }
-    if let Some(ref deployment_id) = client.deployment_id {
-        metadata.insert("deployment_id".into(), json!(deployment_id));
-    }
-    metadata.insert("shell_version".into(), json!(client.shell_version));
-    if let Some(ref client_type) = client.client_type {
-        metadata.insert("client_type".into(), json!(client_type));
-    }
-    if let Some(ref client_version) = client.client_version {
-        metadata.insert("client_version".into(), json!(client_version));
-    }
-    if let Some(ref subscription_tier) = client.subscription_tier {
-        metadata.insert("subscription_tier".into(), json!(subscription_tier));
-    }
-    if let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(EventEnrichment::capture())
-    {
-        for (key, value) in fields {
-            metadata.entry(key).or_insert(value);
-        }
-    }
-    if let (Some(url), Some(api_key)) = (&client.events_url, &client.events_api_key) {
-        let body = json!({
-            "viewer_context": {
-                "request_id": request_id,
-                "user_attributes": {
-                    "user_id": user_id,
-                    "user_type": "LoggedIn",
-                    "country": ctx.country,
-                    "language": ctx.language,
-                    "locale": "English",
-                },
-                "device_attributes": {
-                    "app_name": "Grok Code",
-                },
-            },
-            "api_key": api_key,
-            "events": [{
-                "event_name": event_name,
-                "event_value": event_value(event_name),
-                "event_metadata": metadata.clone(),
-                "timestamp": ctx.timestamp,
-            }]
-        });
-        let _ = client
-            .http_client
-            .post(url)
-            .header("x-api-key", api_key.as_str())
-            .timeout(std::time::Duration::from_secs(10))
-            .json(&body)
-            .send()
-            .await;
-    }
-    if let Some(ref mixpanel) = client.mixpanel {
-        let time_secs = chrono::Utc::now().timestamp();
-        let insert_id = product_analytics_insert_id();
-        let mut props: std::collections::HashMap<String, serde_json::Value> =
-            metadata.into_iter().collect();
-        props.insert("distinct_id".into(), json!(user_id));
-        props.insert("time".into(), json!(time_secs));
-        props.insert("$insert_id".into(), json!(insert_id));
-        props.insert("app_name".into(), json!("Grok Code"));
-        props.insert("user_type".into(), json!("LoggedIn"));
-        props.insert("country".into(), json!(ctx.country));
-        props.insert("language".into(), json!(ctx.language));
-        props.insert("locale".into(), json!("English"));
-        match mixpanel.track(event_name, Some(props)).await {
-            Ok(()) => {
-                if event_name.ends_with("session_context_snapshot") {
-                    tracing::info!(event = %event_name, "mixpanel track ok");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, event = %event_name, "mixpanel track failed");
-            }
-        }
-    }
-}
+/// Legacy internal emitter. No first-party sinks remain, so this is a no-op.
+/// External (user-owned OTEL) fan-out happens in [`crate::session_ctx`] before this layer.
+pub async fn track(_event_name: &str, _request_id: &str, _ctx: &UserContext, _metadata: Metadata) {}
 /// Resolved mode of the initialized client, `None` when off.
 /// Lets a parent pass its mode to a spawned child that cannot re-resolve remote settings.
 pub fn current_mode() -> Option<TelemetryMode> {
@@ -370,48 +201,8 @@ pub fn current_mode() -> Option<TelemetryMode> {
     let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
     guard.as_ref().map(|c| c.mode)
 }
-/// Sync the user's Mixpanel profile once per init. Fire-and-forget. Only runs in [`TelemetryMode::Enabled`].
-/// SessionMetrics mode may emit lifecycle events via [`track`], but must not write Mixpanel people profiles (`engage`).
-pub fn sync_profile() {
-    let lock = TELEMETRY_CLIENT.get_or_init(|| Mutex::new(None));
-    let client = {
-        let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
-        match guard.clone() {
-            Some(c) => c,
-            None => return,
-        }
-    };
-    if !client.mode.is_enabled() {
-        return;
-    }
-    let Some(mixpanel) = client.mixpanel.clone() else {
-        return;
-    };
-    tokio::spawn(async move {
-        let agent_id = crate::id::agent_id_async().await;
-        let user_id = client.user_id.as_deref().unwrap_or(&agent_id).to_owned();
-        let mut props = std::collections::HashMap::new();
-        props.insert("agent_id".into(), json!(agent_id));
-        props.insert("shell_version".into(), json!(client.shell_version));
-        props.insert("app_name".into(), json!("Grok Code"));
-        if let Some(ref client_type) = client.client_type {
-            props.insert("client_type".into(), json!(client_type));
-        }
-        if let Some(ref client_version) = client.client_version {
-            props.insert("client_version".into(), json!(client_version));
-        }
-        if let Some(ref deployment_id) = client.deployment_id {
-            props.insert("deployment_id".into(), json!(deployment_id));
-        }
-        if let Some(ref team_id) = client.team_id {
-            props.insert("team_id".into(), json!(team_id));
-        }
-        if let Some(ref subscription_tier) = client.subscription_tier {
-            props.insert("subscription_tier".into(), json!(subscription_tier));
-        }
-        let _ = mixpanel.engage(&user_id, props).await;
-    });
-}
+/// Legacy profile sync. No first-party sinks remain, so this is a no-op.
+pub fn sync_profile() {}
 /// Safe to call multiple times. `Disabled`: no client; `SessionMetrics`: client active (only `session_metrics::*` events
 /// fire); `Enabled`: client active (all events fire). `shell_version` is stamped into every event payload (legacy field
 /// name kept for analytics continuity); shell passes its `CARGO_PKG_VERSION`.
@@ -488,17 +279,14 @@ mod tests {
     #[test]
     fn event_value_strips_shell_prefix() {
         assert_eq!(event_value("grok-shell-turn"), "turn");
-        assert_eq!(
-            event_value("grok-shell-trace_upload_attempted"),
-            "trace_upload_attempted"
-        );
+        assert_eq!(event_value("grok-shell-session_started"), "session_started");
     }
     /// Workspace events strip their own prefix to the same bare suffix.
     #[test]
     fn event_value_strips_workspace_prefix() {
         assert_eq!(event_value("grok-workspace-turn"), "turn");
     }
-    /// SessionMetrics must not attempt Mixpanel profile engage; sync_profile is a no-op unless mode is fully Enabled.
+    /// No first-party sinks remain; sync_profile is always a no-op.
     #[test]
     fn sync_profile_is_noop_in_session_metrics_mode() {
         assert!(
@@ -513,13 +301,7 @@ mod tests {
             }
         }
         let _clear = ClearClient;
-        let cfg = TelemetryConfig {
-            mixpanel_enabled: true,
-            mixpanel_token: Some("test-token".into()),
-            events_url: None,
-            events_api_key: None,
-            ..TelemetryConfig::default()
-        };
+        let cfg = TelemetryConfig::default();
         init(
             cfg,
             TelemetryMode::SessionMetrics,
@@ -556,24 +338,6 @@ mod tests {
             let name = format!("{}my_event", origin.event_prefix());
             assert_eq!(event_value(&name), "my_event");
         }
-    }
-    /// Mixpanel `subscription_tier` must be a stable snake_case key.
-    /// Free users arrive as CCP display `"Free"` or JWT-fallback `"free"`; both must land as `"free"`.
-    #[test]
-    fn normalize_tier_maps_display_and_claim_names() {
-        assert_eq!(normalize_tier("Free"), "free");
-        assert_eq!(normalize_tier("free"), "free");
-        assert_eq!(normalize_tier("SuperGrok"), "supergrok");
-        assert_eq!(normalize_tier("SuperGrok Heavy"), "supergrok_heavy");
-        assert_eq!(normalize_tier("supergrok_heavy"), "supergrok_heavy");
-        assert_eq!(normalize_tier("X Basic"), "x_basic");
-        assert_eq!(normalize_tier("X Premium+"), "x_premium_plus");
-        assert_eq!(normalize_tier("X Premium"), "x_premium");
-        assert_eq!(normalize_tier("SuperGrok Lite"), "supergrok_lite");
-        assert_eq!(normalize_tier("SuperGrok Plus"), "supergrok_plus");
-        assert_eq!(normalize_tier("supergrok_plus"), "supergrok_plus");
-        assert_eq!(normalize_tier("API Key"), "api_key");
-        assert_eq!(normalize_tier("api_key"), "api_key");
     }
     /// Enrichment and session keys derive from the struct that owns them;
     /// activity-gauge keys are defined in their domain crates and enumerated at

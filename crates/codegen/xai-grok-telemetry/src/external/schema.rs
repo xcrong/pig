@@ -813,7 +813,7 @@ pub fn map_tool_result(ev: &events::ToolCallCompleted) -> Option<ExternalRecord>
 }
 
 /// `PermissionDecisionRecord` maps to `grok_code.tool_decision` and increments `tool.decision`.
-/// Mixpanel serializes only [`events::PermissionDecisionPayload`]; tool args
+/// Legacy internal serialization covers only [`events::PermissionDecisionPayload`]; tool args
 /// ride [`events::ExternalToolInput`] into [`attach_tool_input`].
 pub fn map_tool_decision(ev: &events::PermissionDecisionRecord) -> Option<ExternalRecord> {
     let sanitized = sanitize_tool_name(&ev.payload.tool_name);

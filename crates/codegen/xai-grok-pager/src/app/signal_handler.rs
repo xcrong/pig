@@ -219,7 +219,6 @@ fn flush_telemetry_and_exit(exit_code: i32) -> ! {
         xai_tty_utils::global_process_scope().kill_all();
         xai_tty_utils::restore_native_stderr();
         crate::app::status_line::metrics::global().report_health();
-        xai_grok_telemetry::sentry::flush_on_shutdown();
     }
     xai_grok_telemetry::otel_layer::shutdown_otel();
     // Flush the --debug firehose on TUI signal exit (this path bypasses main's flush).

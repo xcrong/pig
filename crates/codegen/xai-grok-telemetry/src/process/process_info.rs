@@ -114,6 +114,7 @@ pub fn set_release_channel(channel: ReleaseChannel) {
     let _ = RELEASE_CHANNEL.set(channel);
 }
 
+#[allow(dead_code)]
 pub(crate) fn release_channel() -> Option<ReleaseChannel> {
     RELEASE_CHANNEL.get().copied()
 }

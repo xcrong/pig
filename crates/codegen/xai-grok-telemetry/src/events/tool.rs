@@ -403,7 +403,7 @@ pub struct ModelResponseReceived {
     pub cost_usd_ticks: Option<i64>,
 }
 
-/// Emitted once per turn via [`crate::external::emit`] (not [`crate::session_ctx::log_event`]), so Mixpanel never
+/// Emitted once per turn via [`crate::external::emit`] (not [`crate::session_ctx::log_event`]), so the legacy funnel never
 /// receives `assistant_response`. Thinking/tool-use blocks are excluded at the source. `response_length` always exports
 /// on the external event; `response_text` is `#[serde(skip)]` and gated by `OTEL_LOG_ASSISTANT_RESPONSES`.
 #[derive(Serialize)]

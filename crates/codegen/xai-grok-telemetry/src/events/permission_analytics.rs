@@ -384,14 +384,14 @@ pub struct PermissionDecisionPayload {
 }
 
 /// External-stream-only tool args for a permission decision. Never serialized
-/// onto Mixpanel; deny never reaches [`super::ToolCallCompleted`].
+/// into the legacy internal payload; deny never reaches [`super::ToolCallCompleted`].
 #[derive(Debug, Clone, Default)]
 pub struct ExternalToolInput {
     pub parameters: Option<serde_json::Value>,
     pub tool_use_id: Option<String>,
 }
 
-/// Product `permission_decision` event: Mixpanel sees only [`PermissionDecisionPayload`];
+/// Legacy `permission_decision` event: downstream collectors see only [`PermissionDecisionPayload`];
 /// the sidecar is passed into the external mapper via [`PermissionDecisionRecord::tool_input`].
 pub struct PermissionDecisionRecord {
     pub payload: PermissionDecisionPayload,

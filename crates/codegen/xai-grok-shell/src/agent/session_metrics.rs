@@ -5,6 +5,5 @@
 
 pub(crate) use xai_grok_telemetry::session_metrics::{
     DoomLoopDetected, DoomLoopRecovery, LongReasoningReminderTurn, SessionContextSnapshot,
-    SessionStartKind, SessionStarted, TraceUploadAttempted, TraceUploadFailed, TraceUploadSkipped,
-    TraceUploadSucceeded, Turn, TurnCompletedLifecycle,
+    SessionStartKind, SessionStarted, Turn, TurnCompletedLifecycle,
 };

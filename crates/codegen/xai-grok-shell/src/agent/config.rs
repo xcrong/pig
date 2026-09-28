@@ -2345,20 +2345,12 @@ impl Config {
         Resolved::new(TelemetryMode::Disabled, ConfigSource::Default)
     }
     pub(crate) fn resolve_trace_upload(&self) -> Resolved<bool> {
-        let mode = self.resolve_telemetry_mode();
-        let ff = if mode.value.is_disabled() {
-            None
-        } else {
-            self.remote_settings
-                .as_ref()
-                .and_then(|s| s.trace_upload_enabled)
-        };
-        BoolFlag::env("GROK_TELEMETRY_TRACE_UPLOAD")
-            .requirement(self.requirements.trace_upload.pinned())
-            .config(self.telemetry.trace_upload)
-            .feature_flag(ff)
-            .default(mode.value.is_enabled())
-            .resolve()
+        // Pig Agent ships no first-party trace pipeline: always off.
+        // Every upload trigger (`trace_upload_config`, feedback one-shot,
+        // heap-profile gate) reads this single gate, so no session bytes
+        // leave the machine. The user-owned external OTEL stream is the
+        // only remote telemetry path.
+        Resolved::new(false, ConfigSource::Default)
     }
     /// Resolve jemalloc heap-profile config from stored remote settings and the current gates.
     pub fn resolve_jemalloc_heap_profile(
@@ -2403,15 +2395,9 @@ impl Config {
             "telemetry_source": telemetry.source.to_string(),
             "in_requirement_pin": req.pinned(),
             "in_requirement_src": req.source().map(|s| s.to_string()),
-            "in_env_trace_upload": std::env::var("GROK_TELEMETRY_TRACE_UPLOAD").ok(),
             "in_env_telemetry_enabled": std::env::var("GROK_TELEMETRY_ENABLED").ok(),
             "in_env_disable_telemetry": std::env::var("DISABLE_TELEMETRY").ok(),
-            "in_cfg_telemetry_trace_upload": self.telemetry.trace_upload,
             "in_cfg_features_telemetry": self.features.telemetry.map(|m| m.to_string()),
-            "in_remote_trace_upload_enabled": self
-                .remote_settings
-                .as_ref()
-                .and_then(|s| s.trace_upload_enabled),
             "has_remote_settings": self.remote_settings.is_some(),
         })
     }
@@ -2957,7 +2943,7 @@ impl SyncBoolFlag {
         self.inherit.map_or(self.default, |f| f())
     }
 }
-/// Sync slice of [`Config::resolve_telemetry_mode`] for use before the tokio runtime (e.g. `init_sentry`).
+/// Sync slice of [`Config::resolve_telemetry_mode`] for use before the tokio runtime.
 /// `true` only when explicitly off.
 pub(crate) fn is_telemetry_disabled_sync() -> bool {
     !SyncBoolFlag::new(telemetry_enabled_from_toml)
@@ -2974,15 +2960,6 @@ pub(crate) fn is_telemetry_explicitly_disabled_sync() -> bool {
         .default(true)
         .resolve()
 }
-/// Sync sibling of [`is_telemetry_disabled_sync`] scoped to Sentry.
-/// Inherits from telemetry when no Sentry-specific signal is set.
-pub fn is_error_reporting_disabled_sync() -> bool {
-    !SyncBoolFlag::new(error_reporting_enabled_from_toml)
-        .disable_env("DISABLE_ERROR_REPORTING")
-        .enable_env(|| env_bool("GROK_ERROR_REPORTING"))
-        .inherit(|| !is_telemetry_disabled_sync())
-        .resolve()
-}
 /// `[features] telemetry` as enabled bool.
 /// SessionMetrics counts as enabled.
 /// `None` for absent or unparseable.
@@ -2992,15 +2969,6 @@ fn telemetry_enabled_from_toml(root: &toml::Value) -> Option<bool> {
         toml::Value::String(s) => TelemetryMode::parse(s).map(|m| !m.is_disabled()),
         _ => None,
     }
-}
-/// `[diagnostics] error_reporting` as enabled bool.
-/// Bool-only; no `session_metrics` equivalent.
-/// `None` falls through to inheritance.
-fn error_reporting_enabled_from_toml(root: &toml::Value) -> Option<bool> {
-    root.get("diagnostics")?
-        .as_table()?
-        .get("error_reporting")?
-        .as_bool()
 }
 /// `GROK_TELEMETRY_ENABLED` resolved through `TelemetryMode::parse` so the extended string forms (e.g. `"session_metrics"`) are accepted.
 fn grok_telemetry_env_enabled() -> Option<bool> {

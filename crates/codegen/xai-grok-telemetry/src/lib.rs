@@ -1,8 +1,7 @@
 //! Telemetry engine for Pig Agent sessions.
-//! Covers product events, Mixpanel emission, Sentry error reporting, OpenTelemetry tracing, and the structured unified log.
+//! Covers user-owned external OTEL emission and the structured unified log.
 //!
 //! Extracted from `xai-file-utils` so telemetry has its own ownership boundary (see CODEOWNERS).
-//! Consumers that only want event tracking and inference metrics no longer pull in Mixpanel/HTTP/identity dependencies.
 
 #![deny(clippy::indexing_slicing)]
 
@@ -15,7 +14,6 @@ pub mod external;
 pub mod http;
 pub mod id;
 pub mod otel_layer;
-pub mod sentry;
 
 // Leaf modules re-exported at crate root below, so the public API stays unchanged.
 mod logs;

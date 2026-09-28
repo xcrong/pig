@@ -314,8 +314,7 @@ which `/privacy` opens — does not change these config knobs:
 
 | Setting | How to set it |
 |---------|---------------|
-| `[features] telemetry` | `config.toml` or `GROK_TELEMETRY_ENABLED` |
-| `[telemetry] trace_upload` | `config.toml` or `GROK_TELEMETRY_TRACE_UPLOAD` |
+| `[features] telemetry` | `config.toml` or `GROK_TELEMETRY_ENABLED` (legacy internal mode; no first-party sinks remain) |
 | External OpenTelemetry | `GROK_EXTERNAL_OTEL` / `[telemetry] otel_*`. See [Monitoring Usage](24-monitoring-usage.md). |
 
 On team accounts, only a team admin can change coding-data sharing.

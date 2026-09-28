@@ -71,10 +71,6 @@ pub unsafe fn isolate_grok_env(home: &Path) {
     unsafe {
         std::env::set_var("GROK_HOME", home);
         std::env::set_var("GROK_TELEMETRY_ENABLED", "false");
-        std::env::set_var("GROK_TELEMETRY_MIXPANEL_ENABLED", "false");
-        std::env::set_var("GROK_TELEMETRY_MIXPANEL_TOKEN", "");
-        std::env::set_var("GROK_TELEMETRY_EVENTS_URL", "");
-        std::env::set_var("GROK_TELEMETRY_EVENTS_API_KEY", "");
         std::env::set_var("GROK_FEEDBACK_ENABLED", "false");
         std::env::set_var("GROK_TRACE_UPLOAD", "false");
         for var in [

@@ -1,6 +1,6 @@
 //! `x.ai/rollout/survey` extension handler.
 //!
-//! Logs a rollout-survey submission via telemetry (Mixpanel + BigQuery).
+//! Logs a rollout-survey submission via telemetry (user-owned external OTEL).
 
 use agent_client_protocol as acp;
 

@@ -329,12 +329,8 @@ fn baseline_env_from_parent(
     }
     for (key, value) in [
         ("GROK_TELEMETRY_ENABLED", "false"),
-        // A test that re-enables the mode must still have no production sink: the pager bakes in the analytics token and events URL.
-        ("GROK_TELEMETRY_MIXPANEL_ENABLED", "false"),
-        ("GROK_TELEMETRY_MIXPANEL_TOKEN", ""),
-        ("GROK_TELEMETRY_EVENTS_URL", ""),
-        ("GROK_TELEMETRY_EVENTS_API_KEY", ""),
-        ("GROK_TELEMETRY_TRACE_UPLOAD", "false"),
+        // No first-party sinks remain; the mode pins stay so a test that
+        // re-enables the mode cannot change emission behavior.
         ("GROK_FEEDBACK_ENABLED", "false"),
         ("GROK_TRACE_UPLOAD", "false"),
         ("GROK_INSTRUMENTATION", "disabled"),
@@ -795,26 +791,10 @@ mod tests {
             Some(OsStr::new("1"))
         );
         assert_eq!(
-            env_value(&sandbox, "GROK_TELEMETRY_TRACE_UPLOAD").as_deref(),
-            Some(OsStr::new("false"))
-        );
-        assert_eq!(
             env_value(&sandbox, "GROK_AGENT_ID").as_deref(),
             Some(OsStr::new("grok-e2e-sandbox")),
             "GROK_AGENT_ID must be pinned so a fresh GROK_HOME never computes a machine id (WMI on Windows)"
         );
-        for (sink, value) in [
-            ("GROK_TELEMETRY_MIXPANEL_ENABLED", "false"),
-            ("GROK_TELEMETRY_MIXPANEL_TOKEN", ""),
-            ("GROK_TELEMETRY_EVENTS_URL", ""),
-            ("GROK_TELEMETRY_EVENTS_API_KEY", ""),
-        ] {
-            assert_eq!(
-                env_value(&sandbox, sink).as_deref(),
-                Some(OsStr::new(value)),
-                "{sink} must be pinned off so GROK_TELEMETRY_ENABLED=true cannot reach a production sink"
-            );
-        }
         assert_eq!(
             env_value(&sandbox, "NO_PROXY").as_deref(),
             Some(OsStr::new("127.0.0.1,localhost,::1"))

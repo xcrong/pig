@@ -15,9 +15,8 @@ These knobs are independent of each other (and of this guide's external OTEL str
 
 | Setting | How to set it |
 |---------|---------------|
-| Telemetry master switch | `[features] telemetry` / `GROK_TELEMETRY_ENABLED` |
+| Telemetry master switch | `[features] telemetry` / `GROK_TELEMETRY_ENABLED` (legacy internal mode; no first-party sinks remain) |
 | Coding data, retention, and training | Settings — `/privacy` opens the row |
-| Trace upload | `[telemetry] trace_upload` / `GROK_TELEMETRY_TRACE_UPLOAD` |
 | External OpenTelemetry | `GROK_EXTERNAL_OTEL` / `[telemetry] otel_*` (this guide) |
 
 See also [Authentication](02-authentication.md#related-settings) and
@@ -42,8 +41,9 @@ The external stream is:
 ### ZDR and this stream
 
 `/privacy` and Zero Data Retention do **not** disable this stream. ZDR turns
-off SpaceXAI-side retention (product analytics, session-trace upload,
-coding-data sharing). It does not mute `GROK_EXTERNAL_OTEL`.
+off SpaceXAI-side retention (legacy product analytics, coding-data sharing).
+It does not mute `GROK_EXTERNAL_OTEL`. Pig Agent ships no first-party trace
+pipeline.
 
 When the stream is on:
 
