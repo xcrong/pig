@@ -76,6 +76,22 @@ impl ModelState {
         }
     }
 
+    /// Short display name for tight surfaces (composer status line): strips exactly
+    /// the " (<catalog-id>)" suffix the vendor mapping appends, using the known
+    /// current id. Names that never carried a suffix -- custom models, builtins,
+    /// and pi names with their own parens like "DeepSeek V4 Pro (New)" -- render
+    /// untouched.
+    pub fn current_model_short_name(&self) -> Option<String> {
+        let current = self.current.as_ref()?;
+        let name = if let Some(model_info) = self.available.get(current) {
+            model_info.name.clone()
+        } else {
+            current.0.to_string()
+        };
+        let suffix = format!(" ({})", current.0.as_ref());
+        Some(name.strip_suffix(&suffix).unwrap_or(&name).to_string())
+    }
+
     /// Machine-readable model ID string for the current model (e.g. "grok-4.5").
     pub fn current_model_id_str(&self) -> Option<&str> {
         Some(self.current.as_ref()?.0.as_ref())
@@ -351,6 +367,49 @@ mod tests {
     fn test_current_model_name() {
         let state = sample_models();
         assert_eq!(state.current_model_name(), Some("Model A".to_string()));
+    }
+
+    #[test]
+    fn test_current_model_short_name_strips_only_own_vendor_suffix() {
+        let mut state = ModelState::default();
+        let vendored = acp::ModelId::new(Arc::from("opencode-go/kimi-k2.6"));
+        state.available.insert(
+            vendored.clone(),
+            acp::ModelInfo::new(
+                vendored.clone(),
+                "Kimi K2.6 (opencode-go/kimi-k2.6)".to_string(),
+            ),
+        );
+        state.current = Some(vendored);
+        assert_eq!(
+            state.current_model_short_name(),
+            Some("Kimi K2.6".to_string())
+        );
+        // Full name stays intact for picker/settings surfaces.
+        assert_eq!(
+            state.current_model_name(),
+            Some("Kimi K2.6 (opencode-go/kimi-k2.6)".to_string())
+        );
+
+        // A pi name with its own parens must survive: the suffix must match this id.
+        let mut state = ModelState::default();
+        let pro = acp::ModelId::new(Arc::from("opencode-go/deepseek-v4-pro"));
+        state.available.insert(
+            pro.clone(),
+            acp::ModelInfo::new(pro.clone(), "DeepSeek V4 Pro (New)".to_string()),
+        );
+        state.current = Some(pro);
+        assert_eq!(
+            state.current_model_short_name(),
+            Some("DeepSeek V4 Pro (New)".to_string())
+        );
+
+        // Plain custom models render untouched.
+        let state = sample_models();
+        assert_eq!(
+            state.current_model_short_name(),
+            Some("Model A".to_string())
+        );
     }
 
     #[test]

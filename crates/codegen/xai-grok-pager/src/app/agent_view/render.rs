@@ -681,7 +681,7 @@ impl AgentView {
         let model_id = self
             .session
             .models
-            .current_model_name()
+            .current_model_short_name()
             .unwrap_or_else(|| "unknown".to_string());
         let effective_plan = self.plan_mode_pending.unwrap_or(self.plan_mode_active);
         let casual_commenting = self.is_casual_commenting();
