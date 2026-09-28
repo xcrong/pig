@@ -639,7 +639,10 @@ pub async fn check_update_background(update_config: &UpdateConfig) -> Background
     }
 
     let current_config = config::load_config().await;
-    if current_config.cli.auto_update == Some(false) {
+    // pig fork: auto-update defaults to off (unset means off) so a pig install
+    // is never overwritten by upstream Grok Build artifacts. Explicit opt-in
+    // (`[cli].auto_update = true`) still enables it.
+    if current_config.cli.auto_update != Some(true) {
         return BackgroundUpdateCheck::none();
     }
 
@@ -726,18 +729,20 @@ pub async fn run_update_if_available(
 
     let current_config = config::load_config().await;
 
-    if current_config.cli.auto_update == Some(false) {
+    if current_config.cli.auto_update != Some(true) {
         return Ok(false);
     }
 
-    // Resolve effective auto_update: None defaults to true (first-run).
-    let auto_update = current_config.cli.auto_update.unwrap_or(true);
+    // Resolve effective auto_update: None defaults to false (first-run).
+    // pig fork default-off: the update source is still upstream Grok Build,
+    // so an unset value must not trigger downloads. See above.
+    let auto_update = current_config.cli.auto_update.unwrap_or(false);
 
     if current_config.cli.auto_update.is_none()
         && inst != WINGET
         && let Err(e) = config::update_config(|st| {
             if st.cli.auto_update.is_none() {
-                st.cli.auto_update = Some(true);
+                st.cli.auto_update = Some(false);
             }
         })
         .await

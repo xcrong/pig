@@ -1343,11 +1343,13 @@ pub fn default_settings() -> Vec<SettingMeta> {
             owner: SettingOwner::Shell,
             label: "Auto-update",
             description: "Automatically download and install pager updates on startup. \
+                          Off by default in the pig fork (the update source is still \
+                          upstream Grok Build); turn on to opt into upstream updates. \
                           Restart required.",
             keywords: &[
                 "auto", "update", "updates", "upgrade", "version", "install", "channel",
             ],
-            kind: SettingKind::Bool { default: true },
+            kind: SettingKind::Bool { default: false },
             restart_required: true,
             hidden_in_minimal: false,
         },

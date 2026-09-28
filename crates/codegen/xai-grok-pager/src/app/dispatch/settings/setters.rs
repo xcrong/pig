@@ -2046,7 +2046,8 @@ pub(super) fn pr13_effective_default(key: &str) -> Option<bool> {
     use xai_grok_tools::implementations::grok_build::ask_user_question;
     match key {
         "show_tips" => Some(true),
-        "auto_update" => Some(true),
+        // pig fork default-off (matches auto_update.rs's `.unwrap_or(false)`)
+        "auto_update" => Some(false),
         "toolset.ask_user_question.timeout_enabled" => {
             Some(ask_user_question::DEFAULT_ASK_USER_QUESTION_TIMEOUT_ENABLED)
         }
@@ -2091,7 +2092,8 @@ pub(super) fn set_auto_update_inner(app: &mut AppView, value: bool) {
 /// Outer dispatcher for `Action::SetAutoUpdate`.
 pub(in crate::app::dispatch) fn set_auto_update(app: &mut AppView, new: bool) -> Vec<Effect> {
     let prev_state = app.auto_update;
-    let prev_effective = prev_state.unwrap_or(true);
+    // pig fork default-off (matches auto_update.rs's `.unwrap_or(false)`)
+    let prev_effective = prev_state.unwrap_or(false);
     if prev_effective == new && prev_state.is_some() {
         return vec![];
     }
