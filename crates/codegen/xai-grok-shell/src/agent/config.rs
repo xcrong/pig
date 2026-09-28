@@ -1231,6 +1231,10 @@ pub struct Config {
     pub auth_providers: IndexMap<String, xai_grok_config_types::AuthProviderConfig>,
     #[serde(skip)]
     pub model_providers: IndexMap<String, ModelProviderConfig>,
+    /// `[vendors.<id>]` tables: explicit opt-in for builtin vendor catalogs.
+    /// Parsed manually like `model_providers`; see `super::vendors::parse_vendor_configs`.
+    #[serde(skip)]
+    pub vendors: IndexMap<String, super::vendors::VendorConfig>,
     /// Written by the client via `config_toml_edit`; absorbed so it isn't flagged as an unrecognized key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hints: Option<toml::Value>,
@@ -1611,6 +1615,7 @@ impl Default for Config {
             login_device_flow: None,
             auth_providers: IndexMap::new(),
             model_providers: IndexMap::new(),
+            vendors: IndexMap::new(),
             hints: None,
             ui: UiConfig::default(),
             toolset: ShellToolsetConfig::default(),
@@ -1881,6 +1886,7 @@ impl Config {
         } = super::config_model_override_parse::parse_model_overrides(raw_config);
         let (mut auth_providers, auth_provider_warnings) = parse_auth_providers(raw_config);
         let (model_providers, mut model_provider_warnings) = parse_model_providers(raw_config);
+        let (vendors, vendor_warnings) = super::vendors::parse_vendor_configs(raw_config);
         for (model_id, model) in &config_models {
             let Some(cert_dir) = model.mtls_cert_dir.as_deref() else {
                 continue;
@@ -1943,6 +1949,7 @@ impl Config {
             t.remove("model");
             t.remove("auth_provider");
             t.remove("model_providers");
+            t.remove("vendors");
         }
         let parsed_mcp_servers =
             crate::util::config::parse_mcp_servers_from_toml(&raw_without_model_sections);
@@ -1961,6 +1968,7 @@ impl Config {
         config.config_warnings = config_warnings;
         config.auth_providers = auth_providers;
         config.model_providers = model_providers;
+        config.vendors = vendors;
         for spec in FEATURES {
             let Some(&value) = config.features.entries.flags.get(spec.key) else {
                 continue;
@@ -1969,6 +1977,7 @@ impl Config {
         }
         config.config_warnings.extend(auth_provider_warnings);
         config.config_warnings.extend(model_provider_warnings);
+        config.config_warnings.extend(vendor_warnings);
         unrecognized_keys.sort();
         for key in unrecognized_keys {
             config.config_warnings.push(
@@ -2009,7 +2018,7 @@ impl Config {
             if let Some(ref id) = model.model_provider
                 && !config.model_providers.contains_key(id)
                 && !declared_model_provider_names.contains(id.as_str())
-                && !super::vendors::is_builtin_vendor(id)
+                && !super::vendors::is_enabled_vendor(id, &config.vendors)
             {
                 config.config_warnings.push(
                     super::config_model_override_parse::ConfigWarning::model(
@@ -3359,13 +3368,15 @@ pub(crate) fn resolve_model_list(
         resolved = prefetched;
     }
     // Third-party vendor snapshots (pi-compatible `opencode`/`opencode-go` catalogs).
+    // Opt-in only: `[vendors.<id>] enabled = true` loads the snapshot, otherwise the
+    // vendor contributes nothing and its env key is never read.
     // Layered below user `[model.*]`: the loop below can still override any vendor key.
     // Keys are namespaced (`<vendor>/<model-id>`), so collisions with bundled or
     // prefetched entries are not expected; `or_insert` keeps first-party wins.
     // Skipped for custom-endpoint (enterprise lockdown) deployments, like the
     // bundled defaults: all inference there routes through the pinned gateway.
     if !cfg.endpoints.has_custom_endpoint() {
-        let vendor_models = super::vendors::builtin_vendor_models();
+        let vendor_models = super::vendors::builtin_vendor_models(&cfg.vendors);
         tracing::debug!(
             count = vendor_models.len(),
             "loaded vendor catalog snapshots"
@@ -3374,9 +3385,11 @@ pub(crate) fn resolve_model_list(
             resolved.entry(key).or_insert(entry);
         }
     }
-    // Effective `[model_providers]` table: builtin vendor presets fill gaps so
-    // `model_provider = "opencode"` resolves without hand-written provider blocks.
-    let effective_providers = super::vendors::effective_model_providers(&cfg.model_providers);
+    // Effective `[model_providers]` table: presets of explicitly enabled vendors
+    // fill gaps so `model_provider = "opencode-go"` resolves with only a
+    // `[vendors.opencode-go]` block. Hand-written blocks always win.
+    let effective_providers =
+        super::vendors::effective_model_providers(&cfg.model_providers, &cfg.vendors);
     let mut explicit_api_backend_keys = std::collections::HashSet::new();
     let mut explicit_supports_effort_false_keys = std::collections::HashSet::new();
     let mut explicit_menu_keys = std::collections::HashSet::new();

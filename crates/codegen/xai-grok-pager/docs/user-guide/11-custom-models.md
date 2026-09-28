@@ -317,21 +317,31 @@ name = "Mixtral 8x7B"
 env_key = "TOGETHER_API_KEY"
 ```
 
-### OpenCode Zen / OpenCode Go (builtin vendor catalog)
+### OpenCode Zen / OpenCode Go (opt-in vendor catalog)
 
-Grok ships pi-compatible snapshots of the OpenCode Zen (`opencode`) and OpenCode Go (`opencode-go`) catalogs, refreshed from pi's served catalog (`https://pi.dev/api/models/providers/<id>`; see `scripts/sync-pi-vendors.sh`). Snapshot models appear in the picker as `opencode/<model-id>` and `opencode-go/<model-id>`, and both vendors pre-register `[model_providers]` presets, so no hand-written provider block is needed:
+Grok ships pi-compatible snapshots of the OpenCode Zen (`opencode`) and OpenCode Go (`opencode-go`) catalogs, refreshed from pi's served catalog (`https://pi.dev/api/models/providers/<id>`; see `scripts/sync-pi-vendors.sh`). Vendors are **opt-in**: nothing is loaded and no environment variable is read until you explicitly enable one in `config.toml`. The credential key is always explicit config, never a builtin default:
+
+```toml
+[vendors.opencode-go]
+enabled = true
+env_key = "OPENCODE_API_KEY"   # explicit: read name-driven when a vendor model resolves credentials
+```
 
 ```bash
 export OPENCODE_API_KEY="..."
-grok -p "Hello" -m opencode/kimi-k2.6
+grok -p "Hello" -m opencode-go/kimi-k2.6
 ```
 
+Enabled snapshot models appear in the picker as `opencode/<model-id>` and `opencode-go/<model-id>`, and the vendor registers a `[model_providers]` preset (base_url, your `env_key`, session header), so no hand-written provider block is needed:
+
 ```toml
-# Minimal override: inherit the builtin preset (base_url, env_key, session_header)
+# Minimal override: inherit the vendor preset (base_url, env_key, session_header)
 [model.my-zen]
 model = "kimi-k2.6"
-model_provider = "opencode"
+model_provider = "opencode-go"
 ```
+
+Without `env_key` (or `api_key`) on the `[vendors.<id>]` block, the models still load but resolve with no credential (BYOK) and never borrow your session token -- pig warns about the missing credential at startup so it stays a conscious state. To disable again, set `enabled = false` or delete the block: the snapshot leaves the catalog and the key is never read. Overrides (`--config` patches, campaign/remote patches) cannot enable vendors; only the trusted config file can.
 
 Both vendors require the per-conversation `x-opencode-session` routing header. Grok sends it automatically (value: the session id) for any model with `session_header` set -- via the vendor preset, the snapshot entries, or your own `[model.*]` / `[model_providers.*]` value. A matching `extra_headers` entry (any casing) overrides the automatic value. Like other third-party entries these models are BYOK: without `OPENCODE_API_KEY` they resolve with no credential and never borrow your session token.
 

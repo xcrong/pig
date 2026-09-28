@@ -73,12 +73,15 @@ pub fn patch_touches_any(patch: &toml::Table, paths: &[PatchPath]) -> bool {
 }
 
 /// Keys stripped from every applied patch.
-/// An override cannot re-inject nested `version_overrides`/`campaigns` or define `[auth_provider.*]` / `[model_providers.*]` command tables.
+/// An override cannot re-inject nested `version_overrides`/`campaigns`, define `[auth_provider.*]` /
+/// `[model_providers.*]` command tables, or opt into `[vendors.*]` catalogs (which would activate
+/// credential reads outside the trusted config file).
 pub const PATCH_STRIP_KEYS: &[&str] = &[
     "version_overrides",
     "campaigns",
     "auth_provider",
     "model_providers",
+    "vendors",
 ];
 
 /// Stripped like [`PATCH_STRIP_KEYS`]: these carry a command the client would execute.
@@ -93,6 +96,7 @@ pub const CAMPAIGN_STRIP_KEYS: &[&str] = &[
     "campaigns",
     "auth_provider",
     "model_providers",
+    "vendors",
     "auth",
     "grok_com_config",
 ];
@@ -484,12 +488,17 @@ mod tests {
             "model_providers".into(),
             toml::Value::Table(toml::Table::new()),
         );
+        p.insert(
+            "vendors".into(),
+            toml::Value::Table(toml::Table::new()),
+        );
         p.insert("keep".into(), toml::Value::Boolean(true));
         apply_patches(&mut cfg2, std::iter::once(p), PATCH_STRIP_KEYS);
         assert!(cfg2.get("version_overrides").is_none());
         assert!(cfg2.get("campaigns").is_none());
         assert!(cfg2.get("auth_provider").is_none());
         assert!(cfg2.get("model_providers").is_none());
+        assert!(cfg2.get("vendors").is_none());
         assert_eq!(cfg2.get("keep").and_then(toml::Value::as_bool), Some(true));
 
         // Top-level strip only: a model may still reference a local provider by name.

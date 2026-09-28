@@ -1146,10 +1146,46 @@ mod tests {
 
     #[test]
     fn builtin_vendor_provider_needs_no_hand_written_block() {
-        use crate::agent::vendors::{OPENCODE_SESSION_HEADER, VENDOR_OPENCODE};
+        use crate::agent::vendors::{OPENCODE_ENV_KEY, OPENCODE_SESSION_HEADER, VENDOR_OPENCODE};
 
+        // Without an explicit `[vendors.opencode]` opt-in, the preset does not exist:
+        // referencing it warns as undefined and applies no provider defaults.
         let toml_cfg: toml::Value = toml::from_str(
             r#"
+            [model.via-opencode]
+            model = "kimi-k2.6"
+            base_url = "https://opencode.ai/zen/v1"
+            context_window = 200000
+            model_provider = "opencode"
+            "#,
+        )
+        .unwrap();
+
+        let cfg = Config::new_from_toml_cfg(&toml_cfg).expect("config should parse");
+        assert!(
+            cfg.config_warnings
+                .iter()
+                .any(|w| format!("{w:?}").contains(VENDOR_OPENCODE)),
+            "a disabled vendor preset must warn as undefined: {:?}",
+            cfg.config_warnings
+        );
+        let resolved = resolve_model_list(&cfg, None);
+        let model = resolved.get("via-opencode").expect("model should exist");
+        assert_eq!(
+            model.info.session_header.as_deref(),
+            None,
+            "no preset applies without the vendor opt-in"
+        );
+
+        // With the explicit opt-in, only the `[vendors.opencode]` block is needed
+        // (no hand-written `[model_providers.opencode]`): the model inherits the
+        // preset session header and the configured credential.
+        let toml_cfg: toml::Value = toml::from_str(
+            r#"
+            [vendors.opencode]
+            enabled = true
+            env_key = "OPENCODE_API_KEY"
+
             [model.via-opencode]
             model = "kimi-k2.6"
             base_url = "https://opencode.ai/zen/v1"
@@ -1164,7 +1200,7 @@ mod tests {
             !cfg.config_warnings
                 .iter()
                 .any(|w| format!("{w:?}").contains(VENDOR_OPENCODE)),
-            "the builtin vendor preset must not warn as undefined: {:?}",
+            "the enabled vendor preset must not warn as undefined: {:?}",
             cfg.config_warnings
         );
         let resolved = resolve_model_list(&cfg, None);
@@ -1172,7 +1208,16 @@ mod tests {
         assert_eq!(
             model.info.session_header.as_deref(),
             Some(OPENCODE_SESSION_HEADER),
-            "the model inherits the builtin vendor session header"
+            "the model inherits the vendor preset session header"
+        );
+        assert_eq!(
+            model
+                .env_key
+                .as_ref()
+                .and_then(crate::agent::config::EnvKeys::primary)
+                .as_deref(),
+            Some(OPENCODE_ENV_KEY),
+            "the model inherits the explicitly configured vendor env key"
         );
         assert!(
             model.has_own_credentials(),

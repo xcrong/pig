@@ -16,9 +16,11 @@
 //!   likewise skipped but logs a warning so it cannot disappear silently.
 //! * pi's Anthropic base URLs omit `/v1` (their SDK appends `/v1/messages`); pig
 //!   appends only `messages`, so `/v1` is added when missing.
-//! * Every mapped model gets `env_key = OPENCODE_API_KEY` and
-//!   `session_header = x-opencode-session`. The per-turn value is the session id,
-//!   injected by `xai_grok_sampler::SamplingClient` (see `apply_session_header`).
+//! * Every mapped model of an enabled vendor gets the credential from its explicit
+//!   `[vendors.<id>]` config (`env_key` / `api_key`); enabled-without-credential
+//!   loads credential-less (BYOK). Disabled vendors map nothing and read nothing.
+//!   `session_header = x-opencode-session` is always set: the per-turn value is the
+//!   session id, injected by `xai_grok_sampler::SamplingClient` (see `apply_session_header`).
 //! * Catalog keys are namespaced as `<vendor>/<model-id>`; bare model ids still
 //!   resolve via [`find_model_by_id`](super::config::find_model_by_id), which also
 //!   matches the wire slug. User `[model.*]` entries always win over vendor keys.
@@ -28,6 +30,7 @@ use std::num::NonZeroU64;
 use indexmap::IndexMap;
 
 use super::config::{EnvKeys, ModelEntry, ModelInfo};
+use super::config_model_override_parse::{ConfigWarning, ConfigWarningKind};
 use super::model_providers::ModelProviderConfig;
 use crate::sampling::ApiBackend;
 
@@ -83,23 +86,137 @@ pub const VENDORS: &[Vendor] = &[
     },
 ];
 
-/// Whether `id` names a builtin vendor preset (`opencode`, `opencode-go`).
-/// Used by config validation so `model_provider = "opencode"` does not warn as
-/// undefined when the user relies on the preset instead of a hand-written block.
-pub fn is_builtin_vendor(id: &str) -> bool {
-    VENDORS.iter().any(|v| v.id == id)
+/// Whether `id` names an explicitly enabled builtin vendor preset.
+/// Vendors are opt-in: only `[vendors.<id>] enabled = true` loads the snapshot
+/// catalog and registers the preset. Used by config validation so
+/// `model_provider = "opencode"` warns as undefined unless the vendor is enabled
+/// (or the user hand-wrote `[model_providers.<id>]`).
+pub fn is_enabled_vendor(id: &str, vendors: &IndexMap<String, VendorConfig>) -> bool {
+    vendors.get(id).is_some_and(|v| v.enabled) && VENDORS.iter().any(|v| v.id == id)
 }
 
-/// Provider presets so `[model.x] model_provider = "opencode"` works without the
-/// user hand-writing `base_url`/`env_key`/`session_header`.
-pub fn builtin_vendor_providers() -> IndexMap<String, ModelProviderConfig> {
+/// User-declared `[vendors.<id>]` entry: explicit opt-in for a builtin vendor catalog.
+///
+/// Disabled by default: the snapshot stays out of the model catalog, no preset is
+/// registered, and no environment variable is read for the vendor. Enabling with
+/// neither `env_key` nor `api_key` loads the models credential-less (BYOK); a
+/// warning is emitted so the missing credential is a conscious state.
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct VendorConfig {
+    pub enabled: bool,
+    /// Explicit credential source for this vendor's models, read name-driven when
+    /// a vendor model resolves credentials. Never a builtin default: without this
+    /// (or `api_key`), the vendor's env var is never touched.
+    pub env_key: Option<EnvKeys>,
+    /// Static alternative to `env_key`; wins when both are set.
+    pub api_key: Option<String>,
+}
+
+/// Parse `[vendors.<id>]` tables leniently: unknown vendor ids and malformed
+/// entries warn and are skipped instead of failing the whole config.
+pub(crate) fn parse_vendor_configs(
+    raw_config: &toml::Value,
+) -> (IndexMap<String, VendorConfig>, Vec<ConfigWarning>) {
+    let mut vendors = IndexMap::new();
+    let mut warnings = Vec::new();
+    let Some(section) = raw_config.get("vendors") else {
+        return (vendors, warnings);
+    };
+    let Some(table) = section.as_table() else {
+        warnings.push(ConfigWarning::config_key(
+            "vendors".to_owned(),
+            ConfigWarningKind::NotATable,
+            format!(
+                "`vendors` must be a table of [vendors.<id>] entries, got {}; \
+                 all vendors stay disabled",
+                section.type_str()
+            ),
+        ));
+        return (vendors, warnings);
+    };
+    for (id, value) in table {
+        if !VENDORS.iter().any(|v| v.id == id.as_str()) {
+            warnings.push(ConfigWarning::config_key(
+                format!("vendors.{id}"),
+                ConfigWarningKind::UnknownField,
+                format!(
+                    "unknown vendor '{id}'; supported vendors are {}. Entry ignored.",
+                    VENDORS
+                        .iter()
+                        .map(|v| v.id)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            ));
+            continue;
+        }
+        let mut unknown = Vec::new();
+        match serde_ignored::deserialize::<_, _, VendorConfig>(value.clone(), |path| {
+            unknown.push(path.to_string());
+        }) {
+            Ok(entry) => {
+                for key in unknown {
+                    warnings.push(ConfigWarning::config_key(
+                        format!("vendors.{id}.{key}"),
+                        ConfigWarningKind::UnknownField,
+                        "unrecognized key; field ignored".to_owned(),
+                    ));
+                }
+                let has_static_key = entry
+                    .api_key
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|k| !k.is_empty());
+                if has_static_key && entry.env_key.is_some() {
+                    warnings.push(ConfigWarning::config_key(
+                        format!("vendors.{id}"),
+                        ConfigWarningKind::ConflictingFields,
+                        "api_key shadows env_key; the static key always takes precedence".to_owned(),
+                    ));
+                } else if entry.enabled
+                    && !has_static_key
+                    && entry.env_key.as_ref().and_then(EnvKeys::primary).is_none()
+                {
+                    warnings.push(ConfigWarning::config_key(
+                        format!("vendors.{id}"),
+                        ConfigWarningKind::InvalidValue,
+                        "enabled with no env_key/api_key; vendor models resolve with no \
+                         credential (BYOK)"
+                            .to_owned(),
+                    ));
+                }
+                vendors.insert(id.clone(), entry);
+            }
+            Err(error) => {
+                warnings.push(ConfigWarning::config_key(
+                    format!("vendors.{id}"),
+                    ConfigWarningKind::InvalidValue,
+                    format!("failed to parse ({error}); vendor stays disabled"),
+                ));
+            }
+        }
+    }
+    (vendors, warnings)
+}
+
+/// Provider presets for explicitly enabled vendors, so `[model.x]
+/// model_provider = "opencode-go"` works with only a `[vendors.opencode-go]`
+/// block. Credentials come solely from the vendor config: no implicit env key.
+pub fn builtin_vendor_providers(
+    vendors: &IndexMap<String, VendorConfig>,
+) -> IndexMap<String, ModelProviderConfig> {
     let mut providers = IndexMap::new();
     for vendor in VENDORS {
+        let Some(cfg) = vendors.get(vendor.id).filter(|v| v.enabled) else {
+            continue;
+        };
         providers.insert(
             vendor.id.to_string(),
             ModelProviderConfig {
                 base_url: Some(vendor.default_base_url.to_string()),
-                env_key: Some(EnvKeys::single(OPENCODE_ENV_KEY)),
+                env_key: cfg.env_key.clone(),
+                api_key: cfg.api_key.clone(),
                 session_header: Some(OPENCODE_SESSION_HEADER.to_string()),
                 ..Default::default()
             },
@@ -108,12 +225,13 @@ pub fn builtin_vendor_providers() -> IndexMap<String, ModelProviderConfig> {
     providers
 }
 
-/// Effective `[model_providers]` table: builtin vendor presets fill gaps, explicit
-/// user entries always win.
+/// Effective `[model_providers]` table: presets of enabled vendors fill gaps,
+/// explicit user entries always win.
 pub fn effective_model_providers(
     configured: &IndexMap<String, ModelProviderConfig>,
+    vendors: &IndexMap<String, VendorConfig>,
 ) -> IndexMap<String, ModelProviderConfig> {
-    let mut effective = builtin_vendor_providers();
+    let mut effective = builtin_vendor_providers(vendors);
     for (id, provider) in configured {
         effective.insert(id.clone(), provider.clone());
     }
@@ -163,8 +281,14 @@ fn context_window_of(value: &serde_json::Value) -> NonZeroU64 {
 }
 
 /// Parse one vendor snapshot into catalog entries keyed `<vendor>/<model-id>`.
-/// Returns `(mapped, skipped_by_api)` so callers can log coverage.
-fn map_vendor_snapshot(vendor: &Vendor) -> (IndexMap<String, ModelEntry>, Vec<String>) {
+/// Credentials come from the explicit `[vendors.<id>]` config: `None`/`None`
+/// loads the models credential-less (BYOK). Returns `(mapped, skipped_by_api)`
+/// so callers can log coverage.
+fn map_vendor_snapshot(
+    vendor: &Vendor,
+    api_key: Option<String>,
+    env_key: Option<EnvKeys>,
+) -> (IndexMap<String, ModelEntry>, Vec<String>) {
     let mut mapped = IndexMap::new();
     let mut skipped = Vec::new();
     let parsed: serde_json::Value = match serde_json::from_str(vendor.snapshot_json) {
@@ -232,8 +356,8 @@ fn map_vendor_snapshot(vendor: &Vendor) -> (IndexMap<String, ModelEntry>, Vec<St
         let entry = ModelEntry {
             info,
             mtls_cert_dir: None,
-            api_key: None,
-            env_key: Some(EnvKeys::single(OPENCODE_ENV_KEY)),
+            api_key: api_key.clone(),
+            env_key: env_key.clone(),
             auth_provider: None,
             api_base_url: None,
         };
@@ -242,12 +366,20 @@ fn map_vendor_snapshot(vendor: &Vendor) -> (IndexMap<String, ModelEntry>, Vec<St
     (mapped, skipped)
 }
 
-/// All builtin vendor models. Keys are namespaced; user `[model.*]` entries take
-/// precedence (see `resolve_model_list`).
-pub fn builtin_vendor_models() -> IndexMap<String, ModelEntry> {
+/// Enabled builtin vendor models. Keys are namespaced; user `[model.*]` entries take
+/// precedence (see `resolve_model_list`). Disabled vendors contribute nothing, so
+/// their env keys are never read.
+pub fn builtin_vendor_models(
+    vendors: &IndexMap<String, VendorConfig>,
+) -> IndexMap<String, ModelEntry> {
     let mut all = IndexMap::new();
     for vendor in VENDORS {
-        let (models, skipped) = map_vendor_snapshot(vendor);
+        let Some(cfg) = vendors.get(vendor.id).filter(|v| v.enabled) else {
+            tracing::debug!(vendor = vendor.id, "vendor not enabled; skipping snapshot");
+            continue;
+        };
+        let (models, skipped) =
+            map_vendor_snapshot(vendor, cfg.api_key.clone(), cfg.env_key.clone());
         tracing::debug!(
             vendor = vendor.id,
             mapped = models.len(),
@@ -270,9 +402,25 @@ pub fn builtin_vendor_models() -> IndexMap<String, ModelEntry> {
 mod tests {
     use super::*;
 
+    fn enabled_vendors() -> IndexMap<String, VendorConfig> {
+        VENDORS
+            .iter()
+            .map(|v| {
+                (
+                    v.id.to_string(),
+                    VendorConfig {
+                        enabled: true,
+                        env_key: Some(EnvKeys::single(OPENCODE_ENV_KEY)),
+                        api_key: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn vendor_snapshots_map_to_namespaced_models() {
-        let models = builtin_vendor_models();
+        let models = builtin_vendor_models(&enabled_vendors());
         assert!(!models.is_empty(), "expected mapped vendor models");
         for (key, entry) in &models {
             let (vendor, id) = key.split_once('/').expect("namespaced key");
@@ -304,9 +452,83 @@ mod tests {
     }
 
     #[test]
+    fn disabled_vendors_map_nothing() {
+        assert!(builtin_vendor_models(&IndexMap::new()).is_empty());
+        let mut vendors = enabled_vendors();
+        vendors.get_mut(VENDOR_OPENCODE).expect("entry").enabled = false;
+        let models = builtin_vendor_models(&vendors);
+        assert!(!models.is_empty(), "enabled vendor still maps");
+        assert!(
+            models.keys().all(|k| k.starts_with("opencode-go/")),
+            "disabled vendor must contribute no keys"
+        );
+        assert!(builtin_vendor_providers(&IndexMap::new()).is_empty());
+        assert!(builtin_vendor_providers(&vendors).get(VENDOR_OPENCODE).is_none());
+    }
+
+    #[test]
+    fn vendor_credential_comes_from_config_only() {
+        let mut vendors = IndexMap::new();
+        vendors.insert(
+            VENDOR_OPENCODE_GO.to_string(),
+            VendorConfig {
+                enabled: true,
+                env_key: Some(EnvKeys::single("MY_VENDOR_KEY")),
+                api_key: None,
+            },
+        );
+        let models = builtin_vendor_models(&vendors);
+        assert!(!models.is_empty());
+        for entry in models.values() {
+            assert_eq!(
+                entry.env_key.as_ref().and_then(EnvKeys::primary).as_deref(),
+                Some("MY_VENDOR_KEY")
+            );
+            assert!(entry.api_key.is_none());
+        }
+        let providers = builtin_vendor_providers(&vendors);
+        let preset = providers.get(VENDOR_OPENCODE_GO).expect("preset exists");
+        assert_eq!(
+            preset.env_key.as_ref().and_then(EnvKeys::primary).as_deref(),
+            Some("MY_VENDOR_KEY")
+        );
+    }
+
+    #[test]
+    fn parse_vendor_configs_validates_entries() {
+        let raw: toml::Value = toml::from_str(
+            r#"
+            [vendors.opencode-go]
+            enabled = true
+            env_key = "MY_KEY"
+
+            [vendors.bogus]
+            enabled = true
+
+            [vendors.opencode]
+            enabled = true
+            "#,
+        )
+        .unwrap();
+        let (vendors, warnings) = parse_vendor_configs(&raw);
+        assert!(vendors.get(VENDOR_OPENCODE_GO).expect("entry").enabled);
+        assert!(!vendors.contains_key("bogus"), "unknown vendor is skipped");
+        assert!(
+            warnings.iter().any(|w| w.reason.contains("unknown vendor")),
+            "unknown vendor warns, got {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.reason.contains("no env_key/api_key")),
+            "enabled-without-credential warns, got {warnings:?}"
+        );
+    }
+
+    #[test]
     fn unsupported_apis_are_skipped_not_fatal() {
         for vendor in VENDORS {
-            let (mapped, skipped) = map_vendor_snapshot(vendor);
+            let (mapped, skipped) = map_vendor_snapshot(vendor, None, None);
             assert!(!mapped.is_empty(), "{} mapped nothing", vendor.id);
             for entry in &skipped {
                 let api = entry
@@ -323,7 +545,7 @@ mod tests {
         }
         // opencode serves Gemini via google-generative-ai, which pig explicitly
         // does not support.
-        let (_, skipped) = map_vendor_snapshot(&VENDORS[0]);
+        let (_, skipped) = map_vendor_snapshot(&VENDORS[0], None, None);
         assert!(
             skipped.iter().any(|s| s.contains("google-generative-ai")),
             "expected google-generative-ai skips, got {skipped:?}"
@@ -340,7 +562,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let effective = effective_model_providers(&configured);
+        let effective = effective_model_providers(&configured, &enabled_vendors());
         assert_eq!(
             effective
                 .get(VENDOR_OPENCODE)
@@ -357,8 +579,31 @@ mod tests {
     }
 
     #[test]
+    fn disabled_vendor_registers_no_preset() {
+        let effective = effective_model_providers(&IndexMap::new(), &IndexMap::new());
+        assert!(effective.is_empty());
+        // An explicit hand-written block is still honored: only the implicit
+        // preset is gated, never user config.
+        let mut configured = IndexMap::new();
+        configured.insert(
+            VENDOR_OPENCODE.to_string(),
+            ModelProviderConfig {
+                base_url: Some("https://custom.example/v1".to_string()),
+                ..Default::default()
+            },
+        );
+        let effective = effective_model_providers(&configured, &IndexMap::new());
+        assert_eq!(
+            effective
+                .get(VENDOR_OPENCODE)
+                .and_then(|p| p.base_url.as_deref()),
+            Some("https://custom.example/v1")
+        );
+    }
+
+    #[test]
     fn provider_preset_carries_session_header() {
-        let providers = builtin_vendor_providers();
+        let providers = builtin_vendor_providers(&enabled_vendors());
         for id in [VENDOR_OPENCODE, VENDOR_OPENCODE_GO] {
             let preset = providers.get(id).expect("preset exists");
             assert_eq!(
