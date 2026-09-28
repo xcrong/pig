@@ -68,8 +68,9 @@ pub(crate) fn select_by_title<'a>(
                 .join("\n");
             anyhow::bail!(
                 "Multiple sessions match title {:?}:\n{listing}\n\
-                 Resume by session id instead: grok --resume <session-id>",
-                arg.trim()
+                 Resume by session id instead: {} --resume <session-id>",
+                arg.trim(),
+                super::screen_mode_relaunch::resume_bin_name(),
             );
         }
     }

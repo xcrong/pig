@@ -175,6 +175,21 @@ pub(crate) fn screen_mode_env_value(want_minimal: bool) -> &'static str {
     }
 }
 
+/// Binary name for pasteable resume hints, derived from argv[0] so renamed
+/// installs suggest the right command. Unknown stems (e.g. the test harness
+/// binary) fall back to the pig artifact name.
+pub(crate) fn resume_bin_name() -> String {
+    std::env::args()
+        .next()
+        .as_deref()
+        .map(std::path::Path::new)
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .filter(|n| *n == "grok" || *n == "agent" || *n == "pig")
+        .unwrap_or("pig")
+        .to_owned()
+}
+
 /// Pasteable shell command when auto re-exec fails (env, flag, and `--resume`).
 pub(crate) fn screen_mode_relaunch_resume_hint(session_id: &str, want_minimal: bool) -> String {
     let mode = screen_mode_env_value(want_minimal);
@@ -183,7 +198,10 @@ pub(crate) fn screen_mode_relaunch_resume_hint(session_id: &str, want_minimal: b
     } else {
         "--fullscreen"
     };
-    format!("{GROK_SCREEN_MODE_ENV}={mode} grok {flag} --resume {session_id}")
+    format!(
+        "{GROK_SCREEN_MODE_ENV}={mode} {} {flag} --resume {session_id}",
+        resume_bin_name()
+    )
 }
 
 /// Replace the current process with a relaunch into the requested screen mode.
@@ -741,11 +759,11 @@ mod tests {
         // The explicit flag keeps the resume in the right mode if the env is dropped
         assert_eq!(
             screen_mode_relaunch_resume_hint("abc-sid", false),
-            "GROK_SCREEN_MODE=fullscreen grok --fullscreen --resume abc-sid"
+            "GROK_SCREEN_MODE=fullscreen pig --fullscreen --resume abc-sid"
         );
         assert_eq!(
             screen_mode_relaunch_resume_hint("abc-sid", true),
-            "GROK_SCREEN_MODE=minimal grok --minimal --resume abc-sid"
+            "GROK_SCREEN_MODE=minimal pig --minimal --resume abc-sid"
         );
     }
 
