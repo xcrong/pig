@@ -435,12 +435,13 @@ strip = true
 panic = "abort"
 split-debuginfo = "unpacked"
 codegen-units = 128
-debug = "line-tables-only"
+# No debuginfo for fast local iteration (link time, artifact size).
+debug = false
 opt-level = 0
 lto = false
 incremental = true
 
-# Skip debug info for non-workspace dependencies; workspace crates keep line-tables-only.
+# Skip debug info for non-workspace dependencies (workspace crates already emit none).
 [profile.dev.package."*"]
 debug = false
 
