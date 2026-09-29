@@ -54,8 +54,6 @@ use xai_grok_login::AuthManager;
 use xai_grok_login::backend::AuthBackend as _;
 use crate::config::StorageMode;
 use crate::extensions::notification::{SessionNotification, SessionUpdate};
-use xai_grok_telemetry::id::{agent_id, agent_instance_id};
-use xai_grok_telemetry::session_ctx::log_event;
 use xai_grok_workspace::file_system::{AcpSessionFs, CodebaseIndexManager, LocalFs};
 use xai_grok_workspace::permission::{ClientType, PermissionEvent};
 use crate::sampling::Client as OaiCompatClient;
@@ -77,7 +75,7 @@ use crate::upload::trace::{
     build_chat_history_then_move_capture, local_sandbox_telemetry,
     upload_full_prompt_txt, upload_harness_session_archive, upload_images,
     upload_metadata, upload_plugin_state, upload_session_state, upload_turn_messages,
-    upload_turn_result, upload_unified_log,
+    upload_turn_result,
 };
 use crate::upload::turn::{
     PromptTraceContext, TurnEndUploads, UploadWait, complete_prompt_trace,
@@ -707,7 +705,7 @@ pub struct MvpAgent {
     /// When `false`, the pager shows a gate CTA instead of the prompt.
     tier_allowed: std::cell::Cell<bool>,
     /// The `user_id` the current `tier_allowed` verdict was resolved for.
-    /// `cfg.remote_settings` isn't reset on account switch, so a mismatch means "unknown" (provisional open), like `OtelGate::rearm_on_switch`.
+    /// `cfg.remote_settings` isn't reset on account switch, so a mismatch means "unknown" (provisional open).
     allow_access_resolved_for: std::cell::RefCell<Option<String>>,
     /// In-flight official-marketplace auto-register; the agent owns the handle. Replacing the slot
     /// aborts a still-queued task; a running one finishes its short register-or-no-op.
@@ -718,16 +716,10 @@ pub struct MvpAgent {
     /// `Cell` so [`Self::reapply_storage_mode`] can upgrade it when remote settings land; persistence reads the live value.
     /// Authoritative post-construction; `Config.storage_mode` is only the boot seed.
     storage_mode: std::cell::Cell<StorageMode>,
-    /// External-OTEL emission gate; see [`crate::agent::otel_gate`].
-    otel_gate: crate::agent::otel_gate::OtelGate,
     /// Default YOLO mode: when true, sessions start with auto-approve enabled.
     /// Per-session YOLO tracking lives in SessionHandle.yolo_mode.
     default_yolo_mode: bool,
     default_auto_mode: bool,
-    /// `Send` mirror of `cfg.is_trace_upload_enabled()` for the per-session live collection gates.
-    /// `cfg` is `!Send`; the gates run on the tokio pool.
-    /// Kept current by [`Self::sync_collection_config_gate`] on every mid-session `remote_settings` rewrite.
-    pub(crate) trace_upload_live: Arc<std::sync::atomic::AtomicBool>,
     /// Shell-issued one-shot upload capabilities. Each token is bound to one session and consumed before archive I/O.
     feedback_trace_upload_grants: RefCell<VecDeque<(String, acp::SessionId)>>,
     /// Memory system configuration for future session spawns.
@@ -887,7 +879,6 @@ pub struct MvpAgent {
 pub fn warm_async_http_client() {
     xai_grok_extra_ca::ensure_default_crypto_provider();
     std::thread::spawn(|| {
-        let _timer = crate::instrumentation_timer!("startup.async_http_warmup");
         let _ = crate::http::shared_client();
     });
 }
@@ -968,10 +959,6 @@ fn startup_hints_from_meta(
     let hints = explicit_startup_hints(session_meta)
         .or_else(|| explicit_startup_hints(init_meta))
         .unwrap_or_default();
-    *hints.startup_traceparent.borrow_mut() = session_meta
-        .and_then(|m| m.get("traceparent"))
-        .and_then(|v| v.as_str())
-        .map(str::to_owned);
     hints
 }
 /// Parse `startupHints` carried explicitly on one `_meta` object. `None` when absent or unparseable.
@@ -1215,7 +1202,6 @@ mod agent_runtime;
 mod code_nav;
 mod folder_trust_prompt;
 mod heap_profile;
-mod resource_telemetry;
 mod session_registry;
 mod session_lifecycle;
 mod agent_ops;
@@ -1518,20 +1504,10 @@ impl MvpAgent {
                 new_tier = %unblocked.new_tier,
                 "subscription detected, lifting gate"
             );
-            xai_grok_telemetry::unified_log::info(
-                "paywall_check_gate_lifting",
-                None,
-                Some(
-                    serde_json::json!({
-                    "user_id": user_id,
-                    "new_tier": unblocked.new_tier,
-                }),
-                ),
-            );
             let remote_was_absent = self.cfg.borrow().remote_settings.is_none();
             if crate::util::config::resolve_remote_fetch_enabled()
                 && let Some(auth) = self.auth_manager.current()
-                && let Some(settings) = self.fetch_settings_resolving_gate(&auth).await
+                && let Some(settings) = self.fetch_settings_for_live_identity(&auth).await
             {
                 if self
                     .tier_recheck_identity_changed(
@@ -1557,16 +1533,6 @@ impl MvpAgent {
                     new_tier = %unblocked.new_tier,
                     "subscription detected but allow_access still false, keeping gate"
                 );
-                xai_grok_telemetry::unified_log::warn(
-                    "paywall_check_gate_kept_allow_access_false",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "user_id": user_id,
-                        "new_tier": unblocked.new_tier,
-                    }),
-                    ),
-                );
                 return;
             }
             let claim_already_current = self
@@ -1583,11 +1549,6 @@ impl MvpAgent {
                 tracing::info!(
                     "post-unblock: skipping forced mint, single_check's bounded refresh still in flight"
                 );
-                xai_grok_telemetry::unified_log::info(
-                    "paywall_check_skip_redundant_mint",
-                    None,
-                    Some(serde_json::json!({ "user_id": user_id })),
-                );
                 false
             } else {
                 match self
@@ -1601,26 +1562,10 @@ impl MvpAgent {
                     {
                         Ok(_) => {
                             tracing::info!("post-unblock: JWT refresh_chain succeeded");
-                            xai_grok_telemetry::unified_log::info(
-                                "paywall_check_jwt_refreshed",
-                                None,
-                                Some(serde_json::json!({ "user_id": user_id })),
-                            );
                             true
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, "post-unblock: JWT refresh failed, user may need to re-login on next restart");
-                            xai_grok_telemetry::unified_log::warn(
-                                "paywall_check_error",
-                                None,
-                                Some(
-                                    serde_json::json!({
-                                "user_id": user_id,
-                                "kind": "post_unblock_refresh_failed",
-                                "detail": e.to_string(),
-                            }),
-                                ),
-                            );
                             false
                         }
                     }
@@ -1646,19 +1591,6 @@ impl MvpAgent {
                 let new_tier = unblocked.new_tier.clone();
                 let jwt_claim_log = jwt_claim.clone();
                 tokio::task::spawn(async move {
-                    xai_grok_telemetry::unified_log::info(
-                        "model catalog: post_subscription_unblock refresh",
-                        None,
-                        Some(
-                            serde_json::json!({
-                            "user_id": user_id_log,
-                            "new_tier": new_tier,
-                            "refresh_ok": refresh_ok,
-                            "jwt_claim": jwt_claim_log,
-                            "jwt_matches_new_tier": true,
-                        }),
-                        ),
-                    );
                     models_manager.on_auth_changed().await;
                 });
             } else {
@@ -1667,18 +1599,6 @@ impl MvpAgent {
                     jwt_claim = ?jwt_claim,
                     new_tier = %unblocked.new_tier,
                     "post-unblock: JWT tier claim missing or stale vs live tier; deferring model catalog refresh with retry"
-                );
-                xai_grok_telemetry::unified_log::warn(
-                    "model catalog: post_subscription_unblock deferred (jwt tier missing or stale)",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "user_id": user_id,
-                        "new_tier": unblocked.new_tier,
-                        "refresh_ok": refresh_ok,
-                        "jwt_claim": jwt_claim,
-                    }),
-                    ),
                 );
                 spawn_post_unblock_jwt_and_catalog_retry(
                     self.auth_manager.clone(),
@@ -1689,13 +1609,6 @@ impl MvpAgent {
                 );
             }
         } else {
-            xai_grok_telemetry::unified_log::info(
-                "paywall_check_no_subscription",
-                None,
-                Some(serde_json::json!({
-                    "user_id": user_id,
-                })),
-            );
         }
     }
     pub(crate) fn auth_response_with_meta(&self) -> AuthenticateResponse {
@@ -1759,7 +1672,7 @@ impl MvpAgent {
             self.run_deferred_remote_work();
             return;
         };
-        let Some(settings) = self.fetch_settings_resolving_gate(&auth).await else {
+        let Some(settings) = self.fetch_settings_for_live_identity(&auth).await else {
             self.run_deferred_remote_work();
             return;
         };
@@ -1961,17 +1874,6 @@ impl MvpAgent {
         {
             return false;
         }
-        xai_grok_telemetry::unified_log::info(
-            "tier re-check identity changed, discarding result",
-            None,
-            Some(
-                serde_json::json!({
-                "started_user_id": started_user_id,
-                "canonical_user_id": canonical_user_id,
-                "live_user_id": live,
-            }),
-            ),
-        );
         true
     }
     /// Background the reconnect tier re-check so a gated initialize answers immediately. The re-check can block for tens of seconds on the subscription endpoint plus a refresh.
@@ -2330,14 +2232,6 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
         tracing::debug!(
             "post-unblock JWT/catalog retry already in flight, skipping duplicate spawn"
         );
-        xai_grok_telemetry::unified_log::info(
-            "model catalog: post_subscription_unblock jwt retry skipped (already in flight)",
-            None,
-            Some(serde_json::json!({
-                "user_id": user_id,
-                "new_tier": new_tier,
-            })),
-        );
         return;
     }
     tokio::task::spawn(async move {
@@ -2399,49 +2293,15 @@ fn spawn_post_unblock_jwt_and_catalog_retry(
                     let user_id = user_id.clone();
                     let new_tier = new_tier.clone();
                     async move {
-                        xai_grok_telemetry::unified_log::warn(
-                            "model catalog: post_subscription_unblock jwt retry scheduled",
-                            None,
-                            Some(
-                                serde_json::json!({
-                            "user_id": user_id,
-                            "new_tier": new_tier,
-                            "attempt": attempt,
-                            "max_retries": max_retries,
-                            "delay_ms": delay.as_millis() as u64,
-                        }),
-                            ),
-                        );
                     }
                 },
             )
             .await;
         match result {
             Ok(()) => {
-                xai_grok_telemetry::unified_log::info(
-                    "model catalog: post_subscription_unblock refresh (after jwt retry)",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "user_id": user_id,
-                        "new_tier": new_tier,
-                    }),
-                    ),
-                );
                 models_manager.on_auth_changed().await;
             }
             Err(e) => {
-                xai_grok_telemetry::unified_log::warn(
-                    "model catalog: post_subscription_unblock jwt retry exhausted",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "user_id": user_id,
-                        "new_tier": new_tier,
-                        "error": e.to_string(),
-                    }),
-                    ),
-                );
             }
         }
     });

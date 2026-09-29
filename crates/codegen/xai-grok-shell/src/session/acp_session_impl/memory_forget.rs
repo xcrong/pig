@@ -35,7 +35,7 @@ impl SessionActor {
                 )
             });
         tracing::info!(
-            target: xai_grok_telemetry::memory_log::TARGET,
+            target: crate::session::memory::MEMORY_LOG_TARGET,
             session_id,
             ?result,
             "memory forget: user deleted a note from the /memory modal",

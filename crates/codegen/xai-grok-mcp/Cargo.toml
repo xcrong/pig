@@ -58,7 +58,6 @@ tempfile = { workspace = true }
 # from the binary crate, matching the other consumers.
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 xai-grok-tools = { workspace = true }
-xai-grok-telemetry = { workspace = true }
 xai-grok-workspace-types = { workspace = true }
 xai-tool-protocol = { workspace = true }
 xai-tool-runtime = { workspace = true }

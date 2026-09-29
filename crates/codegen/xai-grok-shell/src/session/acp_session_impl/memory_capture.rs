@@ -12,7 +12,7 @@ use xai_grok_memory::{
     CaptureLease, CaptureOutcomeDraft, ClaimRequest, SharedV2Clock, V2CaptureStore, V2MemoryScope,
 };
 use xai_grok_sampling_types::ReasoningEffort;
-use xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass;
+use crate::session::memory_observation::V2FailureClass;
 
 const CAPTURE_LEASE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 const EXTRACTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
@@ -85,8 +85,8 @@ impl Drop for CaptureLeaseGuard {
 
 enum CapturePersistResult {
     Committed(Vec<crate::extensions::notification::MemoryCaptureDebugEntry>),
-    Retry(MemoryV2FailureClass, String),
-    Failed(MemoryV2FailureClass, String),
+    Retry(V2FailureClass, String),
+    Failed(V2FailureClass, String),
 }
 
 fn capture_debug_entries(
@@ -143,50 +143,50 @@ enum CaptureFlushPoll {
     Waiting {
         cursors: xai_grok_memory::CaptureCursors,
         work: xai_grok_memory::CaptureWorkState,
-        reconcile_error: Option<(MemoryV2FailureClass, String)>,
+        reconcile_error: Option<(V2FailureClass, String)>,
     },
 }
 
 #[derive(Debug)]
 struct CaptureExtractionFailure {
-    class: xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass,
+    class: crate::session::memory_observation::V2FailureClass,
     detail: String,
     retry: CaptureRetry,
-    usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
+    usage: crate::session::memory_observation::V2ModelUsage,
 }
 
 impl CaptureExtractionFailure {
     fn retryable(
-        class: xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass,
+        class: crate::session::memory_observation::V2FailureClass,
         detail: impl Into<String>,
     ) -> Self {
         Self {
             class,
             detail: detail.into(),
             retry: CaptureRetry::Allowed,
-            usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+            usage: crate::session::memory_observation::V2ModelUsage::default(),
         }
     }
 }
 
 fn classify_capture_error(
     error: &xai_grok_memory::V2CaptureError,
-) -> xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass {
+) -> crate::session::memory_observation::V2FailureClass {
     use xai_grok_memory::V2CaptureError;
-    use xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass;
+    use crate::session::memory_observation::V2FailureClass;
     match error {
-        V2CaptureError::Invalid(_) => MemoryV2FailureClass::MalformedOutput,
-        V2CaptureError::StaleLease => MemoryV2FailureClass::Lease,
+        V2CaptureError::Invalid(_) => V2FailureClass::MalformedOutput,
+        V2CaptureError::StaleLease => V2FailureClass::Lease,
         V2CaptureError::Conflict(_)
         | V2CaptureError::Index { .. }
         | V2CaptureError::Manifest(_)
-        | V2CaptureError::Maintenance(_) => MemoryV2FailureClass::Convergence,
+        | V2CaptureError::Maintenance(_) => V2FailureClass::Convergence,
         V2CaptureError::RecoveryDirectoryLimit { .. } | V2CaptureError::RecoveryRowLimit { .. } => {
-            MemoryV2FailureClass::AccessPolicy
+            V2FailureClass::AccessPolicy
         }
-        V2CaptureError::UnsupportedNetworkFilesystem { .. } => MemoryV2FailureClass::AccessPolicy,
-        V2CaptureError::Clock(_) => MemoryV2FailureClass::Convergence,
-        V2CaptureError::Database(_) | V2CaptureError::Io { .. } => MemoryV2FailureClass::Storage,
+        V2CaptureError::UnsupportedNetworkFilesystem { .. } => V2FailureClass::AccessPolicy,
+        V2CaptureError::Clock(_) => V2FailureClass::Convergence,
+        V2CaptureError::Database(_) | V2CaptureError::Io { .. } => V2FailureClass::Storage,
     }
 }
 
@@ -196,28 +196,28 @@ fn classify_extraction_output(
     model: &str,
     created_at: i64,
 ) -> Result<xai_grok_memory::CaptureOutcomeDraft, CaptureExtractionFailure> {
-    use xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass;
+    use crate::session::memory_observation::V2FailureClass;
     if stop_reason == CONTENT_FILTER_STOP_REASON {
         // Deterministic on the input; resampling is a retry storm, and any
         // partial body the filter let through is not a complete outcome.
         return Err(CaptureExtractionFailure {
-            class: MemoryV2FailureClass::Model,
+            class: V2FailureClass::Model,
             detail: format!(
                 "extraction output filtered by the provider ({} bytes of partial output)",
                 text.len()
             ),
             retry: CaptureRetry::Never,
-            usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+            usage: crate::session::memory_observation::V2ModelUsage::default(),
         });
     }
     if text.trim().is_empty() {
         return Err(CaptureExtractionFailure::retryable(
-            MemoryV2FailureClass::EmptyOutput,
+            V2FailureClass::EmptyOutput,
             format!("empty extraction output (stop reason: {stop_reason})"),
         ));
     }
     parse_model_outcome(text, model, created_at).map_err(|detail| {
-        CaptureExtractionFailure::retryable(MemoryV2FailureClass::MalformedOutput, detail)
+        CaptureExtractionFailure::retryable(V2FailureClass::MalformedOutput, detail)
     })
 }
 
@@ -227,8 +227,8 @@ const CONTENT_FILTER_STOP_REASON: &str = "content_filter";
 /// deadline. The durable queue keeps only sanitized error text, so a failure
 /// inherited from another process cannot be attributed more precisely than
 /// "did not converge".
-fn flush_capture_failure_class(recorded: Option<MemoryV2FailureClass>) -> MemoryV2FailureClass {
-    recorded.unwrap_or(MemoryV2FailureClass::Convergence)
+fn flush_capture_failure_class(recorded: Option<V2FailureClass>) -> V2FailureClass {
+    recorded.unwrap_or(V2FailureClass::Convergence)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -384,7 +384,7 @@ fn log_condensation(range: xai_grok_memory::CaptureRange, attempt: u32, stats: &
         return;
     }
     tracing::info!(
-        target: xai_grok_telemetry::memory_log::TARGET,
+        target: crate::session::memory::MEMORY_LOG_TARGET,
         from_turn = range.from_turn(),
         through_turn = range.through_turn(),
         attempt,
@@ -424,31 +424,31 @@ async fn load_durable_capture_transcript(
         .send(PersistenceMsg::FlushAndAck { respond_to })
         .map_err(|_| {
             CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Storage,
+                V2FailureClass::Storage,
                 "persistence barrier dispatch failed".to_owned(),
             )
         })?;
     let barrier = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(CaptureExtractionFailure::retryable(
-            MemoryV2FailureClass::Convergence,
+            V2FailureClass::Convergence,
             "capture worker cancelled".to_owned(),
         )),
         result = response => result
             .map_err(|_| CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Storage,
+                V2FailureClass::Storage,
                 "persistence barrier acknowledgement was lost".to_owned(),
             ))?,
     };
     barrier.map_err(|error| {
         CaptureExtractionFailure::retryable(
-            MemoryV2FailureClass::Storage,
+            V2FailureClass::Storage,
             format!("persistence barrier failed: {error}"),
         )
     })?;
     if cancel.is_cancelled() {
         return Err(CaptureExtractionFailure::retryable(
-            MemoryV2FailureClass::Convergence,
+            V2FailureClass::Convergence,
             "capture worker cancelled".to_owned(),
         ));
     }
@@ -465,7 +465,7 @@ async fn load_durable_capture_transcript(
             )
             .map_err(|error| {
                 CaptureExtractionFailure::retryable(
-                    MemoryV2FailureClass::Storage,
+                    V2FailureClass::Storage,
                     format!("durable transcript read failed: {error}"),
                 )
             })?;
@@ -473,17 +473,17 @@ async fn load_durable_capture_transcript(
         // disagree; another read of the same log cannot fix that.
         select_completed_turn_transcript(items, source_prompt_index, attempt).map_err(|detail| {
             CaptureExtractionFailure {
-                class: MemoryV2FailureClass::Storage,
+                class: V2FailureClass::Storage,
                 detail,
                 retry: CaptureRetry::Never,
-                usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+                usage: crate::session::memory_observation::V2ModelUsage::default(),
             }
         })
     })
     .await
     .map_err(|error| {
         CaptureExtractionFailure::retryable(
-            MemoryV2FailureClass::Convergence,
+            V2FailureClass::Convergence,
             format!("durable transcript read task failed: {error}"),
         )
     })?
@@ -527,7 +527,7 @@ impl SessionActor {
                     0,
                     0,
                     0,
-                    Some((MemoryV2FailureClass::Convergence, error.to_string())),
+                    Some((V2FailureClass::Convergence, error.to_string())),
                 )
                 .await;
                 return;
@@ -576,7 +576,7 @@ impl SessionActor {
                     0,
                     0,
                     Some((
-                        MemoryV2FailureClass::Convergence,
+                        V2FailureClass::Convergence,
                         format!("capture enqueue task failed: {error}"),
                     )),
                 )
@@ -604,7 +604,7 @@ impl SessionActor {
             let session = Arc::clone(self);
             let clock = xai_grok_memory::system_v2_clock();
             let promotion =
-                xai_grok_telemetry::session_ctx::spawn_local_in_session_ctx(async move {
+                tokio::task::spawn_local(async move {
                     session.promote_v2_hidden_observations(true, clock).await;
                 });
             self.memory.dream_workers.track(promotion);
@@ -624,7 +624,7 @@ impl SessionActor {
         let worker_cancel = cancel.clone();
         let completion_cancel = cancel.clone();
         let clock = xai_grok_memory::system_v2_clock();
-        let task = xai_grok_telemetry::session_ctx::spawn_local_in_session_ctx(async move {
+        let task = tokio::task::spawn_local(async move {
             let has_new_observations =
                 Self::run_v2_capture_worker(session.clone(), clock.clone(), worker_cancel).await;
             if completion_cancel.is_cancelled() {
@@ -636,7 +636,7 @@ impl SessionActor {
                     let followup_session = Arc::clone(&session);
                     let followup_clock = clock;
                     let followup =
-                        xai_grok_telemetry::session_ctx::spawn_local_in_session_ctx(async move {
+                        tokio::task::spawn_local(async move {
                             // Promotion may have been blocked by a Dream lease during resume.
                             followup_session
                                 .promote_v2_hidden_observations(true, followup_clock.clone())
@@ -743,7 +743,7 @@ impl SessionActor {
                 0,
                 0,
                 None,
-                xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+                crate::session::memory_observation::V2ModelUsage::default(),
             )
             .await;
 
@@ -955,13 +955,13 @@ impl SessionActor {
     ) -> Result<
         (
             CaptureOutcomeDraft,
-            xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
+            crate::session::memory_observation::V2ModelUsage,
         ),
         CaptureExtractionFailure,
     > {
         let Some(session_snapshot) = session.upgrade() else {
             return Err(CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Convergence,
+                V2FailureClass::Convergence,
                 "capture worker cancelled".to_owned(),
             ));
         };
@@ -979,19 +979,19 @@ impl SessionActor {
         log_condensation(range, attempt, &transcript.stats);
         let Some(session_snapshot) = session.upgrade() else {
             return Err(CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Convergence,
+                V2FailureClass::Convergence,
                 "capture worker cancelled".to_owned(),
             ));
         };
         let sampling_client = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Convergence,
+                V2FailureClass::Convergence,
                 "capture worker cancelled".to_owned(),
             )),
             result = session_snapshot.prepare_chat_completion(false) => result
                 .map_err(|error| CaptureExtractionFailure::retryable(
-                    MemoryV2FailureClass::Model,
+                    V2FailureClass::Model,
                     format!("extractor setup failed: {error}"),
                 ))?,
         };
@@ -1000,7 +1000,7 @@ impl SessionActor {
         let model = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Convergence,
+                V2FailureClass::Convergence,
                 "capture worker cancelled".to_owned(),
             )),
             config = chat_state_handle.get_sampling_config() => config
@@ -1020,7 +1020,7 @@ impl SessionActor {
         let response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Convergence,
+                V2FailureClass::Convergence,
                 "capture worker cancelled".to_owned(),
             )),
             result = tokio::time::timeout(
@@ -1030,7 +1030,7 @@ impl SessionActor {
         }
         .map_err(|_| {
             CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Timeout,
+                V2FailureClass::Timeout,
                 format!(
                     "extraction model timed out after {} seconds",
                     EXTRACTION_TIMEOUT.as_secs(),
@@ -1039,7 +1039,7 @@ impl SessionActor {
         })?
         .map_err(|error| {
             CaptureExtractionFailure::retryable(
-                MemoryV2FailureClass::Model,
+                V2FailureClass::Model,
                 format!("extraction model failed: {error}"),
             )
         })?;
@@ -1049,7 +1049,7 @@ impl SessionActor {
             .map_or("unreported", |reason| reason.into());
         let usage = crate::session::memory_observation::memory_v2_model_usage(&model, &response);
         tracing::debug!(
-            target: xai_grok_telemetry::memory_log::TARGET,
+            target: crate::session::memory::MEMORY_LOG_TARGET,
             from_turn = range.from_turn(),
             through_turn = range.through_turn(),
             stop_reason = %stop_reason,
@@ -1070,22 +1070,15 @@ impl SessionActor {
 
     pub(super) async fn flush_v2_capture(self: &Arc<Self>) -> (FlushResult, Option<u32>) {
         if !self.memory.can_capture_v2() {
-            use xai_grok_telemetry::memory_telemetry::{
-                MemoryV2Component, MemoryV2FailClosed, MemoryV2FailureClass,
-            };
-            xai_grok_telemetry::session_ctx::log_event(MemoryV2FailClosed {
-                component: MemoryV2Component::Flush,
-                reason: MemoryV2FailureClass::Disabled,
-            });
             return (
-                FlushResult::TerminalFailure(MemoryV2FailureClass::Disabled),
+                FlushResult::TerminalFailure(V2FailureClass::Disabled),
                 None,
             );
         }
         let Some(storage) = self.memory.storage() else {
             return (
                 FlushResult::TerminalFailure(
-                    xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass::Disabled,
+                    crate::session::memory_observation::V2FailureClass::Disabled,
                 ),
                 None,
             );
@@ -1111,14 +1104,13 @@ impl SessionActor {
             Err(error) => {
                 tracing::warn!(error = %error, "memory-v2 capture state task failed");
                 return (
-                    FlushResult::TerminalFailure(MemoryV2FailureClass::Convergence),
+                    FlushResult::TerminalFailure(V2FailureClass::Convergence),
                     None,
                 );
             }
         };
         self.send_xai_notification(XaiSessionUpdate::MemoryFlushStarted)
             .await;
-        let started_at = std::time::Instant::now();
         self.start_v2_capture_worker().await;
         let last_retry_error = std::rc::Rc::new(std::cell::RefCell::new(None));
         let wait_retry_error = std::rc::Rc::clone(&last_retry_error);
@@ -1166,7 +1158,7 @@ impl SessionActor {
                     }
                     Err(error) => {
                         tracing::warn!(error = %error, "memory-v2 capture poll task failed");
-                        return FlushResult::TerminalFailure(MemoryV2FailureClass::Convergence);
+                        return FlushResult::TerminalFailure(V2FailureClass::Convergence);
                     }
                 };
                 if let Some((failure_class, error)) = reconcile_error {
@@ -1191,7 +1183,7 @@ impl SessionActor {
                         ));
                     }
                     CaptureFlushAction::MissingJob => {
-                        return FlushResult::TerminalFailure(MemoryV2FailureClass::Convergence);
+                        return FlushResult::TerminalFailure(V2FailureClass::Convergence);
                     }
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -1204,30 +1196,6 @@ impl SessionActor {
                 .take()
                 .map_or(FlushResult::Timeout, FlushResult::RetryableFailure),
         };
-        {
-            use xai_grok_telemetry::memory_telemetry::{
-                MemoryV2FailureClass, MemoryV2FlushOutcome, MemoryV2FlushResult,
-            };
-            let (outcome, failure_class) = match &result {
-                FlushResult::Success => (MemoryV2FlushOutcome::Success, None),
-                FlushResult::RetryableFailure(class) => {
-                    (MemoryV2FlushOutcome::RetryableFailure, Some(*class))
-                }
-                FlushResult::TerminalFailure(class) => {
-                    (MemoryV2FlushOutcome::TerminalFailure, Some(*class))
-                }
-                FlushResult::Timeout => (
-                    MemoryV2FlushOutcome::Timeout,
-                    Some(MemoryV2FailureClass::Timeout),
-                ),
-            };
-            xai_grok_telemetry::session_ctx::log_event(MemoryV2FlushResult {
-                outcome,
-                target_cursor: target,
-                latency_ms: started_at.elapsed().as_millis() as u64,
-                failure_class,
-            });
-        }
         self.send_xai_notification(XaiSessionUpdate::MemoryFlushCompleted {
             result: result.message(target),
             path: None,
@@ -1245,7 +1213,7 @@ impl SessionActor {
         observation_count: usize,
         latency_ms: u64,
         failure: Option<(
-            xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass,
+            crate::session::memory_observation::V2FailureClass,
             String,
         )>,
     ) {
@@ -1257,7 +1225,7 @@ impl SessionActor {
             observation_count,
             latency_ms,
             failure,
-            xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+            crate::session::memory_observation::V2ModelUsage::default(),
             Vec::new(),
         )
         .await;
@@ -1273,23 +1241,12 @@ impl SessionActor {
         observation_count: usize,
         latency_ms: u64,
         failure: Option<(
-            xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass,
+            crate::session::memory_observation::V2FailureClass,
             String,
         )>,
-        usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
+        usage: crate::session::memory_observation::V2ModelUsage,
         memories: Vec<crate::extensions::notification::MemoryCaptureDebugEntry>,
     ) {
-        use xai_grok_telemetry::memory_telemetry::{
-            MemoryV2CaptureLifecycle, MemoryV2CaptureStage,
-        };
-        let stage = match activity {
-            CaptureActivity::Queued => MemoryV2CaptureStage::Queued,
-            CaptureActivity::Running => MemoryV2CaptureStage::Claimed,
-            CaptureActivity::Completed => MemoryV2CaptureStage::Completed,
-            CaptureActivity::Noop => MemoryV2CaptureStage::Noop,
-            CaptureActivity::Retry => MemoryV2CaptureStage::Retry,
-            CaptureActivity::Failed => MemoryV2CaptureStage::Failed,
-        };
         let failure_class = failure.as_ref().map(|(class, _)| *class);
         match activity {
             CaptureActivity::Retry | CaptureActivity::Failed => {
@@ -1303,18 +1260,8 @@ impl SessionActor {
             CaptureActivity::Queued | CaptureActivity::Running => {}
         }
         self.memory.record_capture_usage(&usage);
-        xai_grok_telemetry::session_ctx::log_event(MemoryV2CaptureLifecycle {
-            stage,
-            from_turn,
-            through_turn,
-            attempt,
-            observation_count,
-            latency_ms,
-            failure_class,
-            usage,
-        });
         tracing::info!(
-            target: xai_grok_telemetry::memory_log::TARGET,
+            target: crate::session::memory::MEMORY_LOG_TARGET,
             activity = activity.as_str(),
             from_turn,
             through_turn,
@@ -1346,10 +1293,10 @@ impl SessionActor {
         observation_count: usize,
         latency_ms: u64,
         failure: Option<(
-            xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass,
+            crate::session::memory_observation::V2FailureClass,
             String,
         )>,
-        usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
+        usage: crate::session::memory_observation::V2ModelUsage,
     ) {
         if let Some(session) = session.upgrade() {
             session
@@ -1410,18 +1357,18 @@ mod tests {
 
     #[test]
     fn empty_extraction_output_is_classified_separately_from_malformed_json() {
-        use xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass;
+        use crate::session::memory_observation::V2FailureClass;
 
         for empty in ["", "   ", "\n\t"] {
             let failure = classify_extraction_output(empty, "stop", "test", 1).unwrap_err();
-            assert_eq!(failure.class, MemoryV2FailureClass::EmptyOutput);
+            assert_eq!(failure.class, V2FailureClass::EmptyOutput);
             assert_eq!(
                 failure.detail,
                 "empty extraction output (stop reason: stop)"
             );
         }
         let malformed = classify_extraction_output("{", "stop", "test", 1).unwrap_err();
-        assert_eq!(malformed.class, MemoryV2FailureClass::MalformedOutput);
+        assert_eq!(malformed.class, V2FailureClass::MalformedOutput);
         assert_eq!(malformed.retry, CaptureRetry::Allowed);
         assert_eq!(
             classify_extraction_output(
@@ -1437,11 +1384,11 @@ mod tests {
 
     #[test]
     fn content_filtered_extraction_is_never_retried() {
-        use xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass;
+        use crate::session::memory_observation::V2FailureClass;
         for body in ["", r#"{"outcome":"noop","observations":[]}"#] {
             let failure =
                 classify_extraction_output(body, "content_filter", "test", 1).unwrap_err();
-            assert_eq!(failure.class, MemoryV2FailureClass::Model);
+            assert_eq!(failure.class, V2FailureClass::Model);
             assert_eq!(failure.retry, CaptureRetry::Never);
         }
         assert!(capture_failure_is_terminal(1, CaptureRetry::Never));
@@ -1599,7 +1546,7 @@ mod tests {
                             1,
                             0,
                             None,
-                            xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+                            crate::session::memory_observation::V2ModelUsage::default(),
                             vec![crate::extensions::notification::MemoryCaptureDebugEntry {
                                 statement: "Private generated memory".into(),
                                 body: None,
@@ -1804,7 +1751,7 @@ mod tests {
         assert!(matches!(
             read.await.unwrap(),
             Err(CaptureExtractionFailure {
-                class: MemoryV2FailureClass::Storage,
+                class: V2FailureClass::Storage,
                 detail,
                 ..
             }) if detail.contains("persistence barrier failed")
@@ -1831,7 +1778,7 @@ mod tests {
         assert!(matches!(
             read.await.unwrap(),
             Err(CaptureExtractionFailure {
-                class: MemoryV2FailureClass::Convergence,
+                class: V2FailureClass::Convergence,
                 detail,
                 ..
             }) if detail.contains("cancelled")
@@ -1904,12 +1851,12 @@ mod tests {
     #[test]
     fn flush_attributes_inherited_failures_to_convergence_not_model() {
         assert_eq!(
-            flush_capture_failure_class(Some(MemoryV2FailureClass::Storage)),
-            MemoryV2FailureClass::Storage
+            flush_capture_failure_class(Some(V2FailureClass::Storage)),
+            V2FailureClass::Storage
         );
         assert_eq!(
             flush_capture_failure_class(None),
-            MemoryV2FailureClass::Convergence
+            V2FailureClass::Convergence
         );
     }
 
@@ -2161,7 +2108,7 @@ mod tests {
                         1,
                         0,
                         0,
-                        Some((MemoryV2FailureClass::Storage, "disk full".to_owned())),
+                        Some((V2FailureClass::Storage, "disk full".to_owned())),
                     )
                     .await;
 
@@ -2177,7 +2124,7 @@ mod tests {
 
                 assert_eq!(
                     flush.await.unwrap().0,
-                    FlushResult::RetryableFailure(MemoryV2FailureClass::Storage)
+                    FlushResult::RetryableFailure(V2FailureClass::Storage)
                 );
                 actor.memory.stop_capture_worker().await;
             })

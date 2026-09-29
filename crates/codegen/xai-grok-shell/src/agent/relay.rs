@@ -168,10 +168,7 @@ async fn attempt_auth_recovery(
         return false;
     };
     info!("auth recovery: relay {context}, attempting refresh");
-    let mut recovery = am.unauthorized_recovery(
-        Some(config.auth.clone()),
-        xai_grok_login::recovery::RecoverySource::Relay,
-    );
+    let mut recovery = am.unauthorized_recovery(Some(config.auth.clone()));
     let recovered = match tokio::time::timeout(
         Duration::from_secs(AUTH_RECOVERY_TIMEOUT_SECS),
         recovery.next(),
@@ -184,60 +181,26 @@ async fn attempt_auth_recovery(
                 timeout_secs = AUTH_RECOVERY_TIMEOUT_SECS,
                 "auth recovery: relay {context}, refresh timed out"
             );
-            xai_grok_telemetry::unified_log::warn(
-                "auth recovery: relay refresh timed out",
-                None,
-                Some(serde_json::json!({
-                    "context": context,
-                    "timeout_secs": AUTH_RECOVERY_TIMEOUT_SECS,
-                })),
-            );
             return false;
         }
     };
     match recovered {
         Ok(new_auth) if new_auth.key == config.auth.key => {
             info!("auth recovery: relay {context}, token unchanged, backing off");
-            xai_grok_telemetry::unified_log::info(
-                "auth recovery: relay token unchanged, backing off",
-                None,
-                Some(serde_json::json!({
-                    "context": context,
-                    "key_prefix": xai_grok_auth::bearer_suffix(&new_auth.key),
-                })),
-            );
             false
         }
         Ok(new_auth) => {
             info!("auth recovery: relay {context}, recovered, reconnecting");
-            xai_grok_telemetry::unified_log::info(
-                "auth recovery: relay recovered",
-                None,
-                Some(serde_json::json!({
-                    "context": context,
-                    "new_key_prefix": xai_grok_auth::bearer_suffix(&new_auth.key),
-                })),
-            );
             config.auth = new_auth;
             true
         }
         Err(e) if xai_grok_login::recovery::relay_should_cancel(&e) => {
             teprintln!("{e}");
-            xai_grok_telemetry::unified_log::warn(
-                "auth recovery: relay giving up (terminal)",
-                None,
-                Some(serde_json::json!({ "context": context, "error": format!("{e}") })),
-            );
             cancel.cancel();
             false
         }
         Err(e) => {
             warn!(error = %e, "auth recovery: relay {context}, refresh failed");
-            xai_grok_telemetry::unified_log::debug(
-                "auth recovery: relay refresh failed",
-                None,
-                Some(serde_json::json!({ "context": context, "error": format!("{e}") })),
-            );
             false
         }
     }
@@ -271,7 +234,6 @@ async fn run_relay_loop(
             break;
         }
         tracing::info!(
-            target: crate::instrumentation::TARGET,
             event = "relay_connecting",
             ws_url = %config.ws_url,
             attempt = backoff.attempts,
@@ -279,8 +241,7 @@ async fn run_relay_loop(
         match connect_to_relay(&config, proxy_url.as_deref(), &cancel).await {
             Ok(ws) => {
                 tracing::info!(
-                    target: crate::instrumentation::TARGET,
-                    event = "relay_connected",
+                            event = "relay_connected",
                     ws_url = %config.ws_url,
                 );
                 if first_connection {
@@ -312,8 +273,7 @@ async fn run_relay_loop(
                     break;
                 }
                 tracing::info!(
-                    target: crate::instrumentation::TARGET,
-                    event = "relay_disconnected",
+                            event = "relay_disconnected",
                     ws_url = %config.ws_url,
                 );
                 tprintln!("Disconnected from Grok WebSocket server");
@@ -322,8 +282,7 @@ async fn run_relay_loop(
             Err(e) => {
                 let handshake_401 = is_handshake_unauthorized(&e);
                 tracing::info!(
-                    target: crate::instrumentation::TARGET,
-                    event = "relay_connection_failed",
+                            event = "relay_connection_failed",
                     ws_url = %config.ws_url,
                     error = %e,
                     handshake_401,
@@ -498,13 +457,6 @@ where
                         warn!(
                             timeout_secs = liveness.as_secs(),
                             "no WS traffic within liveness window, treating connection as dead"
-                        );
-                        xai_grok_telemetry::unified_log::warn(
-                            "relay: read liveness timeout, reconnecting",
-                            None,
-                            Some(serde_json::json!({
-                                "timeout_secs": liveness.as_secs(),
-                            })),
                         );
                         break;
                     };

@@ -12,32 +12,8 @@ use crate::manager::AuthManager;
 use crate::model::GrokAuth;
 use crate::token_type::TokenType;
 use std::sync::Arc;
-use xai_grok_telemetry::events::{AuthTokenKind, ManualAuth, ManualAuthReason, ManualAuthSurface};
-/// `manual_auth` KPI reason for a terminal `AuthError`, or `None` when it doesn't force a manual re-login.
-/// Lives here (not on `AuthError`) so the error model stays telemetry-free.
-pub fn manual_auth_reason(err: &AuthError) -> Option<ManualAuthReason> {
-    use ManualAuthReason as R;
-    Some(match err {
-        AuthError::Refresh(RefreshTokenError::Permanent(e)) => match e.reason {
-            RefreshTokenFailedReason::RefreshTokenRejected => R::RefreshTokenRejected,
-            RefreshTokenFailedReason::ProviderInteractiveRequired => R::ProviderInteractiveRequired,
-            RefreshTokenFailedReason::ClientRejected | RefreshTokenFailedReason::Other => {
-                return None;
-            }
-        },
-        AuthError::ServerRejectedNoRecovery => R::NoRefreshAuthority,
-        AuthError::RecoveryExhausted => R::RecoveryExhausted,
-        AuthError::TokenExpiredNoRefresh => R::TokenExpiredNoRefresh,
-        AuthError::PinnedTeamMismatch { .. } => R::WrongTeam,
-        AuthError::ApiKeyAuthDisabled
-        | AuthError::Refresh(RefreshTokenError::Transient(_))
-        | AuthError::NotLoggedIn => {
-            return None;
-        }
-    })
-}
 /// Whether the relay should stop reconnecting on this recovery error.
-/// Exhaustive and independent of `manual_auth_reason`, which buckets errors for the `manual_auth` KPI: a telemetry reclassification must not change how long a relay lives. The two differ in both directions: `ApiKeyAuthDisabled` cancels but is outside the KPI, and a non-sticky permanent verdict (`ProviderInteractiveRequired`) counts toward the KPI but does not cancel. Non-sticky verdicts age out via `PERMANENT_FAILURE_TTL`, and the relay runs on a child cancellation token, so cancelling on one would leave a headless leader alive but unreachable for its whole lifetime.
+/// Exhaustive and independent of the login-banner decision below: an error reclassification must not change how long a relay lives. The two differ in both directions: `ApiKeyAuthDisabled` cancels but is outside the KPI, and a non-sticky permanent verdict (`ProviderInteractiveRequired`) counts toward the KPI but does not cancel. Non-sticky verdicts age out via `PERMANENT_FAILURE_TTL`, and the relay runs on a child cancellation token, so cancelling on one would leave a headless leader alive but unreachable for its whole lifetime.
 pub fn relay_should_cancel(err: &AuthError) -> bool {
     match err {
         AuthError::NotLoggedIn | AuthError::Refresh(RefreshTokenError::Transient(_)) => false,
@@ -53,117 +29,6 @@ pub fn relay_should_cancel(err: &AuthError) -> bool {
 /// 120s outlasts in-flight requests sent with a previous key plus validation lag (observed stale 401s land ~20s after mint). `current()`'s 300s early-invalidation buffer keeps any guard-returned token wire-valid.
 /// A genuinely-dead fresh token waits at most this long to re-mint; the symmetric bound caps that delay when the clock stepped back.
 const FRESH_MINT_GUARD_SECS: i64 = 120;
-/// Where a 401 recovery was initiated; drives the `manual_auth` KPI.
-/// Required at every call site so suppressing the KPI is explicit, not default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoverySource {
-    /// A chat/inference turn; surfaces the `ReAuthRequired` banner.
-    Turn,
-    /// The relay / leader connection handshake.
-    Relay,
-    /// Uploads, telemetry, tool calls. Never emits the KPI.
-    Background,
-}
-impl RecoverySource {
-    fn trigger(self) -> Option<ManualAuthSurface> {
-        match self {
-            RecoverySource::Turn => Some(ManualAuthSurface::Turn),
-            RecoverySource::Relay => Some(ManualAuthSurface::Relay),
-            RecoverySource::Background => None,
-        }
-    }
-}
-/// Identity of the rejected credential for `manual_auth`.
-/// Captured from the rejected bearer (not live `inner`) so attribution is correct even after a `WrongTeam`/cleared-credential failure.
-pub struct RejectedAuth {
-    /// `user_id`, when known (empty ids collapse to `None`).
-    principal: Option<String>,
-    token_kind: AuthTokenKind,
-    /// Full rejected bearer; the debounce key.
-    /// Uses the whole token (not a suffix) so it matches the credential identity the permanent-failure verdict is scoped to; never logged.
-    rejected_token_id: String,
-}
-impl RejectedAuth {
-    pub fn capture(auth: Option<&GrokAuth>) -> Self {
-        Self {
-            principal: auth.map(|a| a.user_id.clone()).filter(|id| !id.is_empty()),
-            token_kind: TokenType::from_auth(auth).telemetry_kind(),
-            rejected_token_id: auth.map(|a| a.key.clone()).unwrap_or_default(),
-        }
-    }
-    #[cfg(test)]
-    pub fn principal_for_test(&self) -> Option<&str> {
-        self.principal.as_deref()
-    }
-    #[cfg(test)]
-    pub fn token_kind_for_test(&self) -> AuthTokenKind {
-        self.token_kind
-    }
-}
-/// Trigger and attribution for a user-facing recovery; set at construction iff the source emits the KPI.
-struct ManualAuthEmit {
-    trigger: ManualAuthSurface,
-    snapshot: RejectedAuth,
-}
-/// Per-process debounce and emit for the `manual_auth` KPI.
-/// Held by `AuthManager` so all recoveries on one process share the dedup state.
-/// All fields are `Default` under both cfgs, so one derive serves both.
-#[derive(Default)]
-pub struct ManualAuthTracker {
-    /// Id of the rejected credential we last emitted for (single slot: only the most recent).
-    /// Repeats on the same bearer debounce; a new credential has a new id and emits again.
-    last_token: parking_lot::Mutex<Option<String>>,
-    /// Test-only: the last emitted event, so a test can assert what was emitted, not just that something fired.
-    #[cfg(test)]
-    last_emit: parking_lot::Mutex<Option<ManualAuth>>,
-    /// Test-only: count of events that actually fired (post-debounce), so a concurrency test can assert the dedup mutex collapses N races to one.
-    #[cfg(test)]
-    emit_count: std::sync::atomic::AtomicU32,
-}
-impl ManualAuthTracker {
-    /// Emit a terminal manual-auth event, debounced against the most-recent credential (single slot).
-    /// No-op for transient failures (`manual_auth_reason` is `None`) and for API keys (a 401 there means rotate the key, not `/login`).
-    pub fn record(&self, snapshot: &RejectedAuth, err: &AuthError, trigger: ManualAuthSurface) {
-        if snapshot.token_kind == AuthTokenKind::ApiKey {
-            return;
-        }
-        let Some(reason) = manual_auth_reason(err) else {
-            return;
-        };
-        {
-            let mut last = self.last_token.lock();
-            if last.as_deref() == Some(snapshot.rejected_token_id.as_str()) {
-                return;
-            }
-            *last = Some(snapshot.rejected_token_id.clone());
-        }
-        let event = ManualAuth {
-            reason,
-            trigger,
-            token_kind: snapshot.token_kind,
-            principal: snapshot.principal.clone(),
-        };
-        #[cfg(test)]
-        {
-            *self.last_emit.lock() = Some(event.clone());
-            self.emit_count
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-        xai_grok_telemetry::session_ctx::log_event(event);
-    }
-    #[cfg(test)]
-    pub fn emit_count_for_test(&self) -> u32 {
-        self.emit_count.load(std::sync::atomic::Ordering::SeqCst)
-    }
-    #[cfg(test)]
-    pub fn last_token_for_test(&self) -> Option<String> {
-        self.last_token.lock().clone()
-    }
-    #[cfg(test)]
-    pub fn last_emit_for_test(&self) -> Option<ManualAuth> {
-        self.last_emit.lock().clone()
-    }
-}
 /// Which recovery step to attempt next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecoveryStep {
@@ -175,8 +40,7 @@ enum RecoveryStep {
     Done,
 }
 /// State machine that walks through recovery strategies after a 401.
-pub struct UnauthorizedRecovery {
-    auth_manager: Arc<AuthManager>,
+pub struct UnauthorizedRecovery {    auth_manager: Arc<AuthManager>,
     /// The token that was rejected by the server.
     rejected_token: String,
     /// Current step in the recovery sequence.
@@ -186,28 +50,17 @@ pub struct UnauthorizedRecovery {
     /// Whether the last authority failure was transient.
     /// Kept after `authority_error` is taken so exhaustion preserves the transient/permanent axis (see the `Done` arm).
     authority_was_transient: bool,
-    /// `Some` iff this recovery is user-facing, so a terminal failure emits.
-    emit: Option<ManualAuthEmit>,
 }
 impl UnauthorizedRecovery {
-    /// `rejected` is the credential the server rejected: its key drives recovery and (for user-facing sources) its identity is the KPI attribution.
-    pub fn new(
-        auth_manager: Arc<AuthManager>,
-        rejected: Option<GrokAuth>,
-        source: RecoverySource,
-    ) -> Self {
+    /// `rejected` is the credential the server rejected: its key drives recovery.
+    pub fn new(auth_manager: Arc<AuthManager>, rejected: Option<GrokAuth>) -> Self {
         let rejected_token = rejected.as_ref().map(|a| a.key.clone()).unwrap_or_default();
-        let emit = source.trigger().map(|trigger| ManualAuthEmit {
-            trigger,
-            snapshot: RejectedAuth::capture(rejected.as_ref()),
-        });
         Self {
             auth_manager,
             rejected_token,
             step: RecoveryStep::ReloadFromDisk,
             authority_error: None,
             authority_was_transient: false,
-            emit,
         }
     }
     /// Attempt the next recovery step. Walks disk reload, then the token authority, then any last-resort host recovery.
@@ -225,10 +78,6 @@ impl UnauthorizedRecovery {
             );
         }
         let result = self.resolve_next().await;
-        if let (Err(e), Some(emit)) = (&result, &self.emit) {
-            self.auth_manager
-                .record_manual_auth(&emit.snapshot, e, emit.trigger);
-        }
         result
     }
     /// Walk the recovery steps and apply the team-pin policy gate.
@@ -292,40 +141,18 @@ impl UnauthorizedRecovery {
             tracing::warn!("auth recovery: proceeding without file lock");
         }
         let Some(disk_auth) = self.auth_manager.read_disk_auth() else {
-            xai_grok_telemetry::unified_log::debug("auth recovery: no disk entry", None, None);
             return None;
         };
         if crate::is_expired(&disk_auth) {
             tracing::debug!("auth recovery: disk token is expired, skipping");
-            xai_grok_telemetry::unified_log::debug(
-                "auth recovery: disk token expired",
-                None,
-                Some(serde_json::json!({
-                    "disk_key_prefix": xai_grok_auth::bearer_suffix(&disk_auth.key),
-                    "expires_at": disk_auth.expires_at.map(|e| e.to_rfc3339()),
-                })),
-            );
             return None;
         }
         if self.is_different_token(&disk_auth) {
             tracing::info!("auth recovery: disk has a different token, accepting");
-            xai_grok_telemetry::unified_log::info(
-                "auth recovery: adopted disk token",
-                None,
-                Some(serde_json::json!({
-                    "adopted_key_prefix": xai_grok_auth::bearer_suffix(&disk_auth.key),
-                    "expires_at": disk_auth.expires_at.map(|e| e.to_rfc3339()),
-                })),
-            );
             self.auth_manager.hot_swap(disk_auth.clone());
             Some(disk_auth)
         } else {
             tracing::debug!("auth recovery: disk token is same as rejected, skipping");
-            xai_grok_telemetry::unified_log::debug(
-                "auth recovery: disk token same as rejected",
-                None,
-                None,
-            );
             None
         }
     }
@@ -341,16 +168,6 @@ impl UnauthorizedRecovery {
         tracing::info!(
             mint_age_seconds,
             "auth recovery: current token freshly minted, skipping refresh"
-        );
-        xai_grok_telemetry::unified_log::info(
-            "auth recovery: fresh mint, refresh skipped",
-            None,
-            Some(serde_json::json!({
-                "key_prefix": xai_grok_auth::bearer_suffix(&auth.key),
-                "mint_age_seconds": mint_age_seconds,
-                "guard_seconds": FRESH_MINT_GUARD_SECS,
-                "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-            })),
         );
         Some(auth)
     }
@@ -370,35 +187,13 @@ impl UnauthorizedRecovery {
                     .await;
                 match &result {
                     Ok(auth) => {
-                        xai_grok_telemetry::unified_log::info(
-                            "auth recovery: refreshed from authority",
-                            None,
-                            Some(serde_json::json!({
-                                "token_type": format!("{tt:?}"),
-                                "new_key_prefix": xai_grok_auth::bearer_suffix(&auth.key),
-                                "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            })),
-                        );
                     }
                     Err(e) => {
-                        xai_grok_telemetry::unified_log::warn(
-                            "auth recovery: refresh from authority failed",
-                            None,
-                            Some(serde_json::json!({
-                                "token_type": format!("{tt:?}"),
-                                "error": format!("{e}"),
-                            })),
-                        );
                     }
                 }
                 result
             }
             TokenType::LegacySession | TokenType::ApiKey => {
-                xai_grok_telemetry::unified_log::warn(
-                    "auth recovery: no refresh authority for token type",
-                    None,
-                    Some(serde_json::json!({ "token_type": format!("{tt:?}") })),
-                );
                 Err(AuthError::ServerRejectedNoRecovery)
             }
             TokenType::None => Err(AuthError::NotLoggedIn),
@@ -480,7 +275,7 @@ mod tests {
         m.set_refresher(Arc::new(OkRefresher {
             calls: calls.clone(),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let auth = rec.next().await.expect("recovery should succeed");
         assert_eq!(auth.key, "fresh-from-authority");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -493,7 +288,7 @@ mod tests {
         m.set_refresher(Arc::new(OkRefresher {
             calls: calls.clone(),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let auth = rec.next().await.expect("external-binary recovery succeeds");
         assert_eq!(auth.key, "fresh-from-authority");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -515,7 +310,7 @@ mod tests {
         m.set_refresher(Arc::new(OkRefresher {
             calls: calls.clone(),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let result = rec.next().await;
         (result, calls.load(Ordering::SeqCst))
     }
@@ -614,7 +409,7 @@ mod tests {
         m.set_refresher(Arc::new(OkRefresher {
             calls: calls.clone(),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let result = rec.next().await;
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -633,7 +428,7 @@ mod tests {
     async fn dispatch_legacy_session_returns_server_rejected_no_recovery() {
         let (_d, m) = mgr();
         seed(&m, AuthMode::WebLogin, None);
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let err = rec.next().await.unwrap_err();
         assert!(
             matches!(err, AuthError::ServerRejectedNoRecovery),
@@ -644,7 +439,7 @@ mod tests {
     async fn dispatch_oidc_without_refresh_token_returns_server_rejected_no_recovery() {
         let (_d, m) = mgr();
         seed(&m, AuthMode::Oidc, None);
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let err = rec.next().await.unwrap_err();
         assert!(matches!(err, AuthError::ServerRejectedNoRecovery));
     }
@@ -652,7 +447,7 @@ mod tests {
     async fn dispatch_api_key_returns_server_rejected_no_recovery() {
         let (_d, m) = mgr();
         seed(&m, AuthMode::ApiKey, None);
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let err = rec.next().await.unwrap_err();
         assert!(
             matches!(err, AuthError::ServerRejectedNoRecovery),
@@ -663,7 +458,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_none_returns_not_logged_in() {
         let (_d, m) = mgr();
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let err = rec.next().await.unwrap_err();
         assert!(
             matches!(err, AuthError::NotLoggedIn),
@@ -685,7 +480,7 @@ mod tests {
         let mut store = read_auth_json(&dir.path().join("auth.json")).unwrap_or_default();
         store.insert(scope, fresh);
         write_auth_json(&dir.path().join("auth.json"), &store).unwrap();
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let auth = rec
             .next()
             .await
@@ -711,7 +506,7 @@ mod tests {
         m.set_refresher(Arc::new(OkRefresher {
             calls: calls.clone(),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let auth = rec.next().await.expect("authority refresh succeeds");
         assert_eq!(auth.key, "fresh-from-authority");
         assert_eq!(
@@ -729,7 +524,7 @@ mod tests {
         m.set_refresher(Arc::new(OkRefresher {
             calls: Arc::new(AtomicU32::new(0)),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let _ = rec.next().await.unwrap();
         let err = loop {
             if let Err(e) = rec.next().await {
@@ -742,7 +537,7 @@ mod tests {
         );
     }
     /// Exhaustion after a *transient* authority failure preserves the transient axis.
-    /// Surfacing `RecoveryExhausted` would count a network blip as a forced re-login (`manual_auth`) and make the relay cancel instead of reconnect.
+    /// Surfacing `RecoveryExhausted` would count a network blip as a forced re-login and make the relay cancel instead of reconnect.
     #[tokio::test]
     async fn exhaustion_after_transient_failure_stays_transient() {
         /// Refresher fake: transient failure on every call.
@@ -756,7 +551,7 @@ mod tests {
         let (_d, m) = mgr();
         seed(&m, AuthMode::Oidc, Some("rt"));
         m.set_refresher(Arc::new(TransientFailRefresher));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Turn);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let first = rec.next().await.unwrap_err();
         assert!(
             matches!(first, AuthError::Refresh(RefreshTokenError::Transient(_))),
@@ -771,18 +566,9 @@ mod tests {
             matches!(err, AuthError::Refresh(RefreshTokenError::Transient(_))),
             "exhaustion after a transient failure must stay transient, got {err:?}",
         );
-        assert_eq!(
-            manual_auth_reason(&err),
-            None,
-            "a transient exhaustion must not map to a manual_auth reason",
-        );
         assert!(
             !relay_should_cancel(&err),
             "the relay must reconnect (not cancel) on a transient exhaustion",
-        );
-        assert!(
-            m.manual_auth_last_token().is_none(),
-            "no manual_auth event may be recorded for a transient outage",
         );
     }
     /// A failed authority refresh must surface that error, not `RecoveryExhausted`.
@@ -808,7 +594,7 @@ mod tests {
         m.set_refresher(Arc::new(InteractiveRequiredRefresher {
             calls: calls.clone(),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Turn);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let err = rec.next().await.unwrap_err();
         assert!(
             matches!(
@@ -850,7 +636,7 @@ mod tests {
         m.set_refresher(Arc::new(FailRefresher {
             calls: calls.clone(),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let err = rec.next().await.unwrap_err();
         assert!(matches!(
             err,
@@ -883,45 +669,13 @@ mod tests {
         m.set_refresher(Arc::new(OkRefresher {
             calls: calls.clone(),
         }));
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let auth = rec.next().await.expect("should fall through to authority");
         assert_eq!(
             auth.key, "fresh-from-authority",
             "must skip the expired disk token and use the refresher"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-    /// The dedup mutex's whole purpose: N concurrent recoveries on the *same* rejected credential collapse to a single emitted `manual_auth` event.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn manual_auth_record_dedups_concurrent_same_credential() {
-        let tracker = Arc::new(ManualAuthTracker::default());
-        let auth = GrokAuth {
-            key: "rejected".into(),
-            auth_mode: AuthMode::Oidc,
-            refresh_token: Some("rt".into()),
-            user_id: "user-1".into(),
-            ..GrokAuth::test_default()
-        };
-        let snapshot = Arc::new(RejectedAuth::capture(Some(&auth)));
-        let err = Arc::new(AuthError::permanent(
-            RefreshTokenFailedReason::RefreshTokenRejected,
-        ));
-        let handles: Vec<_> = (0..16)
-            .map(|_| {
-                let (t, s, e) = (tracker.clone(), snapshot.clone(), err.clone());
-                tokio::spawn(async move {
-                    t.record(s.as_ref(), e.as_ref(), ManualAuthSurface::Turn);
-                })
-            })
-            .collect();
-        for h in handles {
-            h.await.unwrap();
-        }
-        assert_eq!(
-            tracker.emit_count_for_test(),
-            1,
-            "concurrent records on one rejected credential must emit exactly once",
-        );
     }
     fn ensure_crypto_provider() {
         let _ = jsonwebtoken::crypto::rust_crypto::DEFAULT_PROVIDER.install_default();
@@ -963,7 +717,7 @@ mod tests {
             },
         );
         write_auth_json(&dir.path().join("auth.json"), &store).unwrap();
-        let mut rec = m.unauthorized_recovery(rejected_cred(), RecoverySource::Background);
+        let mut rec = m.unauthorized_recovery(rejected_cred());
         let err = rec.next().await.unwrap_err();
         assert!(
             matches!(err, AuthError::PinnedTeamMismatch { .. }),

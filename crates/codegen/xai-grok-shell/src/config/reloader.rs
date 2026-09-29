@@ -148,15 +148,6 @@ impl ConfigReloader {
                         // Whole-file deletion (NotFound) and corrupt JSON land here
                         // The resulting memory/disk divergence must be visible in unified.jsonl
                         let path = self.grok_home.join("auth.json");
-                        xai_grok_telemetry::unified_log::error(
-                            "auth reload: auth.json unreadable, keeping previous credentials",
-                            None,
-                            Some(serde_json::json!({
-                                "error": e.to_string(),
-                                "path": path.display().to_string(),
-                                "path_exists": path.exists(),
-                            })),
-                        );
                     }
                     Err(_) => {
                         error!("panic in auth reload handler, keeping previous credentials");
@@ -250,14 +241,6 @@ impl ConfigReloader {
                     info!("auth scope removed from auth.json, sent clear to agent");
                     // AuthCleared makes the agent drop in-memory credentials
                     // Record what the reloader saw so "entry removed" is distinguishable from "file deleted" (the Err path)
-                    xai_grok_telemetry::unified_log::warn(
-                        "auth reload: scope entry gone, sending AuthCleared",
-                        None,
-                        Some(serde_json::json!({
-                            "scope": &self.auth_scope,
-                            "scopes_on_disk": store.keys().collect::<Vec<_>>(),
-                        })),
-                    );
                 }
             }
         }

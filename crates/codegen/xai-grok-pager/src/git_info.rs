@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
 
 use crate::host::HostOs;

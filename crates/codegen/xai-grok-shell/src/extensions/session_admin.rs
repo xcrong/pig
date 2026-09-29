@@ -35,7 +35,7 @@ use crate::session::storage::StorageAdapter;
 use crate::session::storage::jsonl::JsonlStorageAdapter;
 use crate::session::unified_list::SessionKind;
 use crate::session::{ExtMethodResult, SessionCommand};
-use xai_grok_telemetry::id::agent_id;
+use crate::remote::client::ephemeral_agent_id;
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub(crate) async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -893,7 +893,7 @@ async fn handle_session_fork(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRes
 
     let request: ForkSessionRequest = parse_params(args)?;
 
-    let agent_id = agent_id();
+    let agent_id = ephemeral_agent_id();
     let response = fork_session(request, &agent_id, Some(agent.auth_manager.clone()))
         .await
         .map_err(|e| acp::Error::internal_error().data(e.to_string()))?;

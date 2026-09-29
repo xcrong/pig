@@ -81,8 +81,9 @@ impl TeardownFenceReport {
         let duration_ms = self
             .fence
             .map(|fence| u64::try_from(fence.elapsed.as_millis()).unwrap_or(u64::MAX));
-        crate::unified_log::write_direct_info(
+        crate::unified_log::info(
             "teardown.kitty_pop_fence",
+            None,
             Some(serde_json::json!({
                 "decision": <&'static str>::from(self.decision),
                 "outcome": self.fence.map(|fence| <&'static str>::from(fence.outcome)),

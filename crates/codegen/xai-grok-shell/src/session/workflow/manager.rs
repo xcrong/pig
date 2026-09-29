@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 use xai_grok_sampling_types::ReasoningEffort;
-use xai_grok_telemetry::events::{WorkflowRunStarted, WorkflowSourceKind};
 use xai_grok_tools::implementations::grok_build::workflow::WorkflowControl;
 use xai_workflow::{Journal, WorkflowOutcome, WorkflowRunParams};
 
@@ -21,11 +20,6 @@ use crate::agent::remote_config::task_model_policy::LatchedTaskModelSelection;
 
 pub(crate) const WORKFLOW_MAX_ACTIVE_RUNS_PER_SESSION: usize = 4;
 pub(crate) const WORKFLOW_DEFAULT_AGENT_BUDGET: u64 = xai_workflow::DEFAULT_AGENT_BUDGET;
-
-static WORKFLOW_RUNS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
-    xai_grok_telemetry::activity::ActivityGauge::work(
-        xai_grok_telemetry::activity::WORKFLOW_RUNS_ACTIVE_KEY,
-    );
 
 struct ActiveRun {
     cancel: CancellationToken,
@@ -274,12 +268,7 @@ impl WorkflowManager {
         self.notify
             .emit(&state, self.tracker.lock().elapsed_ms(&run_id), 0);
 
-        let active = WORKFLOW_RUNS_ACTIVE.enter();
         let work = crate::session::handle::WorkGuard::new(self.active_work.clone());
-        debug_assert!(
-            WORKFLOW_RUNS_ACTIVE.get() >= 1,
-            "WorkflowRunStarted must stamp a self-inclusive count"
-        );
         let source_kind = match &resolved.source {
             WorkflowSource::Builtin => WorkflowSourceKind::Builtin,
             WorkflowSource::Inline => WorkflowSourceKind::Inline,
@@ -375,7 +364,6 @@ impl WorkflowManager {
         let watcher_workflow_name = workflow_name;
         let execution_epoch = self.tracker.lock().execution_epoch(&run_id).unwrap_or(0);
         tokio::spawn(async move {
-            let _active = active;
             let _work = work;
             let mut outcome = exec.await.unwrap_or_else(|e| WorkflowOutcome::Failed {
                 error: format!("workflow executor panicked: {e}"),
@@ -440,7 +428,7 @@ impl WorkflowManager {
                         parent_session_id: &watcher_session_id,
                         source: source_kind,
                         workflow_name: watcher_workflow_name.as_deref(),
-                        status: xai_grok_telemetry::events::WorkflowRunEndStatus::Superseded,
+                        status: WorkflowEndStatus::Superseded,
                         duration_ms: elapsed,
                         agents_used,
                         agent_budget,
@@ -459,7 +447,7 @@ impl WorkflowManager {
                         parent_session_id: &watcher_session_id,
                         source: source_kind,
                         workflow_name: watcher_workflow_name.as_deref(),
-                        status: xai_grok_telemetry::events::WorkflowRunEndStatus::Interrupted,
+                        status: WorkflowEndStatus::Interrupted,
                         duration_ms: 0,
                         agents_used: 0,
                         agent_budget: None,
@@ -839,6 +827,15 @@ impl WorkflowManager {
     }
 }
 
+/// Where a workflow run came from, for local run logs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowSourceKind {
+    Builtin,
+    Inline,
+    Bundled,
+    File,
+}
+
 /// `workflow_name` is already privacy-filtered by `launch`; both lifecycle events must carry the same value.
 fn log_run_started(
     run_id: &str,
@@ -849,15 +846,16 @@ fn log_run_started(
     max_concurrent_agents: usize,
     resumed: bool,
 ) {
-    xai_grok_telemetry::session_ctx::log_event(WorkflowRunStarted {
-        run_id: run_id.to_owned(),
-        parent_session_id: parent_session_id.to_owned(),
-        source,
-        workflow_name: workflow_name.map(str::to_owned),
-        agent_budget: state.agent_budget,
-        max_concurrent_agents: u32::try_from(max_concurrent_agents).unwrap_or(u32::MAX),
+    tracing::info!(
+        run_id,
+        parent_session_id,
+        source = ?source,
+        workflow_name,
+        agent_budget = state.agent_budget,
+        max_concurrent_agents,
         resumed,
-    });
+        "workflow run started",
+    );
 }
 
 struct RunEndMetadata<'a> {
@@ -865,48 +863,65 @@ struct RunEndMetadata<'a> {
     parent_session_id: &'a str,
     source: WorkflowSourceKind,
     workflow_name: Option<&'a str>,
-    status: xai_grok_telemetry::events::WorkflowRunEndStatus,
+    status: WorkflowEndStatus,
     duration_ms: u64,
     agents_used: u64,
     agent_budget: Option<u64>,
 }
 
 fn log_run_ended(episode: RunEndMetadata<'_>, stats: &super::host_service::WorkflowAgentStats) {
-    xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::WorkflowRunEnded {
-        run_id: episode.run_id.to_owned(),
-        parent_session_id: episode.parent_session_id.to_owned(),
-        source: episode.source,
-        workflow_name: episode.workflow_name.map(str::to_owned),
-        status: episode.status,
-        duration_ms: episode.duration_ms,
-        agents_used: episode.agents_used,
-        agent_budget: episode.agent_budget,
-        agents_failed: stats.agents_failed.load(Ordering::Relaxed),
-        peak_concurrent_agents: stats.peak_concurrent.load(Ordering::Relaxed),
-        slot_waits: stats.slot_waits.load(Ordering::Relaxed),
-        slot_wait_ms_total: stats.slot_wait_ms_total.load(Ordering::Relaxed),
-        slot_wait_ms_max: stats.slot_wait_ms_max.load(Ordering::Relaxed),
-    });
+    tracing::info!(
+        run_id = episode.run_id,
+        parent_session_id = episode.parent_session_id,
+        source = ?episode.source,
+        workflow_name = episode.workflow_name,
+        status = ?episode.status,
+        duration_ms = episode.duration_ms,
+        agents_used = episode.agents_used,
+        agent_budget = episode.agent_budget,
+        agents_failed = stats.agents_failed.load(Ordering::Relaxed),
+        peak_concurrent_agents = stats.peak_concurrent.load(Ordering::Relaxed),
+        slot_waits = stats.slot_waits.load(Ordering::Relaxed),
+        slot_wait_ms_total = stats.slot_wait_ms_total.load(Ordering::Relaxed),
+        slot_wait_ms_max = stats.slot_wait_ms_max.load(Ordering::Relaxed),
+        "workflow run ended",
+    );
+}
+
+/// Local end status for run logs. Exhaustive so a new tracker status forces a decision here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowEndStatus {
+    Active,
+    UserPaused,
+    BackOffPaused,
+    NoProgressPaused,
+    InfraPaused,
+    Blocked,
+    BudgetLimited,
+    Interrupted,
+    Complete,
+    Failed,
+    Cancelled,
+    Superseded,
 }
 
 /// Exhaustive so a new tracker status forces a decision here.
 fn run_ended_status(
     status: crate::session::workflow::tracker::WorkflowRunStatus,
-) -> xai_grok_telemetry::events::WorkflowRunEndStatus {
+) -> WorkflowEndStatus {
     use crate::session::workflow::tracker::WorkflowRunStatus as S;
-    use xai_grok_telemetry::events::WorkflowRunEndStatus as E;
     match status {
-        S::Active => E::Active,
-        S::UserPaused => E::UserPaused,
-        S::BackOffPaused => E::BackOffPaused,
-        S::NoProgressPaused => E::NoProgressPaused,
-        S::InfraPaused => E::InfraPaused,
-        S::Blocked => E::Blocked,
-        S::BudgetLimited => E::BudgetLimited,
-        S::Interrupted => E::Interrupted,
-        S::Complete => E::Complete,
-        S::Failed => E::Failed,
-        S::Cancelled => E::Cancelled,
+        S::Active => WorkflowEndStatus::Active,
+        S::UserPaused => WorkflowEndStatus::UserPaused,
+        S::BackOffPaused => WorkflowEndStatus::BackOffPaused,
+        S::NoProgressPaused => WorkflowEndStatus::NoProgressPaused,
+        S::InfraPaused => WorkflowEndStatus::InfraPaused,
+        S::Blocked => WorkflowEndStatus::Blocked,
+        S::BudgetLimited => WorkflowEndStatus::BudgetLimited,
+        S::Interrupted => WorkflowEndStatus::Interrupted,
+        S::Complete => WorkflowEndStatus::Complete,
+        S::Failed => WorkflowEndStatus::Failed,
+        S::Cancelled => WorkflowEndStatus::Cancelled,
     }
 }
 

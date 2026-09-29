@@ -6,10 +6,6 @@ use super::turn_end::{
     run_detached_turn_end, run_registry_turn_end, run_trace_completion,
     upload_error_turn_artifacts,
 };
-use xai_grok_telemetry::instrument_task;
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent;
-use xai_grok_telemetry::startup;
 use tracing::Instrument;
 use xai_grok_login::{CachedTokenState, SilentRefresh};
 use crate::upload::trace::PromptMetadataParams;
@@ -98,17 +94,7 @@ impl acp::Agent for MvpAgent {
         &self,
         arguments: acp::InitializeRequest,
     ) -> Result<acp::InitializeResponse, acp::Error> {
-        if let Some(meta) = arguments.meta.as_ref() {
-            xai_grok_otel::link_current_span_to_meta(
-                &serde_json::Value::Object(meta.clone()),
-            );
-        }
         tracing::debug!(target: "sampling_log", "Received initialize request");
-        xai_grok_telemetry::unified_log::info("agent initialized", None, None);
-        startup::mark_agent_serving();
-        let _t = xai_grok_telemetry::instrumentation::timer(
-            "startup.acp_initialize.handler",
-        );
         self.start_subagent_coordinator();
         if self.cfg.borrow().remote_settings.is_none() {
             self.spawn_settings_reapply();
@@ -148,23 +134,7 @@ impl acp::Agent for MvpAgent {
             let user_id = auth.user_id.trim();
             let needs_user_info = user_id.is_empty()
                 || user_id.eq_ignore_ascii_case("unknown");
-            xai_grok_telemetry::unified_log::info(
-                "auth init user_info check",
-                None,
-                Some(
-                    serde_json::json!({
-                    "user_id": user_id,
-                    "needs_user_info": needs_user_info,
-                    "key_prefix": xai_grok_auth::bearer_suffix(&auth.key),
-                    "rt_prefix": auth.refresh_token.as_deref().map(xai_grok_auth::bearer_suffix),
-                }),
-                ),
-            );
             if needs_user_info {
-                let _t = xai_grok_telemetry::instrumentation::timer(
-                    "startup.acp_initialize.user_info",
-                );
-                let _s = region!("startup.acp_initialize.user_info", Parent::Inherit);
                 if let Err(e) = self.auth_manager.update(auth).await {
                     tracing::warn!(
                         "Failed to refresh user info from proxy during new_session: {}",
@@ -253,10 +223,6 @@ impl acp::Agent for MvpAgent {
                     .map(|t| xai_grok_auth::bearer_suffix(t).to_owned()),
             ));
         {
-            let _t = xai_grok_telemetry::instrumentation::timer(
-                "startup.acp_initialize.auth_reload",
-            );
-            let _s = region!("startup.acp_initialize.auth_reload", Parent::Inherit);
             self.auth_manager.force_reload_from_disk();
         }
         let post = self
@@ -269,30 +235,6 @@ impl acp::Agent for MvpAgent {
                     .as_deref()
                     .map(|t| xai_grok_auth::bearer_suffix(t).to_owned()),
             ));
-        xai_grok_telemetry::unified_log::info(
-            "auth init disk refresh",
-            None,
-            Some(
-                serde_json::json!({
-                "pre_key": pre.as_ref().map(|p| &p.0),
-                "pre_rt": pre.as_ref().and_then(|p| p.1.as_deref()),
-                "post_key": post.as_ref().map(|p| &p.0),
-                "post_rt": post.as_ref().and_then(|p| p.1.as_deref()),
-                "changed": pre.as_ref().map(|p| &p.0) != post.as_ref().map(|p| &p.0),
-            }),
-            ),
-        );
-        xai_grok_telemetry::unified_log::info(
-            "auth: initialize() refreshed auth state from disk",
-            None,
-            Some(
-                serde_json::json!({
-                "has_current": self.auth_manager.current().is_some(),
-                "is_expired": self.auth_manager.is_expired(),
-                "auth_mode": self.auth_manager.current().map(|a| format!("{:?}", a.auth_mode)),
-            }),
-            ),
-        );
         if !self.cfg.borrow().grok_com_config.api_key_auth_disabled()
             && auth_method::read_xai_api_key_env().is_err()
             && let Some(api_key) = xai_grok_login::read_api_key(
@@ -301,11 +243,6 @@ impl acp::Agent for MvpAgent {
         {
             xai_grok_login::auth_method::set_runtime_xai_api_key(&api_key);
             tracing::info!("auth: loaded API key from auth.json (xai::api_key scope)");
-            xai_grok_telemetry::unified_log::info(
-                "auth: loaded API key from auth.json (xai::api_key scope)",
-                None,
-                None,
-            );
         }
         let disable_api_key_auth = self
             .cfg
@@ -316,17 +253,6 @@ impl acp::Agent for MvpAgent {
             let cfg = self.cfg.borrow();
             let gc = &cfg.grok_com_config;
             if disable_api_key_auth || gc.force_login_team_uuid.is_some() {
-                xai_grok_telemetry::unified_log::info(
-                    "auth: enterprise login policy active",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "force_login_team_uuid": gc.force_login_team_uuid.as_ref().map(|t| format!("{t:?}")),
-                        "disable_api_key_auth_knob": gc.disable_api_key_auth,
-                        "api_key_auth_disabled": disable_api_key_auth,
-                    }),
-                    ),
-                );
             }
         }
         let preferred_method_early = self.cfg.borrow().grok_com_config.preferred_method;
@@ -359,22 +285,8 @@ impl acp::Agent for MvpAgent {
         let init_token_state = self.auth_manager.cached_token_state();
         let init_has_current = matches!(init_token_state, CachedTokenState::Valid(_));
         let init_is_expired = matches!(init_token_state, CachedTokenState::Expired);
-        xai_grok_telemetry::unified_log::info(
-            "auth init token state",
-            None,
-            Some(
-                serde_json::json!({
-                "has_current": init_has_current,
-                "is_expired": init_is_expired,
-            }),
-            ),
-        );
         let mut has_cached_token = init_has_current;
         if !init_has_current && init_is_expired {
-            let _t = xai_grok_telemetry::instrumentation::timer(
-                "startup.acp_initialize.silent_refresh",
-            );
-            let _s = region!("startup.acp_initialize.silent_refresh", Parent::Inherit);
             has_cached_token = match self.auth_manager.silent_refresh().await {
                 SilentRefresh::Renewed(_) => true,
                 SilentRefresh::Failed(remedy) => remedy.is_self_healing(),
@@ -405,11 +317,6 @@ impl acp::Agent for MvpAgent {
                 issuer = %issuer,
                 "auth: advertising enterprise OIDC auth method",
             );
-            xai_grok_telemetry::unified_log::info(
-                "auth: advertising enterprise OIDC auth method",
-                None,
-                Some(serde_json::json!({ "issuer": issuer })),
-            );
         } else {
             tracing::info!(
                 label = ?login_label,
@@ -427,10 +334,6 @@ impl acp::Agent for MvpAgent {
             _ => has_cached_token,
         };
         let built = {
-            let _t = xai_grok_telemetry::instrumentation::timer(
-                "startup.acp_initialize.auth_methods",
-            );
-            let _s = region!("startup.acp_initialize.auth_methods", Parent::Inherit);
             auth_method::build_auth_methods(auth_method::AuthMethodsBuildInputs {
                 has_external_api_key,
                 has_cached_token,
@@ -442,26 +345,6 @@ impl acp::Agent for MvpAgent {
             })
         };
         let auth_methods = built.methods;
-        xai_grok_telemetry::unified_log::info(
-            "auth: initialize() built auth_methods for ACP response",
-            None,
-            Some(
-                serde_json::json!({
-                "grok_home": crate::util::grok_home::grok_home().display().to_string(),
-                "HOME": std::env::var("HOME").unwrap_or_else(|_| "(unset)".into()),
-                "has_external_api_key": has_external_api_key,
-                "first_party_env_api_key_ok": first_party_env_ok,
-                "disable_api_key_auth": disable_api_key_auth,
-                "has_cached_token": has_cached_token,
-                "has_enterprise_oidc": has_enterprise_oidc,
-                "init_has_current": init_has_current,
-                "init_is_expired": init_is_expired,
-                "auth_mode": self.auth_manager.current().map(|a| format!("{:?}", a.auth_mode)),
-                "methods": auth_methods.iter().map(|m| m.id().0.as_ref()).collect::<Vec<_>>(),
-                "default_auth_method_id": built.default_auth_method_id.as_ref().map(|id| id.0.as_ref()),
-            }),
-            ),
-        );
         debug_assert!(
             !has_external_api_key
                 || matches!(
@@ -479,19 +362,6 @@ impl acp::Agent for MvpAgent {
             .as_ref()
             .map(|id| id.0.to_string());
         if let Some(default_id) = built.default_auth_method_id {
-            xai_grok_telemetry::unified_log::info(
-                "auth method selection",
-                None,
-                Some(
-                    serde_json::json!({
-                    "default_auth_method_id": default_id.0.as_ref(),
-                    "has_external_api_key": has_external_api_key,
-                    "has_cached_token": has_cached_token,
-                    "methods_first": auth_methods.first().map(|m| m.id().0.as_ref()),
-                    "methods_count": auth_methods.len(),
-                }),
-                ),
-            );
             self.set_auth_method(default_id);
         }
         self.sync_process_static_api_key(None);
@@ -510,10 +380,6 @@ impl acp::Agent for MvpAgent {
         self.spawn_announcements_refresh();
         self.spawn_heap_profile_monitor();
         let init_model_state = {
-            let _t = xai_grok_telemetry::instrumentation::timer(
-                "startup.acp_initialize.model_state",
-            );
-            let _s = region!("startup.acp_initialize.model_state", Parent::Inherit);
             if crate::agent::chat_modes::process_chat_mode_enabled() {
                 self.chat_modes.model_state().await
             } else {
@@ -575,8 +441,8 @@ impl acp::Agent for MvpAgent {
                     (SESSION_PLUGIN_DIRS_CAPABILITY_KEY): true,
                     "currentWorkingDirectory": current_working_directory.to_string_lossy().to_string(),
                     "agentVersion": xai_grok_version::VERSION,
-                    "agentId": agent_id(),
-                    "agentInstanceId": agent_instance_id(),
+                    "agentId": crate::remote::client::ephemeral_agent_id(),
+                    "agentInstanceId": crate::remote::client::ephemeral_agent_id(),
                     "hostname": hostname.to_string_lossy().to_string(),
                     "modelState": init_model_state,
                     "mcpServers": mcp_servers,
@@ -604,11 +470,6 @@ impl acp::Agent for MvpAgent {
         arguments: acp::AuthenticateRequest,
     ) -> Result<AuthenticateResponse, acp::Error> {
         tracing::info!(method = %arguments.method_id.0, "auth: authenticate request");
-        xai_grok_telemetry::unified_log::info(
-            "auth started",
-            None,
-            Some(serde_json::json!({"method": arguments.method_id.0.as_ref()})),
-        );
         if let Some(preferred) = self.cfg.borrow().grok_com_config.preferred_method {
             let kind = auth_method::AuthMethodKind::from_id(&arguments.method_id);
             let allowed = match preferred {
@@ -651,11 +512,6 @@ impl acp::Agent for MvpAgent {
                             &api_key,
                         ) {
                             tracing::warn!("failed to persist API key to auth.json: {e}");
-                            xai_grok_telemetry::unified_log::warn(
-                                "failed to persist API key to auth.json",
-                                None,
-                                Some(serde_json::json!({ "error" : e.to_string() })),
-                            );
                         }
                     } else if !self
                         .models_manager
@@ -674,15 +530,10 @@ impl acp::Agent for MvpAgent {
                 }
                 self.set_auth_method(arguments.method_id.clone());
                 self.sync_process_static_api_key(None);
-                self.ensure_telemetry_client();
                 if crate::agent::chat_modes::process_chat_mode_enabled() {
                     self.chat_modes.warm_in_background();
                 }
                 emit_login_span(true, "api_key", None, None);
-                log_event(xai_grok_telemetry::events::Login {
-                    auth_method: "api_key".to_string(),
-                    user_id: None,
-                });
                 Ok(Default::default())
             }
             auth_method::CACHED_TOKEN_AUTH_METHOD_ID => {
@@ -708,11 +559,6 @@ impl acp::Agent for MvpAgent {
                     "is_expired": is_expired,
                     "is_legacy": is_legacy,
                 });
-                xai_grok_telemetry::unified_log::info(
-                    "auth cached_token check",
-                    None,
-                    Some(check_payload),
-                );
                 let token_state = self.auth_manager.cached_token_state();
                 let was_expired = matches!(token_state, CachedTokenState::Expired);
                 let resolved = match token_state {
@@ -735,24 +581,12 @@ impl acp::Agent for MvpAgent {
                         "No cached auth token found"
                     };
                     tracing::info!(%message, "cached_token missing/expired, falling through");
-                    xai_grok_telemetry::unified_log::warn(
-                        "auth cached_token fallthrough",
-                        None,
-                        Some(serde_json::json!({ "reason": message })),
-                    );
                     return self
                         .authenticate_after_cached_token_unavailable(arguments)
                         .await;
                 };
                 if auth.auth_mode == xai_grok_login::AuthMode::WebLogin {
                     tracing::info!("auth: rejecting legacy WebLogin token");
-                    xai_grok_telemetry::unified_log::warn(
-                        "auth cached_token legacy rejected",
-                        None,
-                        Some(
-                            serde_json::json!({ "auth_mode": format!("{:?}", auth.auth_mode) }),
-                        ),
-                    );
                     self.auth_manager.clear_in_memory();
                     if let Err(e) = self
                         .auth_manager
@@ -771,23 +605,13 @@ impl acp::Agent for MvpAgent {
                     let mut sampling_config = self.sampling_config.borrow_mut();
                     sampling_config.api_key = Some(auth.key);
                     tracing::debug!("auth: cached_token handler set api_key (SessionToken)");
-                    xai_grok_telemetry::unified_log::debug(
-                        "auth: cached_token handler set api_key (SessionToken)",
-                        None,
-                        None,
-                    );
                 }
                 self.set_auth_method(arguments.method_id.clone());
-                self.ensure_telemetry_client();
                 if crate::agent::chat_modes::process_chat_mode_enabled() {
                     self.chat_modes.warm_in_background();
                 }
                 let uid = self.auth_manager.current().map(|a| a.user_id);
                 emit_login_span(true, "cached_token", uid.as_deref(), None);
-                log_event(xai_grok_telemetry::events::Login {
-                    auth_method: "cached_token".to_string(),
-                    user_id: uid,
-                });
                 self.spawn_post_auth_settings(auth_for_settings);
                 Ok(self.auth_response_with_meta())
             }
@@ -801,34 +625,12 @@ impl acp::Agent for MvpAgent {
                     use_oauth = auth_meta.use_oauth,
                     "auth: inline auth flow",
                 );
-                xai_grok_telemetry::unified_log::info(
-                    "auth: inline auth flow",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "method": arguments.method_id.0.as_ref(),
-                        "headless": auth_meta.headless,
-                        "reauth": auth_meta.reauth,
-                        "use_oauth": auth_meta.use_oauth,
-                    }),
-                    ),
-                );
                 if auth_meta.reauth {
                     let _ = self.auth_manager.clear();
                 }
                 let cli_oauth = auth_meta.use_oauth.then_some(true);
                 let use_oidc = self.cfg.borrow().resolve_grok_oauth(cli_oauth);
                 tracing::debug!(resolved = use_oidc.value, source = ?use_oidc.source, "auth: method resolved");
-                xai_grok_telemetry::unified_log::debug(
-                    "auth: method resolved",
-                    None,
-                    Some(
-                        serde_json::json!({
-                        "use_oidc": use_oidc.value,
-                        "source": format!("{:?}", use_oidc.source),
-                    }),
-                    ),
-                );
                 let login_override = auth_meta.login_override();
                 let config_device_flow = self.cfg.borrow().login_device_flow;
                 let mut cancelled = false;
@@ -908,11 +710,6 @@ impl acp::Agent for MvpAgent {
                     let mut sampling_config = self.sampling_config.borrow_mut();
                     sampling_config.api_key = Some(auth.key.clone());
                     tracing::debug!("auth: grok.com/oidc handler set api_key (SessionToken)");
-                    xai_grok_telemetry::unified_log::debug(
-                        "auth: grok.com/oidc handler set api_key (SessionToken)",
-                        None,
-                        None,
-                    );
                 }
                 self.auth_manager.hot_swap(auth.clone());
                 self.enforce_grok_code_access(&auth).await;
@@ -931,10 +728,6 @@ impl acp::Agent for MvpAgent {
                     Some(auth.user_id.as_str()),
                     None,
                 );
-                log_event(xai_grok_telemetry::events::Login {
-                    auth_method: arguments.method_id.0.as_ref().to_string(),
-                    user_id: Some(auth.user_id.clone()),
-                });
                 self.spawn_post_auth_settings(auth);
                 Ok(self.auth_response_with_meta())
             }
@@ -956,12 +749,6 @@ impl acp::Agent for MvpAgent {
         arguments: acp::NewSessionRequest,
     ) -> Result<acp::NewSessionResponse, acp::Error> {
         let span = tracing::info_span!("agent.new_session");
-        if let Some(meta) = arguments.meta.as_ref() {
-            xai_grok_otel::link_span_to_meta(
-                &span,
-                &serde_json::Value::Object(meta.clone()),
-            );
-        }
         self.new_session_inner(arguments).instrument(span).await
     }
     async fn load_session(
@@ -999,21 +786,10 @@ impl acp::Agent for MvpAgent {
         mut arguments: acp::PromptRequest,
     ) -> Result<acp::PromptResponse, acp::Error> {
         use crate::session::plan_mode::PromptMode;
-        if let Some(meta) = arguments.meta.as_ref() {
-            xai_grok_otel::link_current_span_to_meta(
-                &serde_json::Value::Object(meta.clone()),
-            );
-        }
-        let preamble_span = region!("prompt.preamble", Parent::Inherit);
         tracing::debug!(
             target: "sampling_log",
             session_id = %arguments.session_id.0,
             "Received prompt request"
-        );
-        xai_grok_telemetry::unified_log::info(
-            "prompt received",
-            Some(arguments.session_id.0.as_ref()),
-            None,
         );
         let handle = self
             .session_handle_waiting_for_load(&arguments.session_id)
@@ -1050,15 +826,6 @@ impl acp::Agent for MvpAgent {
                     model_id = %restore_model_id.0,
                     "prompt: previously-unavailable model is back in the catalog; restoring it and unblocking the session"
                 );
-                xai_grok_telemetry::unified_log::info(
-                    "prompt: previously-unavailable model recovered, unblocking session",
-                    Some(arguments.session_id.0.as_ref()),
-                    Some(
-                        serde_json::json!({
-                        "model_id": restore_model_id.0.as_ref(),
-                    }),
-                    ),
-                );
                 self.session_registry.take_unavailable_model(&arguments.session_id);
                 if let Err(e) = crate::agent::handlers::model_switch::apply(
                         self,
@@ -1085,16 +852,6 @@ impl acp::Agent for MvpAgent {
                     available_count = available.len(),
                     available_keys = ?available.keys().take(10).collect::<Vec<_>>(),
                     "prompt blocked: session model unavailable since load and still missing from the catalog"
-                );
-                xai_grok_telemetry::unified_log::warn(
-                    "prompt blocked: model unavailable",
-                    Some(arguments.session_id.0.as_ref()),
-                    Some(
-                        serde_json::json!({
-                        "unavailable_model": unavailable_model.0.as_ref(),
-                        "available_count": available.len(),
-                    }),
-                    ),
                 );
                 self.send_model_auto_switched(
                         &arguments.session_id,
@@ -1354,7 +1111,6 @@ impl acp::Agent for MvpAgent {
         let artifact_upload_ctx = trace_context
             .as_ref()
             .map(|ctx| ctx.artifact_upload_context());
-        let traceparent = xai_grok_otel::current_traceparent();
         let dispatch_result: Result<(), acp::Error> = if send_now {
             handle
                 .cmd_tx
@@ -1366,7 +1122,6 @@ impl acp::Agent for MvpAgent {
                     client_identifier: prompt_client_identifier,
                     screen_mode: prompt_screen_mode,
                     verbatim,
-                    traceparent,
                     json_schema,
                     send_now: true,
                     admission: None,
@@ -1390,7 +1145,6 @@ impl acp::Agent for MvpAgent {
                     client_identifier: prompt_client_identifier,
                     screen_mode: prompt_screen_mode,
                     verbatim,
-                    traceparent,
                     json_schema,
                     tool_overrides_update,
                     respond_to: tx,
@@ -1427,14 +1181,11 @@ impl acp::Agent for MvpAgent {
             &arguments.session_id,
             crate::agent::roster::RosterActivity::Working,
         );
-        preamble_span.close();
-        let await_turn_span = region!("prompt.await_turn", Parent::Inherit);
         let stop_result = rx
             .await
             .map_err(|_| {
                 acp::Error::internal_error().data("session failed to respond")
             })?;
-        await_turn_span.close();
         let removed_from_queue = matches!(
             &stop_result,
             Ok(ok) if matches!(ok.completion_kind, crate::session::commands::PromptCompletionKind::RemovedFromQueue)
@@ -1443,13 +1194,10 @@ impl acp::Agent for MvpAgent {
             && stop_result.is_ok();
         let turn_end_capture: Option<TurnEndCapture> = capture
             .then(|| TurnEndCapture::begin(&handle, handle.info.cwd.clone()));
-        let finalize_span = region!("prompt.finalize", Parent::Inherit);
-        let turn_usage_span = region!("finalize.turn_usage", Parent::Explicit(finalize_span.span()));
         let last_turn_usage_for_meta = handle
             .chat_state_handle
             .get_last_turn_usage()
             .await;
-        turn_usage_span.close();
         let applied_tool_overrides = stop_result
             .as_ref()
             .ok()
@@ -1785,10 +1533,6 @@ impl acp::Agent for MvpAgent {
                     let artifacts = ErrorTurnArtifacts {
                         turn_messages,
                         streaming_partial,
-                        upload_unified: matches!(
-                            crate::sampling::error::http_status_from_error(&err),
-                            Some(401 | 404),
-                        ),
                     };
                     match turn_end_uploads {
                         TurnEndUploads::Wait { budget } => {
@@ -1858,16 +1602,6 @@ impl acp::Agent for MvpAgent {
             .and_then(|m| m.get("cancelTrigger"))
             .and_then(|v| v.as_str())
             .map(crate::session::CancelTrigger::from_client);
-        xai_grok_telemetry::unified_log::info(
-            "shell.cancel.received",
-            Some(args.session_id.0.as_ref()),
-            Some(
-                serde_json::json!({
-                "session_found": handle.is_some(),
-                "trigger": cancel_trigger.as_ref().map(crate::session::CancelTrigger::as_str),
-            }),
-            ),
-        );
         if let Some(handle) = handle {
             let cancel_subagents = args
                 .meta
@@ -1962,7 +1696,6 @@ impl acp::Agent for MvpAgent {
             .ok()
             .and_then(|v| v.get("_meta").cloned());
         if let Some(meta) = &request_meta {
-            xai_grok_otel::link_current_span_to_meta(meta);
         }
         tracing::info!("Received extension method call: method={}", args.method);
         #[allow(unused_mut)]
@@ -2556,144 +2289,6 @@ impl acp::Agent for MvpAgent {
             } else {
                 tracing::warn!("Failed to parse xAI session notification params");
             }
-        }
-        if args.method.as_ref() == "x.ai/telemetry/non_git_decision" {
-            #[derive(serde::Deserialize)]
-            struct NonGitDecisionParams {
-                decision: String,
-                session_id: String,
-                #[serde(default)]
-                client_version: Option<String>,
-            }
-            if let Ok(params) = serde_json::from_str::<
-                NonGitDecisionParams,
-            >(args.params.get()) {
-                tracing::info!(
-                    decision = %params.decision,
-                    session_id = %params.session_id,
-                    client_version = ?params.client_version,
-                    "non_git_decision",
-                );
-                xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::NonGitDecisionEvent {
-                    decision: params.decision,
-                    session_id: params.session_id,
-                    client_version: params.client_version,
-                });
-            } else {
-                tracing::warn!("Failed to parse non_git_decision telemetry params");
-            }
-        }
-        if args.method.as_ref() == "x.ai/telemetry/multi_agent_followup" {
-            #[derive(serde::Deserialize)]
-            struct MultiAgentFollowupParams {
-                preferred_agent_label: char,
-                preferred_agent_session_id: Option<String>,
-                preferred_agent_model_id: Option<String>,
-                /// (label, session_id, model_id)
-                other_agents: Vec<(char, Option<String>, Option<String>)>,
-            }
-            if let Ok(params) = serde_json::from_str::<
-                MultiAgentFollowupParams,
-            >(args.params.get()) {
-                tracing::info!(
-                    "Logging multi-agent followup telemetry: preferred_agent={}",
-                    params.preferred_agent_label
-                );
-                let total_agents = 1 + params.other_agents.len();
-                xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::MultiAgentFollowup {
-                    preferred_agent_label: params.preferred_agent_label.to_string(),
-                    preferred_agent_session_id: params.preferred_agent_session_id,
-                    preferred_agent_model_id: params.preferred_agent_model_id,
-                    other_agents: params
-                        .other_agents
-                        .into_iter()
-                        .map(|(l, s, m)| xai_grok_telemetry::events::AgentInfo {
-                            label: l.to_string(),
-                            session_id: s,
-                            model_id: m,
-                        })
-                        .collect(),
-                    total_agents,
-                });
-            } else {
-                tracing::warn!("Failed to parse multi-agent followup telemetry params");
-            }
-        }
-        if args.method.as_ref() == "x.ai/telemetry/multi_agent_apply" {
-            #[derive(serde::Deserialize)]
-            struct MultiAgentApplyParams {
-                applied_agent_label: char,
-                applied_agent_session_id: Option<String>,
-                applied_agent_model_id: Option<String>,
-                /// (label, session_id, model_id)
-                discarded_agents: Vec<(char, Option<String>, Option<String>)>,
-            }
-            if let Ok(params) = serde_json::from_str::<
-                MultiAgentApplyParams,
-            >(args.params.get()) {
-                tracing::info!(
-                    "Logging multi-agent apply telemetry: applied_agent={}",
-                    params.applied_agent_label
-                );
-                let total_agents = 1 + params.discarded_agents.len();
-                xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::MultiAgentApply {
-                    applied_agent_label: params.applied_agent_label.to_string(),
-                    applied_agent_session_id: params.applied_agent_session_id,
-                    applied_agent_model_id: params.applied_agent_model_id,
-                    discarded_agents: params
-                        .discarded_agents
-                        .into_iter()
-                        .map(|(l, s, m)| xai_grok_telemetry::events::AgentInfo {
-                            label: l.to_string(),
-                            session_id: s,
-                            model_id: m,
-                        })
-                        .collect(),
-                    total_agents,
-                });
-            } else {
-                tracing::warn!("Failed to parse multi-agent apply telemetry params");
-            }
-        }
-        if args.method.as_ref() == "x.ai/telemetry/multi_agent_discard" {
-            #[derive(serde::Deserialize)]
-            struct MultiAgentDiscardParams {
-                /// (label, session_id, model_id)
-                discarded_agents: Vec<(char, Option<String>, Option<String>)>,
-            }
-            if let Ok(params) = serde_json::from_str::<
-                MultiAgentDiscardParams,
-            >(args.params.get()) {
-                tracing::info!(
-                    "Logging multi-agent discard telemetry: {} agents discarded",
-                    params.discarded_agents.len()
-                );
-                let total = params.discarded_agents.len();
-                xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::MultiAgentDiscard {
-                    discarded_agents: params
-                        .discarded_agents
-                        .into_iter()
-                        .map(|(l, s, m)| xai_grok_telemetry::events::AgentInfo {
-                            label: l.to_string(),
-                            session_id: s,
-                            model_id: m,
-                        })
-                        .collect(),
-                    total_agents_discarded: total,
-                });
-            } else {
-                tracing::warn!("Failed to parse multi-agent discard telemetry params");
-            }
-        }
-        if args.method.as_ref() == xai_grok_telemetry::unified_log::LOG_METHOD
-            && let Ok(params) = serde_json::from_str::<
-                xai_grok_telemetry::unified_log::LogNotificationParams,
-            >(args.params.get())
-        {
-            xai_grok_telemetry::unified_log::ingest_client_entries(
-                params.src,
-                &params.entries,
-            );
         }
         Ok(())
     }

@@ -118,11 +118,7 @@ pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethod
 
 fn build_pinned_api_key(has_external_api_key: bool) -> BuiltAuthMethods {
     if !has_external_api_key {
-        xai_grok_telemetry::unified_log::warn(
-            "auth: preferred_method=api_key but no API key credentials available",
-            None,
-            None,
-        );
+        tracing::warn!("auth: preferred_method=api_key but no API key credentials available");
         return BuiltAuthMethods {
             methods: Vec::new(),
             default_auth_method_id: None,
@@ -185,14 +181,6 @@ fn build_unpinned(
         let overrode_api_key = default_auth_method_id.is_some();
         default_auth_method_id = Some(acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID));
         if overrode_api_key {
-            xai_grok_telemetry::unified_log::info(
-                "auth method priority: cached_token overrides xai.api_key for default_auth_method_id",
-                None,
-                Some(serde_json::json!({
-                    "has_external_api_key": has_external_api_key,
-                    "has_cached_token": has_cached_token,
-                })),
-            );
         }
     }
 

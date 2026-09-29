@@ -73,7 +73,6 @@ async fn save_config_locked(
     } else {
         merge_section(table, "skills", &config.skills);
     }
-    merge_section(table, "telemetry", &config.telemetry);
     merge_section(table, "features", &config.features);
     let toml_str = toml::to_string_pretty(&root)?;
     let dest = require_same_user_config_dest(slot, &dest)?;

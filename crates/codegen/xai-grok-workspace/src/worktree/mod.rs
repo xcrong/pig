@@ -15,9 +15,6 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_util::sync::CancellationToken;
 use xai_fast_worktree::{BtrfsDelegate, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder};
-use xai_grok_telemetry::events::{CloneCancellationDisposition, CloneOutcome, WorktreeLifecycle};
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent;
 
 use crate::session::git::{
     GitFileChange, change_type_from_git2_delta, find_git_root_from_path,
@@ -51,8 +48,7 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let region = region!("worktree.copy_on_write", Parent::Inherit);
-    let span = region.span().clone();
+    let span = tracing::info_span!("worktree.copy_on_write");
     tokio::task::spawn_blocking(move || span.in_scope(work)).await
 }
 
@@ -1000,12 +996,6 @@ pub async fn prepare_worktree_creation(req: &CreateWorktreeRequest) -> PrepareWo
     {
         Ok(layout) => layout,
         Err(e) => {
-            strategy::emit_failed_without_report(
-                WorktreeLifecycle::Create,
-                grove_requested,
-                req.grove_gate_source.as_deref(),
-                req.worktree_type.unwrap_or(WorktreeType::Linked),
-            );
             return PrepareWorktreeResult {
                 response: Err(anyhow::anyhow!("Invalid source path: {e}")),
                 spawn_task: false,
@@ -1047,12 +1037,6 @@ pub async fn prepare_worktree_creation(req: &CreateWorktreeRequest) -> PrepareWo
             .await
             .is_err()
     {
-        strategy::emit_failed_without_report(
-            WorktreeLifecycle::Create,
-            grove_requested,
-            req.grove_gate_source.as_deref(),
-            req.worktree_type.unwrap_or(WorktreeType::Linked),
-        );
         return PrepareWorktreeResult {
             response: Err(anyhow::anyhow!("Not a git repository or worktree")),
             spawn_task: false,
@@ -1159,18 +1143,6 @@ pub async fn create_worktree_streaming_in<N: WorktreeNotificationSender>(
                     "CREATE_ERROR: invalid source path"
                 );
                 let requested_type = req.worktree_type.unwrap_or(WorktreeType::Linked);
-                strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                    lifecycle: WorktreeLifecycle::Create,
-                    outcome: CloneOutcome::Failed,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    grove_enabled,
-                    grove_gate_source: req.grove_gate_source.as_deref(),
-                    requested_type,
-                    rewrite_reason: None,
-                    worktree: None,
-                    cancellation_disposition: None,
-                    builder_failure: None,
-                });
                 return WorktreeStatus::Error {
                     session_id,
                     message: format!("Invalid source path: {e}"),
@@ -1313,18 +1285,6 @@ pub async fn create_worktree_streaming_in<N: WorktreeNotificationSender>(
                 error = %e,
                 "CREATE_ERROR: WorktreeBuilder::create failed"
             );
-            strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                lifecycle: WorktreeLifecycle::Create,
-                outcome: CloneOutcome::Failed,
-                duration_ms: elapsed_ms,
-                grove_enabled,
-                grove_gate_source: req.grove_gate_source.as_deref(),
-                requested_type,
-                rewrite_reason: rewrite.reason,
-                worktree: None,
-                cancellation_disposition: None,
-                builder_failure: strategy::fallback_from_builder_err(&e),
-            });
             return WorktreeStatus::Error {
                 session_id,
                 message: format!("Worktree creation failed: {}", e),
@@ -1340,18 +1300,6 @@ pub async fn create_worktree_streaming_in<N: WorktreeNotificationSender>(
                 error = %e,
                 "CREATE_PANIC: WorktreeBuilder task panicked"
             );
-            strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                lifecycle: WorktreeLifecycle::Create,
-                outcome: CloneOutcome::Failed,
-                duration_ms: elapsed_ms,
-                grove_enabled,
-                grove_gate_source: req.grove_gate_source.as_deref(),
-                requested_type,
-                rewrite_reason: rewrite.reason,
-                worktree: None,
-                cancellation_disposition: None,
-                builder_failure: None,
-            });
             return WorktreeStatus::Error {
                 session_id,
                 message: format!("Worktree creation task failed: {}", e),
@@ -1366,18 +1314,6 @@ pub async fn create_worktree_streaming_in<N: WorktreeNotificationSender>(
         rewrite.reason,
         &report,
     );
-    strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-        lifecycle: WorktreeLifecycle::Create,
-        outcome: CloneOutcome::Success,
-        duration_ms: start.elapsed().as_millis() as u64,
-        grove_enabled,
-        grove_gate_source: req.grove_gate_source.as_deref(),
-        requested_type,
-        rewrite_reason: rewrite.reason,
-        worktree: Some(&report),
-        cancellation_disposition: None,
-        builder_failure: None,
-    });
 
     let (dirty_modified, dirty_untracked, dirty_deleted) =
         if req.copy_mode == WorktreeCopyMode::Dirty {
@@ -1600,8 +1536,7 @@ pub async fn rehydrate_subagent_worktree(
     let source_repo = source_repo.to_path_buf();
     let snapshot_ref = snapshot_ref.to_string();
     let session_id = session_id.map(str::to_owned);
-    let recreate = region!("worktree.cwd_recreate", Parent::Inherit);
-    let span = recreate.span().clone();
+    let span = tracing::info_span!("worktree.cwd_recreate");
     let report = tokio::task::spawn_blocking(move || {
         span.in_scope(|| {
             xai_fast_worktree::rehydrate_worktree_from_ref(
@@ -1776,12 +1711,6 @@ pub async fn prepare_worktree_from_worktree(
     {
         Ok(layout) => layout,
         Err(e) => {
-            strategy::emit_failed_without_report(
-                WorktreeLifecycle::Fork,
-                grove_requested,
-                req.grove_gate_source.as_deref(),
-                req.worktree_type.unwrap_or(WorktreeType::Linked),
-            );
             return PrepareWorktreeResult {
                 response: Err(anyhow::anyhow!(
                     "Source path is not a valid git repository or worktree: {}: {e}",
@@ -1797,12 +1726,6 @@ pub async fn prepare_worktree_from_worktree(
             .await
             .is_err()
     {
-        strategy::emit_failed_without_report(
-            WorktreeLifecycle::Fork,
-            grove_requested,
-            req.grove_gate_source.as_deref(),
-            req.worktree_type.unwrap_or(WorktreeType::Linked),
-        );
         return PrepareWorktreeResult {
             response: Err(anyhow::anyhow!(
                 "Source path is not a valid git repository or worktree: {}",
@@ -1939,18 +1862,6 @@ pub async fn create_worktree_from_worktree_streaming<N: WorktreeNotificationSend
             ),
             Err(e) => {
                 let requested_type = req.worktree_type.unwrap_or(WorktreeType::Linked);
-                strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                    lifecycle: WorktreeLifecycle::Fork,
-                    outcome: CloneOutcome::Failed,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    grove_enabled,
-                    grove_gate_source: req.grove_gate_source.as_deref(),
-                    requested_type,
-                    rewrite_reason: None,
-                    worktree: None,
-                    cancellation_disposition: None,
-                    builder_failure: None,
-                });
                 return WorktreeStatus::Error {
                     session_id,
                     message: format!(
@@ -2087,50 +1998,14 @@ pub async fn create_worktree_from_worktree_streaming<N: WorktreeNotificationSend
             );
             if was_cancelled {
                 cleanup_cancelled_worktree(&worktree_path_str).await;
-                strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                    lifecycle: WorktreeLifecycle::Fork,
-                    outcome: CloneOutcome::Cancelled,
-                    duration_ms: start.elapsed().as_millis() as u64,
-                    grove_enabled,
-                    grove_gate_source: req.grove_gate_source.as_deref(),
-                    requested_type,
-                    rewrite_reason: None,
-                    worktree: None,
-                    cancellation_disposition: Some(CloneCancellationDisposition::ClientCancelled),
-                    builder_failure: None,
-                });
                 return WorktreeStatus::Cancelled { session_id };
             }
-            strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                lifecycle: WorktreeLifecycle::Fork,
-                outcome: CloneOutcome::Failed,
-                duration_ms: start.elapsed().as_millis() as u64,
-                grove_enabled,
-                grove_gate_source: req.grove_gate_source.as_deref(),
-                requested_type,
-                rewrite_reason: None,
-                worktree: None,
-                cancellation_disposition: None,
-                builder_failure: strategy::fallback_from_builder_err(&e),
-            });
             return WorktreeStatus::Error {
                 session_id,
                 message: format!("Worktree creation failed: {}", e),
             };
         }
         Err(e) => {
-            strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                lifecycle: WorktreeLifecycle::Fork,
-                outcome: CloneOutcome::Failed,
-                duration_ms: start.elapsed().as_millis() as u64,
-                grove_enabled,
-                grove_gate_source: req.grove_gate_source.as_deref(),
-                requested_type,
-                rewrite_reason: None,
-                worktree: None,
-                cancellation_disposition: None,
-                builder_failure: None,
-            });
             return WorktreeStatus::Error {
                 session_id,
                 message: format!("Worktree creation task failed: {}", e),
@@ -2151,18 +2026,6 @@ pub async fn create_worktree_from_worktree_streaming<N: WorktreeNotificationSend
             "FORK_BUILDER_CANCELLED_POST: token tripped after builder returned Ok, cleaning up"
         );
         cleanup_cancelled_worktree(&worktree_path_str).await;
-        strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-            lifecycle: WorktreeLifecycle::Fork,
-            outcome: CloneOutcome::Cancelled,
-            duration_ms: start.elapsed().as_millis() as u64,
-            grove_enabled,
-            grove_gate_source: req.grove_gate_source.as_deref(),
-            requested_type,
-            rewrite_reason: None,
-            worktree: Some(&report),
-            cancellation_disposition: Some(CloneCancellationDisposition::ClientCancelled),
-            builder_failure: None,
-        });
         return WorktreeStatus::Cancelled { session_id };
     }
 
@@ -2173,18 +2036,6 @@ pub async fn create_worktree_from_worktree_streaming<N: WorktreeNotificationSend
         None,
         &report,
     );
-    strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-        lifecycle: WorktreeLifecycle::Fork,
-        outcome: CloneOutcome::Success,
-        duration_ms: start.elapsed().as_millis() as u64,
-        grove_enabled,
-        grove_gate_source: req.grove_gate_source.as_deref(),
-        requested_type,
-        rewrite_reason: None,
-        worktree: Some(&report),
-        cancellation_disposition: None,
-        builder_failure: None,
-    });
 
     let (dirty_modified, dirty_untracked, dirty_deleted) =
         if req.copy_mode == WorktreeCopyMode::Dirty {
@@ -2269,12 +2120,6 @@ pub async fn create_worktree_from_worktree_sync(
     let layout = match create_root::resolve_create_source_layout(source_path, grove_enabled).await {
         Ok(layout) => layout,
         Err(e) => {
-            strategy::emit_failed_without_report(
-                WorktreeLifecycle::Fork,
-                grove_enabled,
-                req.grove_gate_source.as_deref(),
-                req.worktree_type.unwrap_or(WorktreeType::Linked),
-            );
             return Err(e);
         }
     };
@@ -2370,33 +2215,9 @@ pub async fn create_worktree_from_worktree_sync(
     let report = match report {
         Ok(Ok(report)) => report,
         Ok(Err(e)) => {
-            strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                lifecycle: WorktreeLifecycle::Fork,
-                outcome: CloneOutcome::Failed,
-                duration_ms: start.elapsed().as_millis() as u64,
-                grove_enabled,
-                grove_gate_source: req.grove_gate_source.as_deref(),
-                requested_type,
-                rewrite_reason: None,
-                worktree: None,
-                cancellation_disposition: None,
-                builder_failure: strategy::fallback_from_builder_err(&e),
-            });
             return Err(e);
         }
         Err(e) => {
-            strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-                lifecycle: WorktreeLifecycle::Fork,
-                outcome: CloneOutcome::Failed,
-                duration_ms: start.elapsed().as_millis() as u64,
-                grove_enabled,
-                grove_gate_source: req.grove_gate_source.as_deref(),
-                requested_type,
-                rewrite_reason: None,
-                worktree: None,
-                cancellation_disposition: None,
-                builder_failure: None,
-            });
             return Err(anyhow::anyhow!("Worktree creation task failed: {}", e));
         }
     };
@@ -2408,18 +2229,6 @@ pub async fn create_worktree_from_worktree_sync(
         None,
         &report,
     );
-    strategy::emit_worktree_ended(strategy::WorktreeEndedEmit {
-        lifecycle: WorktreeLifecycle::Fork,
-        outcome: CloneOutcome::Success,
-        duration_ms: start.elapsed().as_millis() as u64,
-        grove_enabled,
-        grove_gate_source: req.grove_gate_source.as_deref(),
-        requested_type,
-        rewrite_reason: None,
-        worktree: Some(&report),
-        cancellation_disposition: None,
-        builder_failure: None,
-    });
 
     let (dirty_modified, dirty_untracked, dirty_deleted) =
         if req.copy_mode == WorktreeCopyMode::Dirty {
@@ -3756,7 +3565,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_invalid_source_emits_worktree_ended_failed() {
+    async fn prepare_invalid_source_fails() {
         let _inject = create_root::lock_grove_parent_inject();
         let req = CreateWorktreeRequest {
             session_id: format!("prep-bad-src-{}", std::process::id()),
@@ -3774,19 +3583,10 @@ mod tests {
         };
         let result = prepare_worktree_creation(&req).await;
         assert!(result.response.is_err());
-        let ended = strategy::last_worktree_ended_for_test().expect("prepare invalid source");
-        assert_eq!(ended.lifecycle, WorktreeLifecycle::Create);
-        assert_eq!(ended.outcome, CloneOutcome::Failed);
-        assert_eq!(
-            ended.requested_strategy,
-            Some(xai_grok_telemetry::events::CloneStrategy::Grove)
-        );
-        let text = serde_json::to_string(&ended).unwrap();
-        assert!(!text.contains("/no/such"), "{text}");
     }
 
     #[tokio::test]
-    async fn sync_fork_resolve_error_emits_worktree_ended_failed() {
+    async fn sync_fork_resolve_error_fails() {
         let _inject = create_root::lock_grove_parent_inject();
         let req = CreateWorktreeFromWorktreeRequest {
             source_worktree_path: "/no/such/grove-fork-source".into(),
@@ -3802,11 +3602,6 @@ mod tests {
             resolved_source_git_root: None,
         };
         assert!(create_worktree_from_worktree_sync(&req).await.is_err());
-        let ended = strategy::last_worktree_ended_for_test().expect("sync dest resolve");
-        assert_eq!(ended.lifecycle, WorktreeLifecycle::Fork);
-        assert_eq!(ended.outcome, CloneOutcome::Failed);
-        let text = serde_json::to_string(&ended).unwrap();
-        assert!(!text.contains("/no/such"), "{text}");
     }
 
     /// Records whether the in-progress marker was set at each status notification, so the test can inspect what the notifier observed mid-creation.
@@ -3877,14 +3672,6 @@ mod tests {
             "marker must be cleared after create_worktree_async completes"
         );
         assert!(dest.exists(), "worktree should have been created");
-        let ended =
-            strategy::last_worktree_ended_for_test().expect("create must emit WorktreeEnded");
-        assert_eq!(ended.lifecycle, WorktreeLifecycle::Create);
-        assert_eq!(ended.outcome, CloneOutcome::Success);
-        assert!(ended.requested_strategy.is_some());
-        assert!(ended.resolved_strategy.is_some());
-        assert!(ended.fallback_reason.is_none());
-        assert!(ended.cancellation_disposition.is_none());
     }
 
     /// Fork-flow mirror of `prepare_does_not_strand_in_progress_marker`.
@@ -4049,29 +3836,6 @@ mod tests {
             );
         }
         assert!(strategy.summary().contains("Requested Grove"));
-        let ended =
-            strategy::last_worktree_ended_for_test().expect("sync fork must emit WorktreeEnded");
-        assert_eq!(ended.lifecycle, WorktreeLifecycle::Fork);
-        assert_eq!(ended.outcome, CloneOutcome::Success);
-        assert_eq!(
-            ended.requested_strategy,
-            Some(xai_grok_telemetry::events::CloneStrategy::Grove)
-        );
-        assert_eq!(
-            ended.resolved_strategy,
-            strategy
-                .resolved_strategy
-                .as_deref()
-                .and_then(xai_grok_telemetry::events::CloneStrategy::from_strategy_str)
-        );
-        if ended.resolved_strategy == Some(xai_grok_telemetry::events::CloneStrategy::Copy) {
-            assert!(ended.fallback_reason.is_some());
-        }
-        let text = serde_json::to_string(&ended).unwrap();
-        assert!(!text.contains("http"), "{text}");
-        assert!(!text.contains("url"), "{text}");
-        assert!(!text.contains("repo"), "{text}");
-        assert!(!text.contains("/dev/fuse"), "{text}");
     }
 
     #[derive(Clone)]
@@ -4083,7 +3847,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_error_emits_worktree_ended_failed() {
+    async fn create_error_fails_on_blocked_dest() {
         xai_test_utils::require_git!();
         use xai_test_utils::git::{git_commit_all, init_git_repo};
         let _inject = create_root::lock_grove_parent_inject();
@@ -4111,30 +3875,15 @@ mod tests {
             grove_gate_source: Some("request".into()),
             resolved_source_git_root: None,
         };
-        let _ = strategy::last_worktree_ended_for_test();
         let status = create_worktree_streaming(&req, &NoopNotifier).await;
         assert!(
             matches!(status, WorktreeStatus::Error { .. }),
             "blocked dest must fail create: {status:?}"
         );
-        let ended =
-            strategy::last_worktree_ended_for_test().expect("CREATE_ERROR must emit WorktreeEnded");
-        assert_eq!(ended.lifecycle, WorktreeLifecycle::Create);
-        assert_eq!(ended.outcome, CloneOutcome::Failed);
-        assert_eq!(
-            ended.requested_strategy,
-            Some(xai_grok_telemetry::events::CloneStrategy::Grove)
-        );
-        assert!(ended.resolved_strategy.is_none());
-        let text = serde_json::to_string(&ended).unwrap();
-        assert!(!text.contains("http"), "{text}");
-        assert!(!text.contains("url"), "{text}");
-        assert!(!text.contains("repo"), "{text}");
-        assert!(!text.contains("/dev/fuse"), "{text}");
     }
 
     #[tokio::test]
-    async fn fork_cancel_emits_worktree_ended_cancelled() {
+    async fn fork_cancel_ends_cancelled() {
         xai_test_utils::require_git!();
         let _inject = create_root::lock_grove_parent_inject();
         let temp = tempfile::TempDir::new().unwrap();
@@ -4155,29 +3904,15 @@ mod tests {
             resolved_dest_path: None,
             resolved_source_git_root: None,
         };
-        let _ = strategy::last_worktree_ended_for_test();
         let status = create_worktree_from_worktree_streaming(&req, &NoopNotifier, None).await;
         assert!(
             matches!(status, WorktreeStatus::Cancelled { .. }),
             "pre-cancelled token must end Cancelled: {status:?}"
         );
-        let ended =
-            strategy::last_worktree_ended_for_test().expect("fork cancel must emit WorktreeEnded");
-        assert_eq!(ended.lifecycle, WorktreeLifecycle::Fork);
-        assert_eq!(ended.outcome, CloneOutcome::Cancelled);
-        assert_eq!(
-            ended.cancellation_disposition,
-            Some(CloneCancellationDisposition::ClientCancelled)
-        );
-        let text = serde_json::to_string(&ended).unwrap();
-        assert!(!text.contains("http"), "{text}");
-        assert!(!text.contains("url"), "{text}");
-        assert!(!text.contains("repo"), "{text}");
-        assert!(!text.contains("/dev/fuse"), "{text}");
     }
 
     #[tokio::test]
-    async fn fork_error_emits_worktree_ended_failed() {
+    async fn fork_error_fails_on_blocked_dest() {
         xai_test_utils::require_git!();
         let _inject = create_root::lock_grove_parent_inject();
         let temp = tempfile::TempDir::new().unwrap();
@@ -4198,7 +3933,6 @@ mod tests {
             resolved_dest_path: Some(dest.to_string_lossy().into_owned()),
             resolved_source_git_root: None,
         };
-        let _ = strategy::last_worktree_ended_for_test();
         let status = create_worktree_from_worktree_streaming(
             &req,
             &NoopNotifier,
@@ -4209,21 +3943,10 @@ mod tests {
             matches!(status, WorktreeStatus::Error { .. }),
             "blocked dest must fail fork: {status:?}"
         );
-        let ended = strategy::last_worktree_ended_for_test()
-            .expect("fork builder Err must emit WorktreeEnded");
-        assert_eq!(ended.lifecycle, WorktreeLifecycle::Fork);
-        assert_eq!(ended.outcome, CloneOutcome::Failed);
-        assert!(ended.resolved_strategy.is_none());
-        assert!(ended.cancellation_disposition.is_none());
-        let text = serde_json::to_string(&ended).unwrap();
-        assert!(!text.contains("http"), "{text}");
-        assert!(!text.contains("url"), "{text}");
-        assert!(!text.contains("repo"), "{text}");
-        assert!(!text.contains("/dev/fuse"), "{text}");
     }
 
     #[tokio::test]
-    async fn sync_fork_error_emits_worktree_ended_failed() {
+    async fn sync_fork_error_fails_on_missing_ref() {
         xai_test_utils::require_git!();
         let _inject = create_root::lock_grove_parent_inject();
         let temp = tempfile::TempDir::new().unwrap();
@@ -4242,19 +3965,8 @@ mod tests {
             resolved_dest_path: None,
             resolved_source_git_root: None,
         };
-        let _ = strategy::last_worktree_ended_for_test();
         create_worktree_from_worktree_sync(&req)
             .await
             .expect_err("missing ref must fail sync fork");
-        let ended = strategy::last_worktree_ended_for_test()
-            .expect("sync-fork builder Err must emit WorktreeEnded");
-        assert_eq!(ended.lifecycle, WorktreeLifecycle::Fork);
-        assert_eq!(ended.outcome, CloneOutcome::Failed);
-        assert!(ended.resolved_strategy.is_none());
-        let text = serde_json::to_string(&ended).unwrap();
-        assert!(!text.contains("http"), "{text}");
-        assert!(!text.contains("url"), "{text}");
-        assert!(!text.contains("repo"), "{text}");
-        assert!(!text.contains("/dev/fuse"), "{text}");
     }
 }

@@ -85,7 +85,6 @@ xai-grok-mcp = { path = "../xai-grok-mcp" }
 xai-file-utils = { path = "../xai-file-utils" }
 xai-grok-session-events = { workspace = true }
 xai-grok-auth = { path = "../xai-grok-auth" }
-xai-grok-telemetry = { workspace = true }
 xai-tty-utils = { workspace = true }
 reqwest = { workspace = true }
 xai-tool-protocol = { workspace = true }

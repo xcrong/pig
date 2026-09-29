@@ -5,8 +5,6 @@ use crate::session::worktree_cleanup::cleanup_worktree_on_failure;
 use crate::util::config::WorktreeType as ShellWorktreeType;
 use anyhow::{Context, Result};
 use std::path::Path;
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent;
 pub use xai_grok_workspace::worktree::*;
 const WORKTREE_LOG: &str = "xai_worktree";
 impl From<ShellWorktreeType> for WorktreeType {
@@ -76,7 +74,6 @@ pub(crate) async fn checkout_persisted_head_in_worktree(
         Some(s) if !s.is_empty() => s,
         _ => return xai_grok_workspace::session::git::CheckoutSessionOutcome::default(),
     };
-    let _checkout = region!("worktree.checkout", Parent::Inherit);
     xai_grok_workspace::session::git::checkout_session_commit(
         Path::new(worktree_path),
         sha,
@@ -468,7 +465,6 @@ pub(crate) async fn rehydrate_session_in_worktree(
         let dest = worktree_path_str.to_string();
         let session_id = req.session_id.clone();
         let btrfs_delegate = btrfs_delegate_from_env();
-        let _recreate = region!("worktree.cwd_recreate", Parent::Inherit);
         let created = tokio::task::spawn_blocking(move || {
             use xai_fast_worktree::{
                 CreationMode, IgnoredFilesMode, WorkingTreeMode, WorktreeBuilder,

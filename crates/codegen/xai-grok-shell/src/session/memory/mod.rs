@@ -9,6 +9,10 @@ pub(crate) mod capture_transcript;
 pub mod hooks;
 pub(crate) mod v2_capture;
 
+/// Tracing target for memory-system local logs. Mirrors `xai_grok_memory`'s
+/// `MEMORY_LOG_TARGET` so memory logs stay greppable under one target.
+pub(crate) const MEMORY_LOG_TARGET: &str = "xai_memory";
+
 pub use xai_grok_memory::{
     EndpointScopedCredentials, MemoryBackendImpl, MemoryBackendParams, MemoryIndex, MemoryScope,
     MemorySearchSource, MemoryStorage, V2ManifestBudget, V2MemoryAccessPolicy, V2MemoryScope,

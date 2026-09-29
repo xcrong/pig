@@ -241,8 +241,6 @@ use turn_end_hooks::TurnEnd;
 #[path = "acp_session_impl/stop_gate.rs"]
 mod stop_gate;
 pub use stop_gate::MAX_STOP_HOOK_CONTINUATIONS_PER_TURN;
-#[path = "acp_session_impl/context_snapshot.rs"]
-mod context_snapshot;
 #[path = "acp_session_impl/recap.rs"]
 mod recap;
 #[path = "acp_session_impl/rewind.rs"]
@@ -313,8 +311,6 @@ pub(crate) struct InputItem {
     /// Send-now inserts land behind earlier still-queued send-now prompts, so stacked sends run FIFO.
     /// Sends stack e.g. during a goal turn, which promotes but never cancels.
     pub(crate) send_now: bool,
-    /// See [`SessionCommand::Prompt::traceparent`].
-    pub(crate) traceparent: Option<String>,
 }
 use crate::session::commands::{NotificationPriority, NotificationSource};
 /// Built by [`SessionActor::resolve_goal_tool_names()`] to avoid duplicating `tool_for_kind()` calls across goal functions.
@@ -726,15 +722,29 @@ impl StreamOwnership {
 }
 pub(crate) struct StreamApplySpan {
     request_id: xai_grok_sampler::RequestId,
-    region: xai_grok_telemetry::region::Region,
+    span: tracing::Span,
     chunk_count: i64,
     bytes: i64,
 }
 impl StreamApplySpan {
     fn record_and_close(self) {
-        self.region.span().record("chunk_count", self.chunk_count);
-        self.region.span().record("bytes", self.bytes);
-        self.region.close();
+        self.span.record("chunk_count", self.chunk_count);
+        self.span.record("bytes", self.bytes);
+    }
+}
+/// Per-turn sampling generation counter (local only). Each sampling request
+/// bumps the generation so stream drains can match requests to their streams.
+#[derive(Default)]
+pub(crate) struct TurnGeneration {
+    generation: std::sync::atomic::AtomicU64,
+}
+impl TurnGeneration {
+    pub(crate) fn record_sampling_request(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub(crate) fn current_generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 pub(crate) struct SessionActor {
@@ -795,9 +805,6 @@ pub(crate) struct SessionActor {
     /// Shared with `SessionHandle` so the roster can read it synchronously to report `NeedsInput`.
     /// Mutated by `PendingInteractionGuard` at each reverse-request site. Never persisted.
     pub(crate) pending_interactions: crate::session::pending_interaction::PendingInteractions,
-    /// Gates product analytics, not trace uploads.
-    /// Resolved at spawn as `is_telemetry_enabled() && !is_zdr()`; ZDR teams always have this false.
-    pub(crate) telemetry_enabled: bool,
     pub(crate) supports_backend_search: std::cell::Cell<bool>,
     /// Per-turn override, set at promotion. Not persisted; a reload reverts to the definition seed.
     pub(crate) tool_overrides: std::cell::RefCell<Option<xai_grok_sampling_types::ToolOverrides>>,
@@ -810,8 +817,8 @@ pub(crate) struct SessionActor {
     /// Server-side doom-loop check policy, resolved once at spawn by `Config::resolve_doom_loop_recovery`; `None` means disabled.
     /// `reconstruct_full_config` threads it into the sampler config, and the sampler itself sends the matching `x-grok-doom-loop-check` header.
     pub(crate) doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
-    /// Telemetry-only per-turn detector/recovery tally (deduplicated labels, attempts, budget-spent accept, tightest recovery trigger).
-    /// Accumulated by the event drainer and taken at turn end for analytics events.
+    /// Per-turn detector/recovery tally for local dedup of recovery-attempt counting,
+    /// capture stamps, and session signals. Never leaves the process.
     pub(crate) doom_loop_turn_tally:
         parking_lot::Mutex<crate::session::doom_loop_telemetry::DoomLoopTurnTally>,
     /// File state tracker for rewind functionality
@@ -1088,7 +1095,7 @@ pub(crate) struct SessionActor {
     /// Turn number captured at the start of each turn (before prompt index increment).
     /// Used by `ToolCallStarted` bridge emissions so they report the same turn number as `TurnStarted` / `TurnEnded`.
     pub(crate) current_turn_number: std::cell::Cell<u64>,
-    pub(crate) turn_phases: std::sync::Arc<xai_grok_telemetry::turn_phases::TurnPhaseProfile>,
+    pub(crate) turn_generation: std::sync::Arc<TurnGeneration>,
     /// Recap rate-limit watermark (`main_turns` of last finished recap; `0` means none).
     pub(crate) last_recap_main_turn: std::cell::Cell<usize>,
     /// True while a recap model call is in flight (auto or manual).
@@ -2028,17 +2035,12 @@ mod prompt_context_persistence_tests;
 #[path = "acp_session_tests/turn/rate_limit_backoff_tests.rs"]
 mod rate_limit_backoff_tests;
 #[cfg(test)]
-#[path = "acp_session_tests/turn/sampling_trace_tests.rs"]
-mod sampling_trace_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/session_thread_tests.rs"]
 mod session_thread_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/status_line_payload_tests.rs"]
 mod status_line_payload_tests;
-#[cfg(test)]
-#[path = "acp_session_tests/tool_call_telemetry_tests.rs"]
-mod tool_call_telemetry_tests;
 #[cfg(test)]
 #[path = "acp_session_tests/tool_definitions_artifact_tests.rs"]
 mod tool_definitions_artifact_tests;

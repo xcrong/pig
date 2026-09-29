@@ -9,29 +9,12 @@ async fn await_with_timeout<T>(future: impl Future<Output = T>) -> T {
 }
 
 fn receipt(prompt_id: &str) -> (oneshot::Sender<PromptTurnResult>, PromptTurnReceipt) {
-    receipt_for_turn(prompt_id, 4)
-}
-
-fn receipt_for_turn(
-    prompt_id: &str,
-    turn: usize,
-) -> (oneshot::Sender<PromptTurnResult>, PromptTurnReceipt) {
     let (result_tx, result) = oneshot::channel();
     (
         result_tx,
         PromptTurnReceipt {
             prompt_id: prompt_id.to_owned(),
             result,
-            telemetry: crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry::new(
-                std::time::Instant::now(),
-                xai_grok_telemetry::TelemetryCtx::new(
-                    "parent".to_owned(),
-                    std::sync::Arc::new(tokio::sync::Mutex::new(turn)),
-                ),
-                xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageOperation::Queue,
-                xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageOperation::Queue,
-                None,
-            ),
         },
     )
 }
@@ -56,8 +39,8 @@ fn start_drain(
 #[tokio::test]
 async fn receipts_settle_concurrently_while_preserving_fifo_authority() {
     let (handoff_tx, drain, _cmd_rx) = start_drain(1, CancellationToken::new());
-    let (first_tx, first) = receipt_for_turn("parent-message-first", 3);
-    let (second_tx, second) = receipt_for_turn("parent-message-second", 4);
+    let (first_tx, first) = receipt("parent-message-first");
+    let (second_tx, second) = receipt("parent-message-second");
     await_with_timeout(handoff_tx.send(first))
         .await
         .expect("first receipt handoff");
@@ -77,7 +60,6 @@ async fn receipts_settle_concurrently_while_preserving_fifo_authority() {
     let Some(FinalPromptTurnReceipt {
         prompt_id,
         outcome: PromptTurnReceiptOutcome::Settled(receipt),
-        telemetry,
     }) = settled.final_receipt
     else {
         panic!("expected successful final receipt");
@@ -93,7 +75,6 @@ async fn receipts_settle_concurrently_while_preserving_fifo_authority() {
             PromptTurnReceiptDisposition::Completed,
         ),
     );
-    assert_eq!(*telemetry.parent_ctx.prompt_index.lock().await, 4);
 }
 
 #[tokio::test]

@@ -73,8 +73,15 @@ pub struct ToolDuration {
     pub duration_ms: u64,
 }
 
-/// How a PR creation was performed (shared with the `pr_created` telemetry event so signal and event values can never diverge).
-pub use xai_grok_telemetry::enums::PrCreationSource;
+/// How a PR creation was performed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrCreationSource {
+    /// `gh pr create` via the bash tool.
+    Bash,
+    /// An MCP `create_pull_request` tool.
+    Mcp,
+}
 
 /// A PR created during a turn, recorded for PR metrics.
 ///

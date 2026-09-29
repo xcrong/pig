@@ -3015,8 +3015,8 @@ fn add_dismissed_plugin_cta_preserves_other_config() {
 fn config_layers_user_overrides_managed() {
     let layers = ConfigLayers {
         system_managed: toml::Value::Table(Default::default()),
-        managed: toml::from_str("[features]\ntelemetry = false\n").unwrap(),
-        user: toml::from_str("[features]\ntelemetry = true\n").unwrap(),
+        managed: toml::from_str("[features]\nsupport_permission = false\n").unwrap(),
+        user: toml::from_str("[features]\nsupport_permission = true\n").unwrap(),
         user_requirements: None,
         system_requirements: None,
         mdm_requirements: None,
@@ -3026,10 +3026,7 @@ fn config_layers_user_overrides_managed() {
             &layers.effective_config_disk_only(),
         )
         .unwrap();
-    assert_eq!(
-            Some(crate::agent::config::TelemetryMode::Enabled),
-            cfg.features.telemetry
-        );
+    assert!(cfg.features.support_permission);
 }
 /// A provider in a trusted disk layer resolves through the real `ConfigLayers` and `effective_config_disk_only` parse path.
 /// The direct-TOML parse tests bypass that path.
@@ -3079,7 +3076,7 @@ fn model_provider_honored_only_from_trusted_disk_layers() {
             "its inline auth registers as a synthetic auth provider"
         );
 }
-/// REGRESSION: the real enterprise two-file merge must resolve the deployment-config fetch to cli-chat-proxy, never the model host. It must also preserve the customer's S3 trace-upload endpoint.
+/// REGRESSION: the real enterprise two-file merge must resolve the deployment-config fetch to cli-chat-proxy, never the model host.
 /// The merge layers `managed_config.toml` (proxy and BYO model host) with `requirements.toml` (deployment key and S3 trace upload). It runs via the actual `ConfigLayers::effective_config()` path.
 #[test]
 #[serial_test::serial]
@@ -3087,7 +3084,6 @@ fn enterprise_two_file_merge_routes_deployment_key_to_proxy() {
     for k in [
         "GROK_MANAGED_CONFIG_URL",
         "GROK_CLI_CHAT_PROXY_BASE_URL",
-        "GROK_TRACE_UPLOAD_ENDPOINT_URL",
     ] {
         unsafe { std::env::remove_var(k) };
     }
@@ -3111,13 +3107,10 @@ default = "grok-4.5"
             r#"
 [features]
 feedback = true
-telemetry = false
 
 [endpoints]
 deployment_key = "xai-token-ENTERPRISE"
 xai_api_base_url = "https://inference.acme-corp.example/xai/v1"
-trace_upload_bucket = "s3://acme-trace"
-trace_upload_endpoint_url = "https://s3.acme-corp.example"
 "#,
         )
         .unwrap();
@@ -3142,10 +3135,6 @@ trace_upload_endpoint_url = "https://s3.acme-corp.example"
             !cfg.endpoints
                 .resolve_managed_config_url()
                 .contains("acme-corp")
-        );
-    assert_eq!(
-            cfg.endpoints.trace_upload_endpoint_url.as_deref(),
-            Some("https://s3.acme-corp.example")
         );
     assert!(cfg.endpoints.deployment_key.is_some());
 }
@@ -3227,7 +3216,7 @@ fn config_layers_origins_tracks_source() {
     use crate::agent::config::ConfigSource;
     let layers = ConfigLayers {
         system_managed: toml::Value::Table(Default::default()),
-        managed: toml::from_str("[features]\ntelemetry = false\n").unwrap(),
+        managed: toml::from_str("[features]\nsupport_permission = false\n").unwrap(),
         user: toml::from_str("[ui]\ntheme = \"dark\"\n").unwrap(),
         user_requirements: None,
         system_requirements: None,
@@ -3236,7 +3225,7 @@ fn config_layers_origins_tracks_source() {
     };
     let origins = config_origins(&layers);
     assert_eq!(
-            origins.get("features.telemetry").copied(),
+            origins.get("features.support_permission").copied(),
             Some(ConfigSource::ManagedConfig)
         );
     assert_eq!(
@@ -3249,8 +3238,8 @@ fn config_layers_origins_user_wins() {
     use crate::agent::config::ConfigSource;
     let layers = ConfigLayers {
         system_managed: toml::Value::Table(Default::default()),
-        managed: toml::from_str("[features]\ntelemetry = false\n").unwrap(),
-        user: toml::from_str("[features]\ntelemetry = true\n").unwrap(),
+        managed: toml::from_str("[features]\nsupport_permission = false\n").unwrap(),
+        user: toml::from_str("[features]\nsupport_permission = true\n").unwrap(),
         user_requirements: None,
         system_requirements: None,
         mdm_requirements: None,
@@ -3258,16 +3247,16 @@ fn config_layers_origins_user_wins() {
     };
     let origins = config_origins(&layers);
     assert_eq!(
-            origins.get("features.telemetry").copied(),
+            origins.get("features.support_permission").copied(),
             Some(ConfigSource::UserConfig)
         );
 }
 #[test]
 fn config_layers_system_managed_lowest_priority() {
     let layers = ConfigLayers {
-        system_managed: toml::from_str("[features]\ntelemetry = false\n").unwrap(),
+        system_managed: toml::from_str("[features]\nsupport_permission = false\n").unwrap(),
         managed: toml::Value::Table(Default::default()),
-        user: toml::from_str("[features]\ntelemetry = true\n").unwrap(),
+        user: toml::from_str("[features]\nsupport_permission = true\n").unwrap(),
         user_requirements: None,
         system_requirements: None,
         mdm_requirements: None,
@@ -3277,31 +3266,25 @@ fn config_layers_system_managed_lowest_priority() {
             &layers.effective_config_disk_only(),
         )
         .unwrap();
-    assert_eq!(
-            Some(crate::agent::config::TelemetryMode::Enabled),
-            cfg.features.telemetry
-        );
+    assert!(cfg.features.support_permission);
 }
 #[test]
 fn apply_requirements_value_overrides_user_settings() {
     let raw_config: toml::Value = toml::from_str(
-            "[cli]\nauto_update = true\nchannel = \"beta\"\n\n[features]\ntelemetry = true\nfeedback = true\nlsp_tools = true\nweb_fetch = true\nwrite_file = true\n\n[telemetry]\ntrace_upload = true\n\n[ui]\nyolo = true\n\n[models]\ndefault = \"user-model\"\nweb_search = \"user-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://user-proxy.example/v1\"\nxai_api_base_url = \"https://user-api.example/v1\"\nmodels_base_url = \"https://user-models.example/v1\"\nmodels_list_url = \"https://user-models.example/v1/models\"\n",
+            "[cli]\nauto_update = true\nchannel = \"beta\"\n\n[features]\nsupport_permission = true\nfeedback = true\nlsp_tools = true\nweb_fetch = true\nwrite_file = true\n\n[ui]\nyolo = true\n\n[models]\ndefault = \"user-model\"\nweb_search = \"user-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://user-proxy.example/v1\"\nxai_api_base_url = \"https://user-api.example/v1\"\nmodels_base_url = \"https://user-models.example/v1\"\nmodels_list_url = \"https://user-models.example/v1/models\"\n",
         )
         .unwrap();
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw_config).unwrap();
     cfg.default_yolo_mode = true;
     let requirements: toml::Value = toml::from_str(
-            "[cli]\nauto_update = false\nchannel = \"stable\"\n\n[features]\ntelemetry = false\nfeedback = false\nlsp_tools = false\nweb_fetch = false\nwrite_file = false\nremote_fetch = false\n\n[telemetry]\ntrace_upload = false\n\n[ui]\nyolo = false\n\n[models]\ndefault = \"managed-model\"\nweb_search = \"managed-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://managed-proxy.example/v1\"\nxai_api_base_url = \"https://managed-api.example/v1\"\nmodels_base_url = \"https://managed-models.example/v1\"\nmodels_list_url = \"https://managed-models.example/v1/models\"\ndeployment_key = \"enterprise-deploy-key-should-not-log\"\ntrace_upload_endpoint_url = \"https://s3.custom.example.com\"\ntrace_upload_credentials = '{\"aws_access_key_id\":\"AKTEST\",\"aws_secret_access_key\":\"secret\"}'\n",
+            "[cli]\nauto_update = false\nchannel = \"stable\"\n\n[features]\nsupport_permission = false\nfeedback = false\nlsp_tools = false\nweb_fetch = false\nwrite_file = false\nremote_fetch = false\n\n[ui]\nyolo = false\n\n[models]\ndefault = \"managed-model\"\nweb_search = \"managed-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://managed-proxy.example/v1\"\nxai_api_base_url = \"https://managed-api.example/v1\"\nmodels_base_url = \"https://managed-models.example/v1\"\nmodels_list_url = \"https://managed-models.example/v1/models\"\ndeployment_key = \"enterprise-deploy-key-should-not-log\"\n",
         )
         .unwrap();
     let source = RequirementSource::Requirements {
         path: std::path::PathBuf::from("/test/requirements.toml"),
     };
     let enforced = apply_requirements_inner(&mut cfg, &requirements, &source);
-    assert_eq!(
-            Some(crate::agent::config::TelemetryMode::Disabled),
-            cfg.features.telemetry
-        );
+    assert!(!cfg.features.support_permission);
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::Feedback));
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::LspTools));
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::WebFetch));
@@ -3344,19 +3327,6 @@ fn apply_requirements_value_overrides_user_settings() {
             enforced
                 .iter()
                 .any(|e| e.path == "ui.yolo" && e.value == "--yolo blocked")
-        );
-    assert_eq!(
-            Some("https://s3.custom.example.com"),
-            cfg.endpoints.trace_upload_endpoint_url.as_deref()
-        );
-    assert!(
-            cfg.endpoints.trace_upload_credentials.is_some(),
-            "trace_upload_credentials should be set"
-        );
-    assert!(
-            enforced
-                .iter()
-                .any(|e| e.path == "endpoints.trace_upload_credentials" && e.value == "[redacted]")
         );
     assert_eq!(
             Some("enterprise-deploy-key-should-not-log"),
@@ -3765,33 +3735,6 @@ fn validate_selectable_rejects_dash_m_outside_fleet_pin() {
             !err.contains("Broaden"),
             "must not tell the user to edit the fleet list: {err}"
         );
-}
-#[test]
-fn apply_requirements_telemetry_string_form_pins_known_modes_only() {
-    use crate::agent::config::TelemetryMode;
-    let source = RequirementSource::Requirements {
-        path: std::path::PathBuf::from("/test/requirements.toml"),
-    };
-    let apply = |toml_str: &str| {
-        let raw = toml::Value::Table(toml::map::Map::new());
-        let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw).unwrap();
-        let req: toml::Value = toml::from_str(toml_str).unwrap();
-        let enforced = apply_requirements_inner(&mut cfg, &req, &source);
-        (cfg, enforced)
-    };
-    let (cfg, enforced) = apply("[features]\ntelemetry = \"session_metrics\"\n");
-    assert_eq!(
-            cfg.requirements.telemetry.pinned(),
-            Some(TelemetryMode::SessionMetrics),
-        );
-    assert!(
-            enforced
-                .iter()
-                .any(|e| e.path == "features.telemetry" && e.value == "session_metrics"),
-        );
-    let (cfg, enforced) = apply("[features]\ntelemetry = \"garbage\"\n");
-    assert_eq!(cfg.requirements.telemetry.pinned(), None);
-    assert!(!enforced.iter().any(|e| e.path == "features.telemetry"));
 }
 #[test]
 fn validate_hooks_path_rejects_relative_path() {

@@ -8,7 +8,6 @@ use crate::system_reminder::ReminderPolicy;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::Instrument;
 use xai_grok_tools::bridge::ToolBridge;
 use xai_grok_tools::computer::types::{AsyncFileSystem, TerminalBackend};
 use xai_grok_tools::implementations::grok_build::task::model_policy::{
@@ -648,23 +647,11 @@ impl AgentBuilder {
         def
     }
     pub async fn build(mut self) -> Result<Agent, AgentBuildError> {
-        macro_rules! build_step_timer {
-            ($step:literal) => {
-                xai_grok_telemetry::startup_step_timer_grouped!("agent_build", $step)
-            };
-        }
-        macro_rules! build_await_step {
-            ($step:literal $(, $field:ident = $value:expr)* $(,)?) => {
-                xai_grok_telemetry::startup_step_grouped!("agent_build", $step $(, $field = $value)*)
-            };
-        }
         let mut definition = self.resolve_definition();
         let working_dir_str = self.working_directory.to_str().unwrap_or(".").to_string();
         let skill_info = if let Some(preloaded) = self.preloaded_skills.take() {
             preloaded
         } else if definition.discover_skills {
-            let (_skills_timer, skills_span) =
-                build_await_step!("skills_discovery", skills_found = tracing::field::Empty);
             let discovered = crate::prompt::skills::list_skills_with_plugins(
                 Some(&working_dir_str),
                 &self.skills_config,
@@ -672,9 +659,7 @@ impl AgentBuilder {
                 self.compat,
                 self.project_trusted,
             )
-            .instrument(skills_span.clone())
             .await;
-            skills_span.record("skills_found", discovered.len() as i64);
             discovered
         } else {
             vec![]
@@ -848,7 +833,6 @@ impl AgentBuilder {
             task_stripped = true;
         } else {
             let subagents = {
-                let _subagent_timer = build_step_timer!("subagent_discovery");
                 crate::discovery::all_subagents_with_plugins(
                     &self.working_directory,
                     &self.subagent_toggle,
@@ -1121,7 +1105,6 @@ impl AgentBuilder {
         }
         let use_backend_search = self.backend_search;
         let web_search_enabled = self.web_search_config.is_enabled();
-        let (tool_registry_timer, tool_registry_span) = build_await_step!("tool_registry");
         let tool_bridge = ToolBridge::finalize_builder(
             tool_bridge_builder,
             tool_config,
@@ -1151,10 +1134,8 @@ impl AgentBuilder {
                 system_reminder_tag: self.system_reminder_tag,
             },
         )
-        .instrument(tool_registry_span)
         .await
         .map_err(|e| AgentBuildError::ToolError(e.to_string()))?;
-        drop(tool_registry_timer);
         if let Some(access) = self.memory_v2_access.clone() {
             tool_bridge.update_resource(access).await;
         }
@@ -1172,17 +1153,13 @@ impl AgentBuilder {
             tool_bridge.restore_announced_skill_names(names).await;
         }
         let mut agents_md_files = if definition.agents_md {
-            let (_agents_md_timer, agents_md_span) =
-                build_await_step!("agents_md_load", agents_md_files = tracing::field::Empty);
             let files = crate::prompt::agents_md::read_agents_config_with_paths(
                 &working_dir_str,
                 self.compat,
                 &self.paths_config,
                 self.project_trusted,
             )
-            .instrument(agents_md_span.clone())
             .await;
-            agents_md_span.record("agents_md_files", files.len() as i64);
             files
         } else {
             vec![]
@@ -1192,14 +1169,10 @@ impl AgentBuilder {
                 .iter()
                 .map(|c| PathBuf::from(&c.file_path))
                 .collect();
-            let (gitignore_timer, gitignore_span) = build_await_step!("gitignore_compile");
-            let gitignore_span = gitignore_span.entered();
             let git_root = git2::Repository::discover(&self.working_directory)
                 .ok()
                 .and_then(|repo| repo.workdir().map(|p| p.to_path_buf()));
             let gitignore = crate::prompt::ignore::build_gitignore(git_root.as_deref());
-            drop(gitignore_span);
-            drop(gitignore_timer);
             let canonical_cwd = dunce::canonicalize(&self.working_directory)
                 .unwrap_or_else(|_| self.working_directory.clone());
             let canonical_root = git_root.as_ref().and_then(|r| dunce::canonicalize(r).ok());
@@ -1293,13 +1266,10 @@ impl AgentBuilder {
             is_non_interactive: self.is_non_interactive,
             system_prompt_label: self.system_prompt_label,
         };
-        let (prompt_render_timer, prompt_render_span) = build_await_step!("prompt_render");
         let system_prompt = prompt_context
             .render(&tool_bridge)
-            .instrument(prompt_render_span)
             .await
             .unwrap_or_default();
-        drop(prompt_render_timer);
         if let Some(rendered) = tool_bridge
             .render_prompt(&definition.description, &prompt_context.placeholders())
             .await

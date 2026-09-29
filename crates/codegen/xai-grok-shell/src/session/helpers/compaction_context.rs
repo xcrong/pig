@@ -80,7 +80,7 @@ pub async fn to_system_reminder(
         let query = ctx.last_user_query.as_deref().unwrap_or("project context");
         if let Ok(results) = memory.search(query, 3, 0.0).await {
             tracing::debug!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 results = results.len(),
                 "recovered memory context after compaction"
             );

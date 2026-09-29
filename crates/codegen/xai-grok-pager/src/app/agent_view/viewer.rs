@@ -15,8 +15,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use xai_grok_telemetry::events::{BlockViewerOpened, BlockViewerQuoted};
-use xai_grok_telemetry::session_ctx::log_event;
 
 pub(crate) enum IdleEnterQuote {
     NotHandled,

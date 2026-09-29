@@ -34,16 +34,6 @@ pub(in crate::session::acp_session) fn delivery_message(
     operation: ActiveAgentMessageOperation,
 ) -> DeliveryMessage<String, ParentMessageOrigin, PendingParentAgentMessage> {
     let message = message(id);
-    let telemetry = crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry::new(
-        std::time::Instant::now(),
-        xai_grok_telemetry::TelemetryCtx::new(
-            "parent".to_owned(),
-            Arc::new(tokio::sync::Mutex::new(0)),
-        ),
-        operation,
-        operation,
-        None,
-    );
     DeliveryMessage::new(
         message.message_id.clone(),
         ParentMessageOrigin {
@@ -55,7 +45,6 @@ pub(in crate::session::acp_session) fn delivery_message(
             message_id: message.message_id,
             text: message.text,
             operation,
-            telemetry,
         },
     )
 }
@@ -159,16 +148,7 @@ async fn receipt_backpressure_waits_before_queue_commit() {
             .send(crate::agent::subagent::PromptTurnReceipt {
                 prompt_id: "occupied".into(),
                 result: occupied_rx,
-                telemetry: crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry::new(
-                    std::time::Instant::now(),
-                    xai_grok_telemetry::TelemetryCtx::new(
-                        "parent".to_owned(),
-                        Arc::new(tokio::sync::Mutex::new(0)),
-                    ),
-                    ActiveAgentMessageOperation::Queue,
-                    ActiveAgentMessageOperation::Queue,
-                    None,
-                ),
+
             })
             .await
             .expect("occupy receipt capacity");
@@ -920,11 +900,6 @@ async fn committed_delivery_queues_protected_fifo_row_with_typed_receipt_identit
         );
         let receipt = receipt_rx.recv().await.expect("typed receipt handed off");
         assert_eq!(receipt.prompt_id, "parent-message-queued");
-        assert_eq!(receipt.telemetry.parent_ctx.session_id, "test-parent");
-        assert_eq!(
-            *await_with_timeout(receipt.telemetry.parent_ctx.prompt_index.lock()).await,
-            0,
-        );
         let state = await_with_timeout(actor.state.lock()).await;
         assert_eq!(state.pending_inputs.len(), 2);
         let queued = state.pending_inputs.back().expect("queued input");

@@ -76,18 +76,7 @@ impl ChildControl for ShellChildRuntime {
                 delivery,
             ),
         );
-        let parent_prompt_index = self
-            .active_message_parent_prompt_index
-            .load(std::sync::atomic::Ordering::Acquire);
-        let parent_telemetry_ctx = xai_grok_telemetry::TelemetryCtx::new(
-            self.active_message_parent_session_id.clone(),
-            std::sync::Arc::new(tokio::sync::Mutex::new(parent_prompt_index)),
-        );
-        Box::pin(async move {
-            message_delivery
-                .send(envelope, receipt_sink, parent_telemetry_ctx)
-                .await
-        })
+        Box::pin(async move { message_delivery.send(envelope, receipt_sink).await })
     }
 
     fn cancel(&self) {

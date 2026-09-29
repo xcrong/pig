@@ -5,8 +5,6 @@
 use super::*;
 use crate::session::prompt_parser::{ParsedPrompt, PromptLayout};
 use std::ops::Range;
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent;
 use xai_grok_tools::implementations::grok_build::read_file::{
     MAX_LINES_READ, READ_FILE_MAX_TOKENS, exceeds_read_cap,
 };
@@ -497,7 +495,6 @@ impl SessionActor {
         let join_fallback = strip_offload_notice(&bounded.message, &bounded.notice);
 
         // 0600 via the secure-file helper; on a blocking thread so the large write doesn't stall the executor
-        let offload_span = region!("turn.prompt_offload_write", Parent::Inherit);
         let offload = tokio::task::spawn_blocking(move || {
             write_offload_and_build(
                 &full_message,
@@ -507,7 +504,6 @@ impl SessionActor {
             )
         })
         .await;
-        offload_span.close();
         match offload {
             Ok(result) => result,
             Err(e) => {

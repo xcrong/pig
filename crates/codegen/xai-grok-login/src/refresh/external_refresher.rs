@@ -114,16 +114,6 @@ impl ExternalBinaryRefresher {
 
     /// A failed run over a credential the server already rejected: single-strike permanent, no ladder.
     fn fail_rejected(&self, message: &str) -> RefreshOutcome {
-        xai_grok_telemetry::unified_log::warn(
-            "auth: external binary refresh failed",
-            None,
-            Some(serde_json::json!({
-                "message": message,
-                "reason": format!("{:?}", RefreshReason::ServerRejected),
-                "consecutive_failures": 1,
-                "next_run_in_ms": serde_json::Value::Null,
-            })),
-        );
         self.record_permanent(message)
     }
 
@@ -135,17 +125,6 @@ impl ExternalBinaryRefresher {
             ladder.strike(Instant::now())
         };
         let escalates = strikes >= MAX_CONSECUTIVE_RUN_FAILURES;
-        xai_grok_telemetry::unified_log::warn(
-            "auth: external binary refresh failed",
-            None,
-            Some(serde_json::json!({
-                "message": &message,
-                "reason": format!("{:?}", RefreshReason::PreRequest),
-                "consecutive_failures": strikes,
-                // After the escalating strike the next attempt is gated by the verdict TTL, not the cooldown
-                "next_run_in_ms": (!escalates).then(|| run_cooldown(strikes).as_millis() as u64),
-            })),
-        );
         if escalates {
             self.record_permanent(&message)
         } else {
@@ -174,31 +153,16 @@ impl TokenRefresher for ExternalBinaryRefresher {
                     ladder.strikes, remaining
                 );
                 drop(ladder);
-                xai_grok_telemetry::unified_log::debug(
-                    "auth: external binary refresh cooling down",
-                    None,
-                    None,
-                );
                 return RefreshOutcome::transient(message);
             }
         }
         match self.runner.run_external_command(&self.command).await {
             Ok(auth) => {
-                xai_grok_telemetry::unified_log::info(
-                    "auth: external binary refresh succeeded",
-                    None,
-                    None,
-                );
                 *self.ladder.lock() = StrikeLadder::default();
                 RefreshOutcome::success(auth)
             }
             // A timeout is the contract's interactive-required signal (conforming providers decline a headless `GROK_AUTH_EXPIRED=1` run fast; only one waiting on a human outlives the budget), so it stays a single-strike permanent verdict whatever the ladder says.
             Err(ExternalRefreshError::TimedOut) => {
-                xai_grok_telemetry::unified_log::warn(
-                    "auth: external binary refresh timed out",
-                    None,
-                    None,
-                );
                 self.record_permanent("external binary timed out")
             }
             Err(ExternalRefreshError::Failed(message)) if ladder_applies => {

@@ -6,9 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::{mpsc, oneshot};
-use xai_grok_http::TransportFailureKind;
 use xai_grok_shell_base::util::grok_home;
-use xai_grok_telemetry::events::{LoginFailed, LoginFailureKind};
 pub type StderrCallback = Box<dyn Fn(&str)>;
 /// Reject a cached credential that lacks `oidc_issuer`, has a mismatched issuer, or whose team principal violates the `force_login_team_uuid` pin.
 /// Interactive login then starts fresh instead of reusing a stale or wrong-team session.
@@ -409,39 +407,7 @@ async fn run_auth_flow_inner(
             login_override,
         })
         .await;
-    if let Err(err) = &result
-        && let Some(event) = login_failure_event(err)
-    {
-        xai_grok_telemetry::session_ctx::log_event(event);
-    }
     result
-}
-/// `None` when nothing in the chain failed over HTTP (the user backed out, the loopback listener couldn't bind, the id_token didn't validate).
-/// Returning `None` beats inventing a transport verdict for those.
-fn login_failure_event(err: &anyhow::Error) -> Option<LoginFailed> {
-    let source = err
-        .chain()
-        .find_map(|cause| cause.downcast_ref::<reqwest::Error>())?;
-    Some(LoginFailed {
-        error_kind: failure_kind(
-            xai_grok_http::TransportFailure::classify(source).kind,
-            source.is_decode(),
-        ),
-        os_error: xai_grok_http::find_os_error_code(source),
-    })
-}
-/// A body that won't parse is a decode failure, not a transport one, even though `reqwest` also reports it as a body-phase error.
-fn failure_kind(transport: TransportFailureKind, is_decode: bool) -> LoginFailureKind {
-    if is_decode {
-        return LoginFailureKind::Decode;
-    }
-    match transport {
-        TransportFailureKind::Unreachable => LoginFailureKind::TransportConnect,
-        TransportFailureKind::CertificateUntrusted => LoginFailureKind::CertificateUntrusted,
-        TransportFailureKind::CertificateInvalid => LoginFailureKind::CertificateInvalid,
-        TransportFailureKind::Interrupted => LoginFailureKind::TransportInterrupted,
-        TransportFailureKind::Permanent => LoginFailureKind::TransportPermanent,
-    }
 }
 pub(super) async fn run_auth_flow_steps(
     auth_manager: &Arc<AuthManager>,
@@ -468,11 +434,6 @@ pub(super) async fn run_auth_flow_steps(
     if !force_interactive && let Some(auth) = auth_manager.current() {
         if is_cached_credential_compatible(&auth, grok_com_config) {
             tracing::info!(auth_mode = ?auth.auth_mode, "auth: using cached credentials");
-            xai_grok_telemetry::unified_log::info(
-                "auth: using cached credentials",
-                None,
-                Some(serde_json::json!({ "auth_mode": format!("{:?}", auth.auth_mode) })),
-            );
             return Ok((auth, false));
         }
         tracing::info!(
@@ -495,23 +456,9 @@ pub(super) async fn run_auth_flow_steps(
             .into_guard();
         let disk_auth = auth_manager.read_disk_auth();
         let disk_expired = disk_auth.as_ref().is_some_and(crate::is_expired);
-        xai_grok_telemetry::unified_log::info(
-            "auth run_auth_flow expired path",
-            None,
-            Some(serde_json::json!({
-                "got_lock": file_lock.is_some(),
-                "disk_found": disk_auth.is_some(),
-                "disk_expired": disk_expired,
-            })),
-        );
         if disk_auth.as_ref().is_some_and(|d| {
             !crate::is_expired(d) && is_cached_credential_compatible(d, grok_com_config)
         }) {
-            xai_grok_telemetry::unified_log::info(
-                "auth run_auth_flow using valid disk token",
-                None,
-                None,
-            );
             let d = disk_auth.unwrap();
             let ret = d.clone();
             auth_manager.hot_swap(d);
@@ -529,24 +476,10 @@ pub(super) async fn run_auth_flow_steps(
                         )
                     ) && d.refresh_token.is_some()
                 }) {
-                    xai_grok_telemetry::unified_log::warn(
-                        "auth run_auth_flow refresh failed, deferring to consumer refresh",
-                        None,
-                        Some(serde_json::json!({
-                            "error": format!("{e}"),
-                        })),
-                    );
                     let ret = d.clone();
                     auth_manager.hot_swap(d);
                     return Ok((ret, false));
                 }
-                xai_grok_telemetry::unified_log::warn(
-                    "auth run_auth_flow refresh failed, falling through to interactive",
-                    None,
-                    Some(serde_json::json!({
-                        "error": format!("{e}"),
-                    })),
-                );
             }
         }
     }
@@ -632,7 +565,7 @@ fn build_startup_auth_manager(
         grok_com_config.clone(),
         proxy_base_url,
     ));
-    auth_manager.configure_refresher(grok_com_config.auth_provider_command.clone(), None);
+    auth_manager.configure_refresher(grok_com_config.auth_provider_command.clone());
     auth_manager
 }
 /// Uses cached valid credentials, else a silent refresh; never interactive login.
@@ -822,7 +755,6 @@ pub async fn run_cli_login(
     oauth: bool,
     device_auth: bool,
     devbox: bool,
-    configure_telemetry: impl FnOnce(&AuthManager),
 ) -> anyhow::Result<GrokAuth> {
     let _ = devbox;
     let auth_manager = Arc::new(AuthManager::new_with_proxy_base_url(
@@ -830,7 +762,6 @@ pub async fn run_cli_login(
         grok_com_config.clone(),
         proxy_base_url,
     ));
-    configure_telemetry(&auth_manager);
     let result = run_cli_login_steps(
         &grok_com_config,
         config_device_flow,
@@ -839,8 +770,6 @@ pub async fn run_cli_login(
         device_auth,
     )
     .await;
-    xai_grok_telemetry::session_ctx::drain_pending(xai_grok_telemetry::session_ctx::CLI_DRAIN)
-        .await;
     result
 }
 async fn run_cli_login_steps(
@@ -921,20 +850,7 @@ pub fn perform_logout(
     let auth = auth_manager.current_or_expired();
     let email = auth.as_ref().and_then(|a| a.email.clone());
     let was_logged_in = auth.is_some();
-    xai_grok_telemetry::unified_log::info(
-        "auth: logout",
-        None,
-        Some(serde_json::json!({
-            "was_logged_in": was_logged_in,
-            "scope": scope.unwrap_or("(current)"),
-            "user_id": auth.as_ref().map(|a| a.user_id.clone()),
-        })),
-    );
     if was_logged_in {
-        xai_grok_telemetry::external::set_identity(
-            xai_grok_telemetry::external::IdentityAttrs::default(),
-        );
-        xai_grok_telemetry::external::flush();
         if let Some(scope) = scope {
             auth_manager.remove_scope(scope)?;
         } else {
@@ -958,15 +874,11 @@ struct LoginConfigResponse {
 /// Best-effort: any error or unset flag returns `None` so the caller keeps the loopback default.
 /// Caps at 1.5s with no retries since it's on the login path.
 async fn fetch_login_device_flow(cli_chat_proxy_base_url: &str) -> Option<bool> {
-    let agent_id = tokio::task::spawn_blocking(xai_grok_telemetry::id::agent_id)
-        .await
-        .ok()?;
     let client = xai_grok_http::shared_client();
     let url = format!("{}/login-config", cli_chat_proxy_base_url);
     let response = client
         .get(&url)
         .timeout(std::time::Duration::from_millis(1500))
-        .header("x-grok-agent-id", agent_id)
         .header("x-grok-client-version", xai_grok_version::VERSION)
         .header(
             "x-grok-client-identifier",
@@ -1008,45 +920,6 @@ mod tests {
     use chrono::Utc;
     use std::path::Path;
     use xai_grok_shell_base::env::EnvVarGuard;
-    /// `os_error` and the reqwest classification are covered in `xai-grok-http`.
-    /// What's local is which `LoginFailureKind` each maps to, and that a decode failure never reads as a transport one.
-    #[test]
-    fn failure_kinds_map_one_to_one() {
-        assert_eq!(
-            failure_kind(TransportFailureKind::Unreachable, false),
-            LoginFailureKind::TransportConnect
-        );
-        assert_eq!(
-            failure_kind(TransportFailureKind::CertificateUntrusted, false),
-            LoginFailureKind::CertificateUntrusted
-        );
-        assert_eq!(
-            failure_kind(TransportFailureKind::CertificateInvalid, false),
-            LoginFailureKind::CertificateInvalid
-        );
-        assert_eq!(
-            failure_kind(TransportFailureKind::Interrupted, false),
-            LoginFailureKind::TransportInterrupted
-        );
-        assert_eq!(
-            failure_kind(TransportFailureKind::Permanent, false),
-            LoginFailureKind::TransportPermanent
-        );
-        assert_eq!(
-            failure_kind(TransportFailureKind::Interrupted, true),
-            LoginFailureKind::Decode
-        );
-    }
-    /// A login that never reached the network is not a transport failure.
-    /// The positive path needs a real `reqwest::Error`, but building a client here flips `jsonwebtoken` into its "no CryptoProvider" panic.
-    /// That breaks unrelated auth tests, so classification is covered in `xai-grok-http`.
-    #[test]
-    fn non_http_login_failures_are_not_reported() {
-        let abandoned = anyhow::anyhow!("Login timed out after 10 minutes. Please try again.");
-        assert!(login_failure_event(&abandoned).is_none());
-        let nested = abandoned.context("Login failed. Please try again.");
-        assert!(login_failure_event(&nested).is_none());
-    }
     /// Run `f` with `GROK_LOGIN_DEVICE_FLOW` set to `value` (unset for `None`).
     /// `EnvVarGuard` serializes the process env and restores it on drop, so `resolve_device_flow` reads the env tier from a known state.
     fn with_device_flow_env<T>(value: Option<bool>, f: impl FnOnce() -> T) -> T {
@@ -1840,7 +1713,7 @@ mod tests {
         let auth_path = dir.path().join("auth.json");
         crate::storage::write_auth_json(&auth_path, &store).unwrap();
         let auth_manager = Arc::new(AuthManager::new(dir.path(), cfg.clone()));
-        auth_manager.configure_refresher(cfg.auth_provider_command.clone(), None);
+        auth_manager.configure_refresher(cfg.auth_provider_command.clone());
         assert!(
             auth_manager.auth().await.is_err(),
             "non-interactive auth must reject the wrong-team cached token"
@@ -1885,7 +1758,7 @@ mod tests {
     fn expired_oidc_manager(dir: &Path, issuer: &str) -> Arc<AuthManager> {
         let cfg = GrokComConfig::default();
         let am = Arc::new(AuthManager::new(dir, cfg.clone()));
-        am.configure_refresher(cfg.auth_provider_command.clone(), None);
+        am.configure_refresher(cfg.auth_provider_command.clone());
         am.hot_swap(GrokAuth {
             key: "expired".into(),
             auth_mode: AuthMode::Oidc,
@@ -1992,7 +1865,6 @@ mod tests {
             authorization: Option<String>,
             user_id: Option<String>,
             email: Option<String>,
-            agent_id: Option<String>,
             client_identifier: Option<String>,
             client_version: Option<String>,
         }
@@ -2034,7 +1906,6 @@ mod tests {
                                 authorization: header_str(&headers, "authorization"),
                                 user_id: header_str(&headers, "x-userid"),
                                 email: header_str(&headers, "x-email"),
-                                agent_id: header_str(&headers, "x-grok-agent-id"),
                                 client_identifier: header_str(
                                     &headers,
                                     "x-grok-client-identifier",
@@ -2096,10 +1967,6 @@ mod tests {
             let h = seen
                 .last()
                 .expect("server should have received one request");
-            assert!(
-                h.agent_id.as_deref().is_some_and(|v| !v.is_empty()),
-                "must send x-grok-agent-id (the bucketing key)"
-            );
             assert!(
                 h.client_identifier.is_some(),
                 "must send x-grok-client-identifier"

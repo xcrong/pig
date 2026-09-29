@@ -3,8 +3,6 @@ use std::time::Duration;
 use pretty_assertions::assert_eq;
 use xai_grok_sampler::{SamplingErrorInfo, SamplingErrorKind};
 
-use xai_grok_telemetry::events::RateLimitWaitOutcome;
-
 use super::{
     BudgetLimit, RateLimitWaitBudget, RateLimitWaitConfig, RateLimitWaitDecision,
     RateLimitWaitSummary, WaitOutcome,
@@ -196,9 +194,9 @@ async fn summary_reports_waits_and_the_recovered_or_unresolved_outcome() {
 }
 
 #[tokio::test(flavor = "current_thread", start_paused = true)]
-async fn drop_reports_a_telemetry_row_only_when_the_turn_waited() {
+async fn summary_reports_waits_only_when_the_turn_waited() {
     let quiet = RateLimitWaitBudget::for_subagent(config(4, Duration::from_secs(600)));
-    assert!(quiet.telemetry_event().is_none());
+    assert!(quiet.summary().is_none());
 
     let mut budget = RateLimitWaitBudget::for_subagent(config(4, Duration::from_secs(600)));
     for _ in 0..2 {
@@ -206,10 +204,9 @@ async fn drop_reports_a_telemetry_row_only_when_the_turn_waited() {
     }
     budget.record_submission_accepted();
 
-    let event = budget
-        .telemetry_event()
+    let summary = budget
+        .summary()
         .expect("a turn that waited must report one row");
-    assert_eq!(event.attempts, 2);
-    assert_eq!(event.max_attempts, 4);
-    assert_eq!(event.outcome, RateLimitWaitOutcome::Recovered);
+    assert_eq!(summary.attempts, 2);
+    assert_eq!(summary.outcome, WaitOutcome::Recovered);
 }

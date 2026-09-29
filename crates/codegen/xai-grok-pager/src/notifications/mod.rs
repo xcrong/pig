@@ -105,13 +105,6 @@ impl NotificationService {
                 self.terminal_ctx,
                 &self.escape_writer,
             );
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::NotificationEmitted {
-                    protocol: self.protocol.into(),
-                    event_kind: event.kind.into(),
-                    was_focused: self.focus_tracker.is_focused(),
-                },
-            );
         }
     }
 

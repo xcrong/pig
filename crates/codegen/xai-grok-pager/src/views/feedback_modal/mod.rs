@@ -546,12 +546,6 @@ impl FeedbackModalState {
         choice: xai_grok_telemetry::events::FeedbackTraceConsentChoice,
     ) {
         if !self.trace_outcome_reported {
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::FeedbackTraceConsentSelected {
-                    choice,
-                    reenables_sharing: false,
-                },
-            );
             self.trace_outcome_reported = true;
         }
     }

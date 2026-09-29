@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass;
+use crate::session::memory_observation::V2FailureClass;
 
 use crate::config::MemoryMode;
 use crate::extensions::memory::{
@@ -285,7 +285,7 @@ impl SessionActor {
             Ok(access) => access,
             Err(failure) => {
                 tracing::warn!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     stage = failure.stage,
                     error = %failure.error,
                     "MEMORY_INIT: memory-v2 {} failed on /memory on; memory stays disabled",
@@ -558,7 +558,7 @@ impl SessionActor {
         let disposition = match result {
             FlushResult::Success => MemoryFlushDisposition::Flushed,
             FlushResult::RetryableFailure(_) => MemoryFlushDisposition::RetryRequired,
-            FlushResult::TerminalFailure(MemoryV2FailureClass::Disabled) => {
+            FlushResult::TerminalFailure(V2FailureClass::Disabled) => {
                 MemoryFlushDisposition::Disabled
             }
             FlushResult::TerminalFailure(_) => MemoryFlushDisposition::Failed,

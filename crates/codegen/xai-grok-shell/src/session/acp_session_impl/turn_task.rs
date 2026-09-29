@@ -66,7 +66,6 @@ pub(crate) struct TurnInputRequest {
     pub(crate) json_schema: Option<serde_json::Value>,
     pub(crate) persist_ack: Option<oneshot::Sender<()>>,
     pub(crate) parsed_prompt_tx: Option<oneshot::Sender<ParsedPromptInfo>>,
-    pub(crate) traceparent: Option<String>,
     pub(crate) start_gate: Option<oneshot::Receiver<()>>,
 }
 
@@ -394,7 +393,7 @@ impl AgentTask {
             prompt_id: request.prompt_id.clone(),
             epoch,
             identity: identity.clone(),
-            handle: xai_grok_telemetry::session_ctx::spawn_local_in_session_ctx(run_task(
+            handle: tokio::task::spawn_local(run_task(
                 session,
                 request,
                 epoch,
@@ -578,7 +577,6 @@ mod start_gate_tests {
                         json_schema: None,
                         persist_ack: None,
                         parsed_prompt_tx: None,
-                        traceparent: None,
                         start_gate: Some(start_gate),
                     },
                     TurnEpoch::default(),

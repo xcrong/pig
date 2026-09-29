@@ -584,18 +584,6 @@ pub(crate) async fn run_dispatcher(
         if has_transport_closed {
             for (server, kind) in buf.keys() {
                 if matches!(kind, McpClientEventKind::TransportClosed) {
-                    crate::session::telemetry::emit_mcp_connection_span(
-                        "disconnected",
-                        server.as_str(),
-                        transport_map
-                            .get(server.as_str())
-                            .copied()
-                            .unwrap_or("unknown"),
-                        crate::util::config::mcp_server_scope(server, &cwd),
-                        None,
-                        None,
-                        None,
-                    );
                 }
             }
         }

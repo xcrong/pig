@@ -36,7 +36,7 @@ use xai_grok_shell::sampling::types::{
     REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
 };
 use xai_grok_shell::util::config as cli_config;
-use xai_grok_telemetry::startup::PendingStartup;
+use crate::acp::startup::PendingStartup;
 mod ext_protocol;
 mod mcp_init;
 mod prompt_ack;
@@ -879,7 +879,7 @@ pub async fn run_single_turn(
     let cancel = CancellationToken::new();
     let memory_config = agent_config.memory_config.clone();
     let mut pending_startup = Some(PendingStartup::new());
-    let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
+    let timer = crate::acp::startup::begin(crate::acp::Owner::Client);
     let mut report_startup_failure = |timer: &crate::acp::StartupTimer| {
         timer.emit_telemetry(
             crate::acp::AgentKind::Embedded,
@@ -900,18 +900,15 @@ pub async fn run_single_turn(
     };
     let agent_guard = AgentShutdownGuard::new(cancel.clone(), Some(spawned.thread_handle));
     let (acp_tx, mut acp_rx) = (spawned.channel.tx, spawned.channel.rx);
-    crate::unified_log::init(acp_tx.clone());
     crate::unified_log::info(
         "pager started",
         None,
         Some(serde_json::json!({"mode": "headless"})),
     );
-    crate::unified_log::flush();
     let init_req = build_headless_init_request(
         options.rules.as_deref(),
         options.system_prompt_override.as_deref(),
     );
-    xai_grok_telemetry::startup::enter(crate::acp::StartupPhase::AcpInitialize);
     let init_resp: acp::InitializeResponse = match acp_send(init_req, &acp_tx).await {
         Ok(r) => r,
         Err(e) => {
@@ -926,7 +923,6 @@ pub async fn run_single_turn(
         "headless: spawn + initialize complete"
     );
     let t_auth = Instant::now();
-    xai_grok_telemetry::startup::enter(crate::acp::StartupPhase::EagerAuth);
     let default_auth_method_id = crate::acp::parse_default_auth_method_id(init_resp.meta.as_ref());
     let is_api_key_auth = match authenticate(
         &acp_tx,
@@ -995,7 +991,6 @@ pub async fn run_single_turn(
         _ => options.restore_code.then_some(true),
     };
     let t_session = Instant::now();
-    xai_grok_telemetry::startup::enter(crate::acp::StartupPhase::SessionCreate);
     let opened = match (materialized, worktree.as_ref()) {
         (MaterializedStartup::NewAuto, Some(spec)) => {
             open_session_in_new_worktree(&acp_tx, &cwd, spec, None).await
@@ -1349,12 +1344,6 @@ pub async fn run_single_turn(
             reap_pending_background_tasks(&pending_bg, &session_id, &acp_tx).await;
         }
     }
-    flush_unified_log_at_exit(
-        crate::unified_log::flush_blocking(),
-        prompt_unacknowledged,
-        terminated_by_signal,
-    )
-    .await;
     if track_active {
         let _ = xai_grok_active_sessions::try_unregister(&session_id);
     }
@@ -1547,24 +1536,6 @@ fn reap_request_for_work(
         ),
     };
     Ok(acp::ExtRequest::new(method, params.into()))
-}
-/// The flush waits on the shell's reply, which may never come when the shell never took the prompt,
-/// or when a signal ends the run and a closed terminal leaves nobody to send the second one.
-async fn flush_unified_log_at_exit(
-    flush: impl Future<Output = ()>,
-    prompt_unacknowledged: bool,
-    terminated_by_signal: Option<i32>,
-) {
-    if !prompt_unacknowledged && terminated_by_signal.is_none() {
-        flush.await;
-        return;
-    }
-    if tokio::time::timeout(prompt_ack::HEADLESS_ABORT_SEND_TIMEOUT, flush)
-        .await
-        .is_err()
-    {
-        tracing::warn!("headless: unified log flush timed out at exit");
-    }
 }
 /// Best-effort kill of background work still pending at exit so it never outlives the process.
 async fn reap_pending_background_tasks(

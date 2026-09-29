@@ -3,8 +3,6 @@
 use super::mcp_failed_reminder::{classify_failed_servers, render_failed_section};
 use super::*;
 use crate::session::mcp_servers::{McpOauthDiscovery, SharedMcpState, Superseded};
-use xai_grok_telemetry::instrument_task;
-use xai_grok_telemetry::region::Parent;
 /// Wire the session's elicitation inbox into a freshly built client so its `elicitation/create` requests reach the coordinator.
 /// Takes the already-locked `McpState` so each caller keeps its own lock scope.
 pub(super) fn attach_elicitation_tx(
@@ -1197,15 +1195,13 @@ impl SessionActor {
     async fn start_mcp_init(&self) {
         use tracing::Instrument;
         match self.mcp_startup_reroot_span() {
-            Some(span) => self.run_mcp_init(true).instrument(span).await,
-            None => self.run_mcp_init(false).await,
+            Some(span) => self.run_mcp_init().instrument(span).await,
+            None => self.run_mcp_init().await,
         }
     }
     fn mcp_startup_reroot_span(&self) -> Option<tracing::Span> {
-        let tp = self.startup_hints.take_mcp_reroot_traceparent()?;
         let span = tracing::info_span!("session.mcp_startup", session_id = %self.session_info.id.0);
-        xai_grok_otel::link_span_to_meta(&span, &serde_json::json!({ "traceparent": tp }))
-            .then_some(span)
+        Some(span)
     }
     async fn claim_init(&self) -> Option<InitClaim> {
         let mut mcp_state = self.mcp_state.lock().await;
@@ -1242,7 +1238,7 @@ impl SessionActor {
             guard,
         }
     }
-    async fn run_mcp_init(&self, reroot_active: bool) {
+    async fn run_mcp_init(&self) {
         let Some(claim) = self.claim_init().await else {
             tracing::debug!(
                 session_id = %self.session_info.id.0,
@@ -1250,7 +1246,7 @@ impl SessionActor {
             );
             return;
         };
-        self.run_init_pass(claim, reroot_active).await;
+        self.run_init_pass(claim).await;
     }
     /// The caller's claim (a harness rebuild) becomes the pass's; a claim a config change released starts nothing.
     pub(super) async fn run_mcp_init_with_claim(
@@ -1264,9 +1260,9 @@ impl SessionActor {
         else {
             return;
         };
-        self.run_init_pass(claim, false).await;
+        self.run_init_pass(claim).await;
     }
-    async fn run_init_pass(&self, claim: InitClaim, reroot_active: bool) {
+    async fn run_init_pass(&self, claim: InitClaim) {
         let generation = claim.generation.clone();
         if self
             .register_shared_client_tools(&generation)
@@ -1332,9 +1328,6 @@ impl SessionActor {
             return;
         }
         let mcp_init_start = std::time::Instant::now();
-        let mut timer = crate::instrumentation_timer!("session.mcp_init");
-        timer.with_field("session_id", self.session_info.id.0.as_ref());
-        timer.with_field("server_count", configs_to_start.len() as u64);
         tracing::info!(
             "Starting MCP initialization ({} new servers, {} already initialized, strategy: {:?})",
             configs_to_start.len(),
@@ -1454,18 +1447,9 @@ impl SessionActor {
             let needs_auth = spawn_auth_failures.contains(&name);
             pass.tally_spawn_failure(name, needs_auth);
         }
-        let mcp_init_task_parent = if reroot_active {
-            Parent::Inherit
-        } else {
-            Parent::Root
-        };
         spawn_after_reaping(
             &mut self.mcp_init_tasks.borrow_mut(),
-            instrument_task!(
-                "session.mcp_init_task",
-                mcp_init_task_parent,
-                pass.run(refresher)
-            ),
+            pass.run(refresher),
         );
     }
     /// Summaries of the currently connected MCP servers, from the live tool-metadata snapshot.

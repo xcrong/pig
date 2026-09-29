@@ -40,15 +40,6 @@ async fn handle_list() -> ExtResult {
             format!("{}={}", s.name, url)
         })
         .collect();
-    xai_grok_telemetry::unified_log::info(
-        "marketplace handle_list: sources loaded",
-        None,
-        Some(serde_json::json!({
-            "source_count": sources.len(),
-            "sources": source_names,
-            "load_sources_ms": t0.elapsed().as_millis() as u64,
-        })),
-    );
 
     // Scan all sources in parallel using blocking tasks (git operations are sync).
     let scan_handles: Vec<_> = sources
@@ -77,30 +68,9 @@ async fn handle_list() -> ExtResult {
             .iter()
             .filter(|p| p.components.is_some())
             .count();
-        xai_grok_telemetry::unified_log::info(
-            "marketplace handle_list: source scanned",
-            None,
-            Some(serde_json::json!({
-                "source_index": i,
-                "source_name": source.name,
-                "scan_ms": 0, // per-source timing is unavailable when scans run in parallel
-                "plugin_count": scan.plugins.len(),
-                "catalog_loaded": catalog_loaded,
-                "components_present": components_present,
-                "components_absent": scan.plugins.len() - components_present,
-                "error": scan.error,
-            })),
-        );
         results.push(scan);
     }
 
-    xai_grok_telemetry::unified_log::info(
-        "marketplace handle_list: complete",
-        None,
-        Some(serde_json::json!({
-            "total_ms": t0.elapsed().as_millis() as u64,
-        })),
-    );
 
     let response = MarketplaceListResponse { sources: results };
     super::to_ext_response(Ok(response))
@@ -539,14 +509,6 @@ fn scan_source(
                 Ok(cache_lease) => {
                     let cached_path = cache_lease.path.clone();
                     lease = Some(cache_lease);
-                    xai_grok_telemetry::unified_log::info(
-                        "scan_source: git sync done",
-                        None,
-                        Some(serde_json::json!({
-                            "url": url,
-                            "git_sync_ms": t_git.elapsed().as_millis() as u64,
-                        })),
-                    );
                     ("git".to_string(), url.clone(), Some(cached_path))
                 }
                 Err(e) => {

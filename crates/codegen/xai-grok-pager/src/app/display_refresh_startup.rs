@@ -126,7 +126,6 @@ fn spawn_terminal_and_display_refresh_telemetry(tel: StartupTel) {
         )
         .entered();
         tracing::info!("terminal environment detected");
-        xai_grok_telemetry::session_ctx::log_event(t.clone());
 
         let (outcome, hz, source, skip_reason, duration_ms) = match tel.plan {
             ProbePlan::Disabled => ("skipped", None, "none".into(), "disabled".into(), 0_u64),
@@ -166,21 +165,6 @@ fn spawn_terminal_and_display_refresh_telemetry(tel: StartupTel) {
             effective_scroll_cadence_ms = scroll_i,
             auto_cadence_reason = c.reason,
             "display refresh probed"
-        );
-        xai_grok_telemetry::session_ctx::log_event(
-            xai_grok_telemetry::events::DisplayRefreshProbe {
-                terminal: t,
-                outcome: outcome.to_string(),
-                hz: hz_i,
-                source,
-                skip_reason,
-                duration_ms: duration_ms_i,
-                auto_cadence_enabled: tel.auto_cadence_enabled,
-                auto_cadence_applied: c.auto_applied,
-                effective_min_draw_ms: min_draw_i,
-                effective_scroll_cadence_ms: scroll_i,
-                auto_cadence_reason: c.reason.to_string(),
-            },
         );
     });
 }

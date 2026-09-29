@@ -58,22 +58,6 @@ const _: () = assert!(
     "MIN_CLIENT_CONNECT_TIMEOUT must stay >= 2x STARTUP_AUTH_TIMEOUT"
 );
 
-macro_rules! startup_timer {
-    ($name:literal) => {{
-        use xai_grok_telemetry::instrumentation::{
-            InstrumentationMode, InstrumentationTimer, TARGET, current_mode,
-        };
-        let mode = current_mode();
-        match mode {
-            InstrumentationMode::Chrome => {
-                let span = tracing::info_span!(target: TARGET, $name);
-                InstrumentationTimer::new_with_span($name, mode, Some(span.entered()))
-            }
-            _ => InstrumentationTimer::new($name),
-        }
-    }};
-}
-
 static CLIENT_TYPE: OnceLock<ClientType> = OnceLock::new();
 
 pub use xai_grok_sampler::OriginClientInfo;
@@ -267,7 +251,6 @@ pub fn shared_client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
         .get_or_init(|| {
-            let _timer = startup_timer!("startup.http_client_build");
             xai_grok_extra_ca::build_reqwest_client(|builder| {
                 builder
                     .connect_timeout(std::time::Duration::from_secs(30))
@@ -472,7 +455,6 @@ pub fn shared_startup_blocking_client() -> reqwest::blocking::Client {
     static BLOCKING_CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     BLOCKING_CLIENT
         .get_or_init(|| {
-            let _timer = startup_timer!("startup.http_blocking_client_build");
             xai_grok_extra_ca::build_blocking_reqwest_client(|builder| {
                 builder
                     .connect_timeout(STARTUP_FETCH_TIMEOUT)

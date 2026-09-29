@@ -152,7 +152,6 @@ where
                 prompt_id = %prompt_id,
                 session_id = %session_id,
             );
-            xai_grok_otel::link_span_to_current(&root);
             root
         }
     };

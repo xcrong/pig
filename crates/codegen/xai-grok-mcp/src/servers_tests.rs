@@ -3427,10 +3427,7 @@ async fn try_call_tool_reconnects_then_succeeds_after_retriable_transport_error(
         None,
     ));
     let dead = dead_service().await;
-    *client.state.lock().await = ClientState::Ready {
-        service: dead,
-        _connected: MCP_SERVERS_CONNECTED.enter(),
-    };
+    *client.state.lock().await = ClientState::Ready { service: dead };
 
     let erased = McpErasedTool {
         tool: McpTool::new(

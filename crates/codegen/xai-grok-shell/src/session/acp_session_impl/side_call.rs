@@ -123,7 +123,6 @@ impl SessionActor {
             x_grok_conv_id: Some(conv_id),
             x_grok_req_id: Some(call.req_id),
             x_grok_session_id: Some(session_id.clone()),
-            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
             prompt_cache_key: Some(session_id),
             // Side calls persist text and never execute tools (the attached tools only align the prompt-cache prefix)
             // A Length sample must fail rather than salvage

@@ -1182,9 +1182,6 @@ impl AgentView {
         } else {
             "interview_submit"
         };
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::PlanSubmit {
-            action: action.to_string(),
-        });
         InputOutcome::Changed
     }
     /// Map a screen position to a permission option index.

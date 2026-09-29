@@ -16,11 +16,7 @@ use std::time::Duration as StdDuration;
 
 use fs2::FileExt;
 
-use xai_grok_telemetry::events::{AuthLockTimeout, AuthLockWait};
-use xai_grok_telemetry::session_ctx::log_event;
-
 use crate::storage::AuthFileLock;
-use crate::unified_log;
 
 pub const LOCK_FILE_NAME: &str = "auth.json.lock";
 
@@ -59,11 +55,7 @@ impl LockHeartbeat {
                 }
             })
             .inspect_err(|e| {
-                unified_log::warn(
-                    &format!("auth lock: failed to spawn heartbeat thread: {e}"),
-                    /*sid*/ None,
-                    /*ctx*/ None,
-                );
+                tracing::warn!("auth lock: failed to spawn heartbeat thread: {e}");
             })
             .ok();
         Self { stop, handle }
@@ -144,7 +136,7 @@ pub enum HolderState {
 }
 
 impl HolderState {
-    /// Stable label emitted in telemetry.
+    /// Stable label for holder diagnostics.
     pub fn label(self) -> &'static str {
         match self {
             Self::Dead => "dead",
@@ -226,11 +218,7 @@ fn try_acquire_once(lock_path: &Path) -> LockAttempt {
     {
         Ok(f) => f,
         Err(e) => {
-            unified_log::warn(
-                &format!("auth lock: failed to open {}: {e}", lock_path.display()),
-                /*sid*/ None,
-                /*ctx*/ None,
-            );
+            tracing::warn!("auth lock: failed to open {}: {e}", lock_path.display());
             return LockAttempt::Failed(e);
         }
     };
@@ -239,38 +227,24 @@ fn try_acquire_once(lock_path: &Path) -> LockAttempt {
         Ok(()) => {
             let pid = std::process::id();
             if let Err(e) = write_holder_info(&mut file) {
-                unified_log::warn(
-                    &format!("auth lock: failed to write holder info: {e}"),
-                    /*sid*/ None,
-                    Some(serde_json::json!({ "pid": pid })),
-                );
+                tracing::warn!(pid, "auth lock: failed to write holder info: {e}");
             }
 
             match inodes_match(&file, lock_path) {
                 Ok(true) => {
-                    unified_log::debug(
-                        &format!("auth lock: acquired (pid={pid})"),
-                        /*sid*/ None,
-                        Some(
-                            serde_json::json!({ "pid": pid, "path": lock_path.display().to_string() }),
-                        ),
+                    tracing::debug!(
+                        pid,
+                        path = %lock_path.display(),
+                        "auth lock: acquired (pid={pid})"
                     );
                     LockAttempt::Acquired(file)
                 }
                 Ok(false) => {
-                    unified_log::debug(
-                        &format!("auth lock: inode changed after acquire (pid={pid}), retrying"),
-                        /*sid*/ None,
-                        /*ctx*/ None,
-                    );
+                    tracing::debug!("auth lock: inode changed after acquire (pid={pid}), retrying");
                     LockAttempt::InodeChanged
                 }
                 Err(e) => {
-                    unified_log::debug(
-                        &format!("auth lock: path gone after acquire (pid={pid}): {e}"),
-                        /*sid*/ None,
-                        /*ctx*/ None,
-                    );
+                    tracing::debug!("auth lock: path gone after acquire (pid={pid}): {e}");
                     LockAttempt::InodeChanged
                 }
             }
@@ -279,11 +253,7 @@ fn try_acquire_once(lock_path: &Path) -> LockAttempt {
         Err(e) if e.kind() == io::ErrorKind::WouldBlock => LockAttempt::Busy,
 
         Err(e) => {
-            unified_log::warn(
-                &format!("auth lock: flock failed: {e}"),
-                /*sid*/ None,
-                /*ctx*/ None,
-            );
+            tracing::warn!("auth lock: flock failed: {e}");
             LockAttempt::Failed(e)
         }
     }
@@ -303,11 +273,7 @@ fn blocking_acquire(lock_path: &Path) -> io::Result<File> {
             Ok(()) => break,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => {
-                unified_log::warn(
-                    &format!("auth lock: blocking flock failed: {e}"),
-                    /*sid*/ None,
-                    /*ctx*/ None,
-                );
+                tracing::warn!("auth lock: blocking flock failed: {e}");
                 return Err(e);
             }
         }
@@ -315,19 +281,15 @@ fn blocking_acquire(lock_path: &Path) -> io::Result<File> {
 
     let pid = std::process::id();
     if let Err(e) = write_holder_info(&mut file) {
-        unified_log::warn(
-            &format!("auth lock: failed to write holder info: {e}"),
-            /*sid*/ None,
-            Some(serde_json::json!({ "pid": pid })),
-        );
+        tracing::warn!(pid, "auth lock: failed to write holder info: {e}");
     }
 
     match inodes_match(&file, lock_path) {
         Ok(true) => {
-            unified_log::debug(
-                &format!("auth lock: acquired via blocking flock (pid={pid})"),
-                /*sid*/ None,
-                Some(serde_json::json!({ "pid": pid, "path": lock_path.display().to_string() })),
+            tracing::debug!(
+                pid,
+                path = %lock_path.display(),
+                "auth lock: acquired via blocking flock (pid={pid})"
             );
             Ok(file)
         }
@@ -354,11 +316,7 @@ pub fn try_lock_auth_file_nonblocking(auth_json_path: &Path) -> Option<AuthFileL
     file.try_lock_exclusive().ok()?;
 
     if let Err(e) = write_holder_info(&mut file) {
-        unified_log::warn(
-            &format!("auth lock: failed to write holder info (non-blocking): {e}"),
-            /*sid*/ None,
-            Some(serde_json::json!({ "pid": std::process::id() })),
-        );
+        tracing::warn!("auth lock: failed to write holder info (non-blocking): {e}");
     }
     if !inodes_match(&file, &lock_path).unwrap_or(false) {
         return None;
@@ -380,11 +338,7 @@ fn lock_guard(file: File, heartbeat: Heartbeat) -> AuthFileLock {
         Heartbeat::Attach => match file.try_clone() {
             Ok(clone) => Some(LockHeartbeat::spawn(clone, LOCK_HEARTBEAT_INTERVAL)),
             Err(e) => {
-                unified_log::warn(
-                    &format!("auth lock: failed to clone FD for heartbeat: {e}"),
-                    /*sid*/ None,
-                    /*ctx*/ None,
-                );
+                tracing::warn!("auth lock: failed to clone FD for heartbeat: {e}");
                 None
             }
         },
@@ -424,15 +378,11 @@ pub async fn try_lock_auth_file_async(
 ) -> LockAcquire {
     let lock_path = auth_json_path.with_file_name(LOCK_FILE_NAME);
 
-    unified_log::debug(
-        &format!(
-            "auth lock: attempting acquire (timeout={}ms)",
-            timeout.as_millis()
-        ),
-        /*sid*/ None,
-        Some(
-            serde_json::json!({ "path": lock_path.display().to_string(), "timeout_ms": timeout.as_millis() as u64 }),
-        ),
+    tracing::debug!(
+        path = %lock_path.display(),
+        timeout_ms = timeout.as_millis() as u64,
+        "auth lock: attempting acquire (timeout={}ms)",
+        timeout.as_millis()
     );
 
     match try_acquire_once(&lock_path) {
@@ -444,7 +394,6 @@ pub async fn try_lock_auth_file_async(
     }
 
     let deadline = tokio::time::Instant::now() + timeout;
-    let contended_at = std::time::Instant::now();
     let late_ticket = loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining == StdDuration::ZERO {
@@ -454,10 +403,6 @@ pub async fn try_lock_auth_file_async(
         let ticket = flock_wait::join(&lock_path);
         match tokio::time::timeout(remaining, ticket.claim()).await {
             Ok(Some(Ok(file))) => {
-                log_event(AuthLockWait {
-                    wait_ms: contended_at.elapsed().as_millis() as u64,
-                    budget_ms: timeout.as_millis() as u64,
-                });
                 return LockAcquire::Acquired(lock_guard(file, heartbeat));
             }
             Ok(Some(Err(e))) => {
@@ -482,19 +427,11 @@ pub async fn try_lock_auth_file_async(
         Err(error) => return LockAcquire::Failed { error },
     };
     if let Some(file) = late_acquire {
-        log_event(AuthLockWait {
-            wait_ms: contended_at.elapsed().as_millis() as u64,
-            budget_ms: timeout.as_millis() as u64,
-        });
-        unified_log::info(
-            &format!(
-                "auth lock: acquired after deadline race ({}ms budget already exhausted)",
-                timeout.as_millis()
-            ),
-            /*sid*/ None,
-            Some(
-                serde_json::json!({ "path": lock_path.display().to_string(), "timeout_ms": timeout.as_millis() as u64 }),
-            ),
+        tracing::info!(
+            path = %lock_path.display(),
+            timeout_ms = timeout.as_millis() as u64,
+            "auth lock: acquired after deadline race ({}ms budget already exhausted)",
+            timeout.as_millis()
         );
         return LockAcquire::Acquired(lock_guard(file, heartbeat));
     }
@@ -504,24 +441,15 @@ pub async fn try_lock_auth_file_async(
         .open(&lock_path)
         .ok()
         .map(|mut file| read_holder(&mut file));
-    unified_log::warn(
-        &format!(
-            "auth lock: wait budget exhausted after {}ms; holder left in place",
-            timeout.as_millis()
-        ),
-        /*sid*/ None,
-        Some(serde_json::json!({
-            "path": lock_path.display().to_string(),
-            "timeout_ms": timeout.as_millis() as u64,
-            "holder_pid": holder.and_then(|h| h.pid),
-            "holder_state": holder.map(|h| h.state.label()),
-            "holder_age_secs": holder.and_then(|h| h.age_secs),
-        })),
+    tracing::warn!(
+        path = %lock_path.display(),
+        timeout_ms = timeout.as_millis() as u64,
+        holder_pid = holder.and_then(|h| h.pid),
+        holder_state = holder.map(|h| h.state.label()),
+        holder_age_secs = holder.and_then(|h| h.age_secs),
+        "auth lock: wait budget exhausted after {}ms; holder left in place",
+        timeout.as_millis()
     );
-    log_event(AuthLockTimeout {
-        budget_ms: timeout.as_millis() as u64,
-        holder_state: holder.map(|h| h.state.label()),
-    });
     LockAcquire::TimedOut { holder }
 }
 
@@ -555,14 +483,6 @@ fn salvage_at_deadline(
         Some(e) => Err(e),
         None => Ok(None),
     }
-}
-
-pub fn read_holder_at(auth_json_path: &Path) -> Option<LockHolder> {
-    OpenOptions::new()
-        .read(true)
-        .open(auth_json_path.with_file_name(LOCK_FILE_NAME))
-        .ok()
-        .map(|mut file| read_holder(&mut file))
 }
 
 #[cfg(all(test, unix))]

@@ -665,7 +665,6 @@ impl ModelsManager {
     /// Auth identity changed: invalidate the disk cache and refresh the catalog.
     pub(crate) async fn on_auth_changed(&self) {
         let config = self.inner.cfg.read().clone();
-        crate::agent::init::update_telemetry_config(&config, &self.inner.auth_manager);
         self.inner.cache.invalidate();
         // Fetches and the etag from the previous identity are stale now.
         {
@@ -704,14 +703,6 @@ impl ModelsManager {
         };
         if needs_bundled_fallback {
             if remote_fetch_enabled {
-                xai_grok_telemetry::unified_log::warn(
-                    "model catalog: falling back to bundled defaults only",
-                    None,
-                    Some(serde_json::json!({
-                        "trigger": "on_auth_changed",
-                        "had_real_catalog": false,
-                    })),
-                );
             } else {
                 tracing::debug!("model catalog: bundled defaults in use (remote_fetch disabled)");
             }
@@ -729,14 +720,6 @@ impl ModelsManager {
         let available = self.available();
         let current = self.current_model_id();
         let count = available.len();
-        xai_grok_telemetry::unified_log::info(
-            "model catalog: notifying clients",
-            None,
-            Some(serde_json::json!({
-                "model_count": count,
-                "current_model_id": current.0.as_ref(),
-            })),
-        );
         if let Some(ref gw) = *self.inner.gateway.read() {
             let model_state =
                 acp::SessionModelState::new(current, available.values().cloned().collect());
@@ -778,11 +761,6 @@ impl ModelsManager {
         let count = cached.models.len();
         self.apply_catalog(&cfg, cached.models, cached.etag);
         tracing::info!(count, "model catalog hot-reloaded from disk cache");
-        xai_grok_telemetry::unified_log::info(
-            "model catalog: reloaded from external disk-cache write",
-            None,
-            Some(serde_json::json!({ "model_count": count })),
-        );
         self.notify_models_updated();
     }
 
@@ -837,15 +815,6 @@ impl ModelsManager {
                     }
                 },
                 |attempt, max_retries, delay| async move {
-                    xai_grok_telemetry::unified_log::warn(
-                        "model catalog: retry scheduled",
-                        None,
-                        Some(serde_json::json!({
-                            "attempt": attempt,
-                            "max_retries": max_retries,
-                            "delay_ms": delay.as_millis() as u64,
-                        })),
-                    );
                 },
             )
             .await;
@@ -853,19 +822,9 @@ impl ModelsManager {
             match result {
                 Ok(()) => {
                     let count = mgr.available().len();
-                    xai_grok_telemetry::unified_log::info(
-                        "model catalog: retry succeeded",
-                        None,
-                        Some(serde_json::json!({ "model_count": count })),
-                    );
                     mgr.notify_models_updated();
                 }
                 Err(e) => {
-                    xai_grok_telemetry::unified_log::warn(
-                        "model catalog: all retries exhausted",
-                        None,
-                        Some(serde_json::json!({ "error": e })),
-                    );
                 }
             }
         });
@@ -890,14 +849,6 @@ impl ModelsManager {
     pub fn start_auth_refresh_watcher(&self, notify: Arc<tokio::sync::Notify>) {
         let mgr = self.clone();
         let had_catalog_at_start = self.inner.catalog.read().has_fetched_real_catalog;
-        xai_grok_telemetry::unified_log::info(
-            "model catalog: auth refresh watcher started",
-            None,
-            Some(serde_json::json!({
-                "had_real_catalog": had_catalog_at_start,
-                "model_count": self.available().len(),
-            })),
-        );
         tokio::spawn(async move {
             loop {
                 notify.notified().await;
@@ -909,38 +860,14 @@ impl ModelsManager {
                 }
                 let had_catalog = mgr.inner.catalog.read().has_fetched_real_catalog;
                 let old_count = mgr.available().len();
-                xai_grok_telemetry::unified_log::info(
-                    "model catalog: auth refresh watcher triggered",
-                    None,
-                    Some(serde_json::json!({
-                        "had_real_catalog": had_catalog,
-                        "model_count_before": old_count,
-                    })),
-                );
                 mgr.fetch_and_apply().await;
                 let has_catalog = mgr.inner.catalog.read().has_fetched_real_catalog;
                 let new_count = mgr.available().len();
                 if has_catalog {
                     if !had_catalog || new_count != old_count {
-                        xai_grok_telemetry::unified_log::info(
-                            "model catalog: auth refresh watcher updated catalog",
-                            None,
-                            Some(serde_json::json!({
-                                "model_count_before": old_count,
-                                "model_count_after": new_count,
-                                "was_recovery": !had_catalog,
-                            })),
-                        );
                     }
                     mgr.notify_models_updated();
                 } else {
-                    xai_grok_telemetry::unified_log::warn(
-                        "model catalog: auth refresh watcher fetch failed",
-                        None,
-                        Some(serde_json::json!({
-                            "model_count": old_count,
-                        })),
-                    );
                 }
             }
         });
@@ -1105,14 +1032,6 @@ impl ModelsManager {
         let has_auth = auth.is_some();
         let fetch_auth = *self.inner.fetch_auth.read();
         let cfg = self.inner.cfg.read().clone();
-        xai_grok_telemetry::unified_log::info(
-            "model catalog: fetching",
-            None,
-            Some(serde_json::json!({
-                "has_auth": has_auth,
-                "fetch_auth": format!("{fetch_auth:?}"),
-            })),
-        );
         let endpoint = self.inner.endpoint.clone();
         let new_prefetched = match tokio::time::timeout(
             crate::http::STARTUP_FETCH_TIMEOUT,
@@ -1131,13 +1050,6 @@ impl ModelsManager {
         };
         let success = self.apply_refresh_result_fenced(&cfg, new_prefetched, None, generation);
         if success {
-            xai_grok_telemetry::unified_log::info(
-                "model catalog: fetch succeeded",
-                None,
-                Some(serde_json::json!({
-                    "model_count": self.available().len(),
-                })),
-            );
         }
     }
 
@@ -1227,13 +1139,6 @@ impl ModelsManager {
                     });
                 }
             }
-            xai_grok_telemetry::unified_log::warn(
-                "model catalog refresh failed",
-                None,
-                Some(serde_json::json!({
-                    "had_real_catalog": self.inner.catalog.read().has_fetched_real_catalog,
-                })),
-            );
             return false;
         };
         self.apply_catalog_fenced(config, new_prefetched, new_etag, Some(generation))

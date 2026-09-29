@@ -560,7 +560,6 @@ pub use xai_grok_shared::placeholder_images;
 pub mod plan_mode;
 pub mod prompt_history;
 pub mod prompt_parser;
-pub(crate) mod prompt_timing;
 pub(crate) mod replay_events;
 pub mod repo_changes;
 #[path = "restore_stub.rs"]
@@ -577,7 +576,7 @@ pub(crate) mod streaming_capture;
 pub mod summary;
 pub(crate) mod telemetry;
 #[cfg(feature = "test-support")]
-pub use telemetry::{complete_projected_call, grep_output, tool_execution_span};
+pub use telemetry::tool_execution_span;
 #[cfg(feature = "test-support")]
 pub mod testkit;
 pub mod tool_definitions_artifact;

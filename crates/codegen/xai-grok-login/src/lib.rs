@@ -10,7 +10,10 @@
 //! Extracted from `xai-grok-shell::auth`; the shell re-exports this crate as
 //! `xai_grok_shell::auth` so existing `crate::*` paths keep resolving.
 #![deny(clippy::indexing_slicing)]
-pub use xai_grok_telemetry::unified_log;
+/// Derive a stable deployment ID (UUIDv5) from the deployment key.
+pub fn deployment_id_from_key(key: &str) -> String {
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, key.as_bytes()).to_string()
+}
 pub mod api_key_probe;
 pub mod attribution;
 pub mod auth_method;
@@ -72,7 +75,6 @@ pub use manager::{AuthRemedy, CachedTokenState, SilentRefresh};
 pub use meta::{AuthMeta, GateInfo};
 pub use model::{AuthMode, GrokAuth, lookup_auth};
 pub use model::{TOKEN_TTL, UserInfo, default_coding_data_retention_opt_out, is_expired};
-pub use refresh::DiagnosticUploader;
 pub use side_call_bearer::{SharedAuthKeyProvider, shared_api_key_provider};
 pub use storage::auth_json_path;
 pub use storage::{clear_api_key, read_api_key, read_auth_json, store_api_key};

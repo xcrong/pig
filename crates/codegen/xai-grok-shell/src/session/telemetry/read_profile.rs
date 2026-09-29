@@ -2,7 +2,7 @@
 
 use std::sync::OnceLock;
 
-use xai_grok_telemetry::events::{
+use super::tool_call::{
     CanonicalToolId, CapApplicability, CapDisposition, InvocationSource, ReadFileRole,
     ReadLimitKind, ReadProfile, ReadSelection, ReadSkillMatch, ReadSkillSource, ToolOutputLimit,
     ToolSourceReason, ToolSourceStatus,

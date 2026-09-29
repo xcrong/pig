@@ -177,7 +177,6 @@ async fn handle_logout(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     )
     .map_err(|e| acp::Error::internal_error().data(format!("failed to logout: {e}")))?;
     // `auth.lifecycle` (not `auth`) avoids colliding with the pre-existing per-request `AuthManager::auth()` `#[instrument]` span
-    xai_grok_telemetry::event_span!("auth.lifecycle", action = "logout", success = true);
 
     agent.models_manager.on_auth_changed().await;
 

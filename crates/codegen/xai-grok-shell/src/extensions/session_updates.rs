@@ -325,7 +325,6 @@ pub async fn handle(
     args: &acp::ExtRequest,
     gateway: &xai_acp_lib::AcpAgentGatewaySender,
 ) -> ExtResult {
-    let _timer = crate::instrumentation_timer!("session.ext.bulk_updates");
 
     let request: Request = serde_json::from_str(args.params.get())
         .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;

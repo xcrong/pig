@@ -231,11 +231,6 @@ pub(super) fn dispatch_submit_feedback_modal(
     if trace_choice.is_none() && offer_trace {
         modal.begin_trace_step();
         // Funnel denominator for the in-modal trace step; logged once when Write actually advances.
-        xai_grok_telemetry::session_ctx::log_event(
-            xai_grok_telemetry::events::FeedbackTraceCardShown {
-                reenables_sharing: trace_reenables_sharing,
-            },
-        );
         return vec![];
     }
     let draft = draft_id
@@ -334,15 +329,6 @@ pub(super) fn dispatch_enter_remember_mode(app: &mut AppView) -> Vec<Effect> {
 
 /// Log the trace-consent outcome carried on an immediate send exactly once.
 pub(crate) fn log_trace_consent_selected(reenables_sharing: bool, choice: FeedbackTraceChoice) {
-    use xai_grok_telemetry::events::{FeedbackTraceConsentChoice, FeedbackTraceConsentSelected};
-    xai_grok_telemetry::session_ctx::log_event(FeedbackTraceConsentSelected {
-        choice: match choice {
-            FeedbackTraceChoice::AlwaysUpload => FeedbackTraceConsentChoice::TurnOn,
-            FeedbackTraceChoice::NeverAsk => FeedbackTraceConsentChoice::NeverAsk,
-            FeedbackTraceChoice::NoUpload => FeedbackTraceConsentChoice::NoUpload,
-        },
-        reenables_sharing,
-    });
 }
 /// The `feedback.send` unified log plus the POST effect for a committed report.
 /// This is the single writer for both, shared with the modal submit path.

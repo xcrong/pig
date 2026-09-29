@@ -514,7 +514,6 @@ fn load_settings_blocking(query: SettingsQuery) -> SettingsOutcome {
     let Some(auth) = query.auth.clone() else {
         return SettingsOutcome::skipped();
     };
-    let _timer = crate::instrumentation_timer!("startup.settings_get");
     let origin = query.origin.clone();
     let alpha = query.alpha_test_key.clone();
     let auth_config = query.auth_config.clone();

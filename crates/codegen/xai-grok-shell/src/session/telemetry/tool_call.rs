@@ -1,12 +1,270 @@
-//! One snapshot feeds the product event and the `tool.execution` span.
+//! One snapshot feeds the local `tool.execution` span.
 
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
-use xai_grok_telemetry::events::{
-    CanonicalToolId, InvocationId, InvocationSource, PathScope, ProductModelId, ReadProfile,
-    ToolCallCompleted, ToolContractVersion, ToolOutputLimit, ToolSourceReason, ToolSourceStatus,
-};
+/// Host invocation id. Only a UUID is representable, so a provider call id or a path cannot be written here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvocationId(String);
+
+impl InvocationId {
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::now_v7().to_string())
+    }
+
+    pub fn from_host(id: &str) -> Option<Self> {
+        uuid::Uuid::parse_str(id).ok().map(|_| Self(id.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Qualified registry id, or the one opaque class for unknown, custom, and dynamic names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalToolId(String);
+
+impl CanonicalToolId {
+    pub const OPAQUE: &'static str = "opaque";
+
+    pub fn opaque() -> Self {
+        Self(Self::OPAQUE.to_owned())
+    }
+
+    /// `Namespace:id` from a finalized registration. Rejects aliases, MCP names, and paths.
+    pub fn from_qualified(id: &str) -> Option<Self> {
+        let (namespace, tool) = id.split_once(':')?;
+        if namespace.is_empty()
+            || tool.is_empty()
+            || namespace == "MCP"
+            || tool.contains(':')
+            || id.contains("__")
+            || id.contains('/')
+            || id.contains('\\')
+            || id.contains(' ')
+            || !namespace.chars().all(|c| c.is_ascii_alphanumeric())
+            || !tool.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return None;
+        }
+        Some(Self(id.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Managed behavior version. Anything else is omitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolContractVersion(&'static str);
+
+impl ToolContractVersion {
+    pub const ALLOWED: &'static [&'static str] = &["current", "legacy-0.4.10"];
+
+    pub fn from_registered(version: &str) -> Option<Self> {
+        Self::ALLOWED
+            .iter()
+            .find(|known| **known == version)
+            .map(|known| Self(known))
+    }
+
+    pub fn as_str(self) -> &'static str {
+        self.0
+    }
+}
+
+/// Requested model that already reads as a grok model id. Custom names stay absent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProductModelId(String);
+
+impl ProductModelId {
+    pub fn from_requested(model: &str) -> Option<Self> {
+        if !is_approved_model_id(model) {
+            return None;
+        }
+        Some(Self(model.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn is_approved_model_id(model: &str) -> bool {
+    if model == "grok" {
+        return true;
+    }
+    let Some(rest) = model.strip_prefix("grok-") else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest.len() <= 64
+        && !rest.starts_with('-')
+        && !rest.ends_with('-')
+        && !rest.contains("--")
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ToolSourceStatus {
+    Unknown,
+    Succeeded,
+    Empty,
+    Failed,
+    Partial,
+}
+
+impl ToolSourceStatus {
+    pub fn is_failure(self) -> bool {
+        matches!(self, Self::Failed)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+pub enum ToolSourceReason {
+    #[strum(serialize = "not_instrumented")]
+    NotInstrumented,
+    #[strum(serialize = "search.unclassified_exit")]
+    SearchUnclassifiedExit,
+    #[strum(serialize = "read.not_found")]
+    ReadNotFound,
+    #[strum(serialize = "read.directory")]
+    ReadDirectory,
+    #[strum(serialize = "read.denied")]
+    ReadDenied,
+    #[strum(serialize = "read.ignored")]
+    ReadIgnored,
+    #[strum(serialize = "read.binary")]
+    ReadBinary,
+    #[strum(serialize = "read.token_limit")]
+    ReadTokenLimit,
+    #[strum(serialize = "read.io")]
+    ReadIo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum InvocationSource {
+    Model,
+    UserDirect,
+    System,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ToolOutputLimit {
+    Unobserved,
+    NotLimited,
+    Limited,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ReadFileRole {
+    SkillEntry,
+    SkillSupport,
+    Instruction,
+    Memory,
+    Ordinary,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ReadSkillMatch {
+    Registered,
+    Unregistered,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ReadSkillSource {
+    Local,
+    Repo,
+    User,
+    Server,
+    Bundled,
+    Plugin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ReadSelection {
+    Full,
+    ModelWindow,
+    DefaultWindow,
+    SkillFullRead,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum ReadLimitKind {
+    None,
+    Lines,
+    Bytes,
+    Tokens,
+    Multiple,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum CapApplicability {
+    Applies,
+    NotApplicable,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum CapDisposition {
+    Unobserved,
+    WithinLimit,
+    Truncated,
+    Rejected,
+    Exempt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadProfile {
+    pub read_file_role: ReadFileRole,
+    pub read_skill_match: ReadSkillMatch,
+    pub read_skill_source: Option<ReadSkillSource>,
+    pub read_selection: ReadSelection,
+    pub read_source_bytes: Option<i64>,
+    pub read_returned_lines: Option<i64>,
+    pub read_returned_bytes: Option<i64>,
+    pub read_limit_kind: ReadLimitKind,
+    pub read_lines_applicability: CapApplicability,
+    pub read_lines_limit: Option<i64>,
+    pub read_lines_observed: Option<i64>,
+    pub read_lines_disposition: CapDisposition,
+    pub read_bytes_applicability: CapApplicability,
+    pub read_bytes_limit: Option<i64>,
+    pub read_bytes_observed: Option<i64>,
+    pub read_bytes_disposition: CapDisposition,
+    pub read_tokens_applicability: CapApplicability,
+    pub read_tokens_limit: Option<i64>,
+    pub read_tokens_observed: Option<i64>,
+    pub read_tokens_disposition: CapDisposition,
+}
+
+/// Content-free location class. The path itself is never recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::AsRefStr, strum::IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
+pub enum PathScope {
+    Workspace,
+    Tmp,
+    Home,
+    Other,
+}
 use xai_grok_tools::implementations::codex::CodexReadFileTool;
 use xai_grok_tools::implementations::grok_build::{ReadFileTool, SearchReplaceTool};
 use xai_grok_tools::implementations::grok_build_concise::{
@@ -305,102 +563,6 @@ pub(crate) fn tool_identity(
     }
 }
 
-pub(crate) struct CompletedTool<'a> {
-    pub tool_name: &'a str,
-    pub projection: &'a ToolCallProjection,
-    pub outcome: ToolOutcome,
-    pub hook_rewrote: bool,
-    pub duration_ms: u64,
-    pub tool_result_size_bytes: Option<u64>,
-    pub file_path: Option<String>,
-    pub parameters: Option<serde_json::Value>,
-    pub tool_use_id: Option<String>,
-    pub tool_output: Option<String>,
-    pub error_message: Option<String>,
-}
-
-pub(crate) fn completed_event(facts: CompletedTool<'_>) -> ToolCallCompleted {
-    ToolCallCompleted {
-        tool_name: facts.tool_name.to_owned(),
-        outcome: product_outcome(facts.outcome, &facts.projection.source),
-        hook_rewrote: facts.hook_rewrote,
-        duration_ms: facts.duration_ms,
-        tool_result_size_bytes: facts.tool_result_size_bytes,
-        model_id: facts.projection.model_id.clone(),
-        invocation_id: facts.projection.invocation_id.clone(),
-        tool_id: facts.projection.tool_id.clone(),
-        tool_version: facts.projection.tool_version,
-        source_status: facts.projection.source.status,
-        source_reason: facts.projection.source.reason,
-        path_scope: facts.projection.path_scope,
-        invocation_source: facts.projection.invocation_source,
-        output_limit: facts.projection.output_limit,
-        read: facts.projection.read.clone(),
-        external_model_id: facts.projection.requested_model.clone().unwrap_or_default(),
-        file_path: facts.file_path,
-        parameters: facts.parameters,
-        tool_use_id: facts.tool_use_id,
-        tool_output: facts.tool_output,
-        error_message: facts.error_message,
-    }
-}
-
-#[cfg(feature = "test-support")]
-pub fn grep_output(exit_code: i32) -> ToolOutput {
-    ToolOutput::GrepSearch(GrepSearchOutput {
-        stdout: b"CANARY_STDOUT /tmp/secret-project/main.rs".to_vec(),
-        stderr: b"CANARY_STDERR".to_vec(),
-        exit_code,
-        match_count: 4,
-        file_matches: Vec::new(),
-    })
-}
-
-/// Source status comes from `output`, not from a caller-supplied status.
-#[cfg(feature = "test-support")]
-pub fn complete_projected_call(
-    span: tracing::Span,
-    invocation_id: &str,
-    output: &ToolOutput,
-    legacy_outcome: &'static str,
-) -> ToolCallCompleted {
-    let canary_path = "/tmp/secret-project/note.txt";
-    let args = serde_json::json!({"path": canary_path, "pattern": "CANARY_PATTERN"});
-    let (projection, _) = record_tool_execution(
-        span,
-        ToolExecutionInput {
-            prepared: PreparedToolFacts {
-                requested_model: Some("grok-4.6"),
-                invocation_id,
-                tool_id: "GrokBuild:grep",
-                tool_version: Some("current"),
-                args: &args,
-            },
-            output: Some(output),
-            legacy_outcome,
-            legacy_success: true,
-            result_size: 4,
-            cwd: Path::new("/opt/repo"),
-            display_cwd: None,
-            summary: None,
-            origin: None,
-        },
-    );
-    completed_event(CompletedTool {
-        tool_name: "grep",
-        projection: &projection,
-        outcome: ToolOutcome::Success,
-        hook_rewrote: false,
-        duration_ms: 3,
-        tool_result_size_bytes: Some(4),
-        file_path: Some(canary_path.to_owned()),
-        parameters: Some(args),
-        tool_use_id: Some("provider-call".into()),
-        tool_output: Some("CANARY_BODY".into()),
-        error_message: None,
-    })
-}
-
 fn qualified_id(namespace: ToolNamespace, id: &ToolId) -> String {
     format!("{namespace}:{id}")
 }
@@ -519,9 +681,6 @@ mod tests {
     use super::*;
     use crate::session::events::ToolOutcome;
     use std::path::Path;
-    use xai_grok_telemetry::events::{
-        CanonicalToolId, PathScope, ToolSourceReason, ToolSourceStatus,
-    };
     use xai_grok_tools::implementations::codex::CodexReadFileTool;
     use xai_grok_tools::implementations::grok_build::{GrepTool, ReadFileTool, SearchReplaceTool};
     use xai_grok_tools::implementations::grok_build_concise::{
@@ -598,10 +757,6 @@ mod tests {
             ToolSourceReason::SearchUnclassifiedExit.as_ref(),
             "search.unclassified_exit"
         );
-        assert_eq!(
-            serde_json::to_value(ToolSourceReason::SearchUnclassifiedExit).unwrap(),
-            serde_json::json!("search.unclassified_exit")
-        );
         assert_eq!(ToolSourceStatus::Failed.as_ref(), "failed");
         for (exit_code, status, reason) in cases {
             let projected = source_projection(Some(&grep_result(exit_code)));
@@ -662,20 +817,7 @@ mod tests {
             Some(ToolSourceReason::SearchUnclassifiedExit)
         );
         assert_eq!(
-            completed_event(CompletedTool {
-                tool_name: "grep",
-                projection: &failed_projection,
-                outcome: ToolOutcome::Success,
-                hook_rewrote: false,
-                duration_ms: 1,
-                tool_result_size_bytes: None,
-                file_path: None,
-                parameters: None,
-                tool_use_id: None,
-                tool_output: None,
-                error_message: None,
-            })
-            .outcome,
+            product_outcome(ToolOutcome::Success, &failed_projection.source),
             ToolOutcome::Error
         );
         let (empty_projection, empty_success) = projected(
@@ -690,20 +832,7 @@ mod tests {
         assert!(empty_success);
         assert_eq!(empty_projection.source.status, ToolSourceStatus::Empty);
         assert_eq!(
-            completed_event(CompletedTool {
-                tool_name: "grep",
-                projection: &empty_projection,
-                outcome: ToolOutcome::Success,
-                hook_rewrote: false,
-                duration_ms: 1,
-                tool_result_size_bytes: None,
-                file_path: None,
-                parameters: None,
-                tool_use_id: None,
-                tool_output: None,
-                error_message: None,
-            })
-            .outcome,
+            product_outcome(ToolOutcome::Success, &empty_projection.source),
             ToolOutcome::Success
         );
     }

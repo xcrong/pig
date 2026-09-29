@@ -1017,9 +1017,6 @@ impl StorageClient {
             builder = builder.header("x-grok-client-mode", mode);
         }
 
-        for (name, value) in xai_grok_otel::trace_context_headers().iter() {
-            builder = builder.header(name.clone(), value.clone());
-        }
         builder
     }
 
@@ -1814,9 +1811,6 @@ async fn upload_part_streaming(
             .header("Content-Type", "application/octet-stream")
             .header("x-grok-client-version", xai_grok_version::VERSION)
             .header("Content-Length", length.to_string());
-        for (name, value) in xai_grok_otel::trace_context_headers().iter() {
-            request = request.header(name.clone(), value.clone());
-        }
 
         match request.body(body).send().await {
             Ok(response) => {

@@ -223,7 +223,6 @@ impl MvpAgent {
         self.session_registry.remove_retired_root(id);
         self.session_registry.release(id);
         self.end_local_workspace_session(id, WorkspaceBindingOwner::Session);
-        self.log_resource_usage(xai_grok_telemetry::events::ResourceReportTrigger::SessionClose);
     }
     /// Release the workspace binding an install took; a resumed session re-binds at install.
     /// A successor install may have re-bound the id since, so an install's release is the

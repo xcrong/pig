@@ -89,16 +89,6 @@ pub async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
         "oidc try_refresh_pure enter"
     );
     if !has_rt || !has_issuer || !has_client_id {
-        xai_grok_telemetry::unified_log::warn(
-            "oidc try_refresh skipped: missing fields",
-            None,
-            Some(serde_json::json!({
-                "has_refresh_token": has_rt,
-                "has_issuer": has_issuer,
-                "has_client_id": has_client_id,
-                "auth_mode": format!("{:?}", auth.auth_mode),
-            })),
-        );
     }
     let Some(refresh_tok) = auth.refresh_token.as_ref() else {
         return OidcRefreshResult::Failed {
@@ -116,11 +106,6 @@ pub async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
         };
     };
 
-    xai_grok_telemetry::unified_log::info(
-        "oidc try_refresh_pure enter",
-        None,
-        Some(serde_json::json!({ "issuer": issuer, "client_id": client_id })),
-    );
 
     // A large mono/wall divergence around the IdP call means the process was suspended mid-refresh
     // That is the condition that can revoke the refresh token (response lost across sleep). See [`SuspendProbe`].
@@ -140,18 +125,6 @@ pub async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
         Err(e) => {
             let network_unreachable = is_network_unreachable(&e);
             let (mono_ms, wall_ms, suspended_ms, suspected_suspend) = timing();
-            xai_grok_telemetry::unified_log::error(
-                "oidc try_refresh_pure discovery failed",
-                None,
-                Some(serde_json::json!({
-                    "error": format!("{e:#}"),
-                    "network_unreachable": network_unreachable,
-                    "mono_ms": mono_ms,
-                    "wall_ms": wall_ms,
-                    "suspended_ms": suspended_ms,
-                    "suspected_suspend": suspected_suspend,
-                })),
-            );
             if suspected_suspend {
                 emit_suspend_spanned("discovery_failed", suspended_ms);
             }
@@ -179,23 +152,6 @@ pub async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
             {
                 let (mono_ms, wall_ms, suspended_ms, suspected_suspend) = timing();
                 let cred_age_secs = auth.mint_age_seconds();
-                xai_grok_telemetry::unified_log::error(
-                    "oidc try_refresh_pure terminal error",
-                    None,
-                    Some(serde_json::json!({
-                        "error_code": error_code,
-                        "client_id": client_id,
-                        "tried_rt_prefix": auth.refresh_token.as_deref().map(xai_grok_auth::bearer_suffix),
-                        "error_description": serde_json::from_str::<serde_json::Value>(body)
-                            .ok()
-                            .and_then(|v| v.get("error_description").cloned()),
-                        "mono_ms": mono_ms,
-                        "wall_ms": wall_ms,
-                        "suspended_ms": suspended_ms,
-                        "suspected_suspend": suspected_suspend,
-                        "cred_age_secs": cred_age_secs,
-                    })),
-                );
                 if suspected_suspend {
                     emit_suspend_spanned(&error_code, suspended_ms);
                 }
@@ -207,20 +163,6 @@ pub async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
             });
             let network_unreachable = is_network_unreachable(&e);
             let (mono_ms, wall_ms, suspended_ms, suspected_suspend) = timing();
-            xai_grok_telemetry::unified_log::error(
-                "oidc try_refresh_pure token exchange failed",
-                None,
-                Some(serde_json::json!({
-                    "error": e.to_string(),
-                    "client_id": client_id,
-                    "http_status": http_status,
-                    "network_unreachable": network_unreachable,
-                    "mono_ms": mono_ms,
-                    "wall_ms": wall_ms,
-                    "suspended_ms": suspended_ms,
-                    "suspected_suspend": suspected_suspend,
-                })),
-            );
             tracing::warn!(
                 error = %e,
                 http_status = ?http_status,
@@ -269,17 +211,6 @@ pub async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
         "oidc try_refresh_pure token obtained"
     );
     let (mono_ms, wall_ms, suspended_ms, suspected_suspend) = timing();
-    xai_grok_telemetry::unified_log::info(
-        "oidc try_refresh_pure succeeded",
-        None,
-        Some(serde_json::json!({
-            "expires_at": new_auth.expires_at.map(|e| e.to_rfc3339()),
-            "mono_ms": mono_ms,
-            "wall_ms": wall_ms,
-            "suspended_ms": suspended_ms,
-            "suspected_suspend": suspected_suspend,
-        })),
-    );
     if suspected_suspend {
         emit_suspend_spanned("ok", suspended_ms);
     }
@@ -289,12 +220,4 @@ pub async fn oidc_token_exchange(auth: &GrokAuth) -> OidcRefreshResult {
 /// Alertable event: an OIDC refresh's network call spanned a suspend (wall clock ran far ahead of the monotonic clock).
 /// That is the precondition for a refresh-token revocation caused by a lost response.
 fn emit_suspend_spanned(outcome: &str, suspended_ms: u64) {
-    xai_grok_telemetry::unified_log::warn(
-        "auth.refresh.suspend_spanned",
-        None,
-        Some(serde_json::json!({
-            "outcome": outcome,
-            "suspended_ms": suspended_ms,
-        })),
-    );
 }

@@ -170,11 +170,6 @@ impl MvpAgent {
                 if self.is_session_based_auth() {
                     let auth = self.auth_manager.expired_auth();
                     if auth.is_some() {
-                        xai_grok_telemetry::unified_log::info(
-                            "auth buffered token fallback",
-                            None,
-                            None,
-                        );
                     }
                     auth
                 } else {
@@ -600,44 +595,6 @@ impl MvpAgent {
         let deployment_key = cfg.endpoints.deployment_key.clone();
         Some((base_url, user_token, alpha_test_key, deployment_key))
     }
-    pub(super) fn ensure_telemetry_client(&self) {
-        xai_grok_login::credential_provider::sync_external_otel_identity();
-        let cfg = self.cfg.borrow();
-        let mode = cfg.resolve_telemetry_mode().value;
-        if !mode.is_disabled() {
-            let Some(auth) = self
-                .auth_manager
-                .current()
-                .filter(|a| {
-                    a.is_xai_auth() || a.auth_mode == xai_grok_login::AuthMode::ApiKey
-                }) else {
-                return;
-            };
-            let subscription_tier = resolve_subscription_tier_for_telemetry(
-                cfg
-                    .remote_settings
-                    .as_ref()
-                    .and_then(|rs| rs.subscription_tier_display.clone()),
-                Some(&auth),
-            );
-            let (user_id, team_id) = if auth.is_xai_auth() {
-                (Some(auth.user_id), auth.team_id)
-            } else {
-                (None, auth.team_id)
-            };
-            xai_grok_telemetry::client::init_if_needed(
-                cfg.telemetry.clone(),
-                mode,
-                user_id,
-                team_id,
-                cfg.endpoints.deployment_key.clone(),
-                self.origin_client_info_from_meta(None),
-                xai_grok_version::VERSION.to_owned(),
-                subscription_tier,
-                crate::http::shared_client(),
-            );
-        }
-    }
     pub(crate) fn feedback_client(&self) -> Option<FeedbackClient> {
         let (base_url, user_token, alpha_test_key, deployment_key) = self
             .feedback_credentials()?;
@@ -716,22 +673,6 @@ impl MvpAgent {
     /// Delegates to [`AuthManager::is_data_collection_disabled`].
     pub(crate) fn is_data_collection_disabled(&self) -> bool {
         self.auth_manager.is_data_collection_disabled()
-    }
-    /// Telemetry enabled and not ZDR. Same gate as session `telemetry_enabled`.
-    pub(crate) fn product_analytics_enabled(&self) -> bool {
-        self.cfg
-            .borrow()
-            .product_analytics_enabled(self.auth_manager.current_or_expired().as_ref())
-    }
-    /// Re-sync the `Send` mirror of `cfg.is_trace_upload_enabled()` that the per-session collection gates read.
-    /// `cfg` is `!Send`; the gates run on the tokio pool.
-    /// Must be called after any mid-session config change that can flip the switch, i.e. every `remote_settings` rewrite.
-    pub(super) fn sync_collection_config_gate(&self) {
-        self.trace_upload_live
-            .store(
-                self.cfg.borrow().is_trace_upload_enabled(),
-                std::sync::atomic::Ordering::Relaxed,
-            );
     }
     /// Current client type as set by the most recent `initialize()` call.
     pub(crate) fn client_type(&self) -> ClientType {
@@ -1462,15 +1403,6 @@ impl MvpAgent {
                 _ => auth_method::PREFERRED_OIDC_UNAVAILABLE,
             };
             tracing::info!(%msg, "cached_token unavailable; preferred_method forbids fallthrough");
-            xai_grok_telemetry::unified_log::warn(
-                "auth cached_token fallthrough blocked by preferred_method",
-                None,
-                Some(
-                    serde_json::json!({
-                    "preferred_method": preferred.map(|p| format!("{p:?}")),
-                }),
-                ),
-            );
             return Err(acp::Error::auth_required().data(msg));
         };
         let meta = if method_id.0.as_ref() == auth_method::GROK_COM_METHOD_ID {
@@ -1479,11 +1411,6 @@ impl MvpAgent {
             arguments.meta
         };
         tracing::info!(fallback = %method_id.0, "cached_token fallthrough");
-        xai_grok_telemetry::unified_log::warn(
-            "auth cached_token fallthrough",
-            None,
-            Some(serde_json::json!({ "fallback": method_id.0.as_ref() })),
-        );
         acp::Agent::authenticate(
                 self,
                 acp::AuthenticateRequest::new(method_id).meta(meta),
@@ -1528,7 +1455,6 @@ impl MvpAgent {
                 self.models_manager.apply_config(cfg_snapshot);
             }
         }
-        self.sync_collection_config_gate();
         self.emit_settings_update_notification();
         self.emit_announcements(AnnouncementsPushMode::IfChanged);
         self.reconfigure_heap_profile_monitor();
@@ -1603,26 +1529,24 @@ impl MvpAgent {
         );
         crate::agent::remote_config::settings_get::fetch_settings_live(query).await
     }
-    /// Fetch remote settings for `auth` and drive the external-OTEL gate from the outcome. Re-closes the gate first only on an account switch, then hands the outcome to [`OtelGate::resolve`].
-    /// That returns the settings only on a successful fetch for the still-live identity. Both post-auth callers funnel through here. [`OtelGate::resolve`]: crate::agent::otel_gate::OtelGate::resolve
-    pub(super) async fn fetch_settings_resolving_gate(
+    /// Fetch remote settings for `auth`, returning them only when they were
+    /// fetched for the still-live identity. Both post-auth callers funnel through here.
+    pub(super) async fn fetch_settings_for_live_identity(
         &self,
         auth: &xai_grok_login::GrokAuth,
     ) -> Option<crate::util::config::RemoteSettings> {
         let identity = auth.user_id.clone();
-        let channel = {
-            let proxy_url = self.cfg.borrow().endpoints.proxy_url();
-            crate::agent::otel_gate::policy_channel_for(&proxy_url)
-        };
-        self.otel_gate.rearm_on_switch(&identity, channel);
         let outcome = self
             .settings_refresh
             .refresh(auth, || self.fetch_settings_self_healing_401(auth))
             .await;
         let live = self.auth_manager.current_or_expired().map(|a| a.user_id);
+        if live.as_deref() != Some(identity.as_str()) {
+            return None;
+        }
         match outcome {
-            Some(outcome) => self.otel_gate.resolve(&identity, outcome, live.as_deref()),
-            None => None,
+            Some(crate::remote::SettingsFetch::Fetched(settings)) => Some(*settings),
+            _ => None,
         }
     }
     /// Fetch settings; on a `401` try one self-healing [`AuthManager::auth`] refresh and re-fetch if it yields a *different* token. This recovers a 401 from a token that expired mid-fetch.
@@ -1672,18 +1596,15 @@ impl MvpAgent {
         self.store_remote_settings(settings);
         self.on_remote_settings_changed();
     }
-    /// Re-fetch remote settings, re-init the telemetry client, apply side effects, and push `x.ai/settings/update` to clients. Called from both auth handlers (first install and reauth/account switch).
+    /// Re-fetch remote settings, apply side effects, and push `x.ai/settings/update` to clients. Called from both auth handlers (first install and reauth/account switch).
     /// Agent-level fields resolved at startup (`worktree_type`, `restore_code`) are NOT re-resolved here. That requires a broader refactor of the init path.
     pub(super) async fn refresh_remote_settings(&self, auth: &xai_grok_login::GrokAuth) {
         if !crate::util::config::resolve_remote_fetch_enabled() {
             tracing::debug!("post-auth settings refresh skipped: remote_fetch disabled");
             return;
         }
-        let is_xai = auth.is_xai_auth();
-        let user_id = auth.user_id.clone();
-        let team_id = auth.team_id.clone();
         let remote_was_absent = self.cfg.borrow().remote_settings.is_none();
-        let Some(settings) = self.fetch_settings_resolving_gate(auth).await else {
+        let Some(settings) = self.fetch_settings_for_live_identity(auth).await else {
             if remote_was_absent {
                 self.run_deferred_remote_work();
             }
@@ -1691,58 +1612,12 @@ impl MvpAgent {
         };
         tracing::info!("post-auth settings refreshed");
         self.store_remote_settings(settings);
-        let (
-            telemetry_config,
-            telemetry_mode,
-            grok_user_id,
-            grok_team_id,
-            deployment_key,
-            subscription_tier,
-        ) = {
+        {
             let cfg = self.cfg.borrow();
             crate::util::config::cache_remote_mcp_startup_timeout_secs(
                 cfg.remote_settings.as_ref().and_then(|s| s.mcp_startup_timeout_secs),
             );
-            let telemetry_mode = cfg.resolve_telemetry_mode();
-            let trace_upload = cfg.resolve_trace_upload();
-            tracing::info!(
-                telemetry = %telemetry_mode,
-                trace_upload = %trace_upload,
-                "post-auth data capture config re-resolved",
-            );
-            let grok_user_id = is_xai.then(|| user_id.clone());
-            let grok_team_id = is_xai.then(|| team_id.clone()).flatten();
-            let telemetry_config = cfg.telemetry.clone();
-            let deployment_key = cfg.endpoints.deployment_key.clone();
-            let subscription_tier_display = cfg
-                .remote_settings
-                .as_ref()
-                .and_then(|rs| rs.subscription_tier_display.clone());
-            (
-                telemetry_config,
-                telemetry_mode.value,
-                grok_user_id,
-                grok_team_id,
-                deployment_key,
-                subscription_tier_display,
-            )
-        };
-        let subscription_tier = resolve_subscription_tier_for_telemetry(
-            subscription_tier,
-            self.auth_manager.current_or_expired().as_ref(),
-        );
-        xai_grok_telemetry::client::init(
-            telemetry_config,
-            telemetry_mode,
-            grok_user_id,
-            grok_team_id,
-            deployment_key,
-            self.origin_client_info_from_meta(None),
-            xai_grok_version::VERSION.to_owned(),
-            subscription_tier,
-            crate::http::shared_client(),
-        );
-        xai_grok_login::credential_provider::sync_external_otel_identity();
+        }
         self.on_remote_settings_changed();
         if remote_was_absent {
             self.run_deferred_remote_work();
@@ -1765,7 +1640,6 @@ impl MvpAgent {
                 toml::Value::Table(toml::map::Map::new())
             });
         self.re_resolve_runtime_fields_and_sync_memory(&raw_config);
-        self.sync_collection_config_gate();
         self.emit_settings_update_notification();
         self.emit_announcements(AnnouncementsPushMode::Force);
         self.reconfigure_heap_profile_monitor();
@@ -2087,11 +1961,6 @@ impl MvpAgent {
                 model = model.info().model.as_str(),
                 "auth: overriding auth_type to SessionToken (session-based auth method)",
             );
-            xai_grok_telemetry::unified_log::info(
-                "auth auth_type override to SessionToken",
-                None,
-                Some(serde_json::json!({ "model": model.info().model.as_str() })),
-            );
             credentials.auth_type = xai_chat_state::AuthType::SessionToken;
         }
         if should_warn_missing_session(MissingSessionCtx {
@@ -2105,17 +1974,6 @@ impl MvpAgent {
                 is_expired = self.auth_manager.is_expired(),
                 auth_type = ?credentials.auth_type,
                 "auth: prepare_sampling_config has no session key",
-            );
-            xai_grok_telemetry::unified_log::warn(
-                "auth: prepare_sampling_config has no session key",
-                None,
-                Some(
-                    serde_json::json!({
-                    "model": model.info().model.as_str(),
-                    "is_expired": self.auth_manager.is_expired(),
-                    "auth_type": format!("{:?}", credentials.auth_type),
-                }),
-                ),
             );
         }
         let cfg = self.cfg.borrow();
@@ -2351,12 +2209,8 @@ impl MvpAgent {
             allow_access_resolved_for: std::cell::RefCell::new(None),
             official_marketplace_register: std::cell::RefCell::new(None),
             storage_mode: std::cell::Cell::new(storage_mode),
-            otel_gate: crate::agent::otel_gate::OtelGate::default(),
             default_yolo_mode,
             default_auto_mode,
-            trace_upload_live: Arc::new(
-                std::sync::atomic::AtomicBool::new(cfg.is_trace_upload_enabled()),
-            ),
             feedback_trace_upload_grants: RefCell::new(VecDeque::new()),
             memory_config: RefCell::new(None),
             config_watcher_path_tx: None,
@@ -2433,14 +2287,7 @@ impl MvpAgent {
             .auth_manager
             .configure_refresher(
                 instance.cfg.borrow().grok_com_config.auth_provider_command.clone(),
-                instance.diagnostic_upload_config(),
             );
-        xai_grok_login::credential_provider::wire_otel_auth_manager(
-            instance.auth_manager.clone(),
-        );
-        if let Some(ref dk) = instance.cfg.borrow().endpoints.deployment_key {
-            xai_grok_login::credential_provider::wire_otel_deployment_key(dk.clone());
-        }
         instance
     }
     /// Client disconnect: keep working sessions resident, idle-unload the rest (never destroy).
@@ -3031,19 +2878,12 @@ impl MvpAgent {
     ) -> Option<std::sync::Arc<xai_grok_agent::plugins::PluginRegistry>> {
         self.plugin_registry_handle.snapshot()
     }
-    /// Returns an upload method, or `None` when trace uploads are disabled.
+    /// Returns an upload method, or `None` when data collection is disabled
+    /// or no upload method resolves.
     pub(crate) async fn trace_upload_config(
         &self,
     ) -> Option<crate::session::repo_changes::UploadMethod> {
-        let (method, _reason) = self.trace_upload_config_with_reason().await;
-        method
-    }
-    pub(super) fn trace_upload_config_snapshot(
-        &self,
-    ) -> Option<crate::session::repo_changes::UploadMethod> {
-        if self.is_data_collection_disabled()
-            || !self.cfg.borrow().is_trace_upload_enabled()
-        {
+        if self.is_data_collection_disabled() {
             return None;
         }
         let cfg = self.cfg.borrow();
@@ -3055,67 +2895,21 @@ impl MvpAgent {
         } else {
             None
         };
-        cfg.endpoints.resolve_upload_method(auth_token)
-    }
-    pub(super) fn diagnostic_upload_config(
-        &self,
-    ) -> Option<xai_grok_login::DiagnosticUploader> {
-        self.sync_collection_config_gate();
-        let cfg = self.cfg.borrow();
-        if !cfg.is_trace_upload_enabled() {
-            return None;
+        if auth_token.is_some() || cfg.endpoints.deployment_key.is_some() {
+            return Some(
+                crate::session::repo_changes::UploadMethod::Proxy {
+                    proxy_base_url: cfg.endpoints.proxy_url(),
+                    user_token: auth_token.unwrap_or_default(),
+                    deployment_key: cfg.endpoints.deployment_key.clone(),
+                    alpha_test_key: cfg.endpoints.alpha_test_key.clone(),
+                },
+            );
         }
-        let proxy_base_url = cfg.endpoints.resolve_trace_upload_url();
-        let deployment_key = cfg.endpoints.deployment_key.clone();
-        let alpha_test_key = cfg.endpoints.alpha_test_key.clone();
-        let auth_manager = self.auth_manager.clone();
-        let trace_upload_live = self.trace_upload_live.clone();
-        Some(
-            std::sync::Arc::new(move |
-                log_bytes: Vec<u8>,
-                auth_token: String,
-                user_id: String|
-            {
-                let proxy_base_url = proxy_base_url.clone();
-                let deployment_key = deployment_key.clone();
-                let alpha_test_key = alpha_test_key.clone();
-                let auth_manager = auth_manager.clone();
-                let trace_upload_live = trace_upload_live.clone();
-                Box::pin(async move {
-                    if !auth_manager.allows_data_collection()
-                        || !trace_upload_live.load(std::sync::atomic::Ordering::Relaxed)
-                    {
-                        tracing::debug!(
-                            "skipping auth-diagnostics upload: data collection disabled"
-                        );
-                        return;
-                    }
-                    let upload_method = crate::session::repo_changes::UploadMethod::Proxy {
-                        proxy_base_url,
-                        user_token: auth_token,
-                        deployment_key,
-                        alpha_test_key,
-                    };
-                    crate::upload::gcs::upload_to_auth_diagnostics(
-                            &log_bytes,
-                            &user_id,
-                            &upload_method,
-                            auth_manager,
-                        )
-                        .await;
-                })
-            }),
-        )
-    }
-    /// Like `trace_upload_config`, but also returns the reason why uploads are enabled or disabled for structured session events.
-    /// Pig Agent ships no first-party trace pipeline: always `(None, disabled)`.
-    async fn trace_upload_config_with_reason(
-        &self,
-    ) -> (
-        Option<crate::session::repo_changes::UploadMethod>,
-        &'static str,
-    ) {
-        (None, "disabled_no_first_party_pipeline")
+        crate::util::config::load_gcs_service_account_key_sync().map(|service_account_key| {
+            crate::session::repo_changes::UploadMethod::Direct {
+                service_account_key: Some(service_account_key),
+            }
+        })
     }
     /// Resolve client version: prefer the value from the initialize request _meta.
     /// Fall back to the agent's own version (VERSION_WITH_COMMIT set by the TUI launcher).
@@ -3337,11 +3131,6 @@ impl MvpAgent {
             if let Some(auth) = self.auth_manager.current_or_expired() {
                 sampling_config.api_key = Some(auth.key);
                 tracing::debug!("auth: seed_client_config set auth (SessionToken)");
-                xai_grok_telemetry::unified_log::debug(
-                    "auth: seed_client_config set auth (SessionToken)",
-                    None,
-                    None,
-                );
             } else if !self
                 .models_manager
                 .models()
@@ -3349,11 +3138,6 @@ impl MvpAgent {
                 .any(|m| m.has_own_credentials())
             {
                 tracing::warn!("No credentials found: no login token and no model api_key/env_key");
-                xai_grok_telemetry::unified_log::warn(
-                    "No credentials found: no login token and no model api_key/env_key",
-                    None,
-                    None,
-                );
             }
         }
     }
@@ -3366,11 +3150,10 @@ impl MvpAgent {
     ) -> Option<crate::session::repo_changes::TraceExportConfig> {
         let upload_method = self.trace_upload_config().await?;
         let bucket_url = {
-            let cfg = self.cfg.borrow();
             match &upload_method {
                 crate::session::repo_changes::UploadMethod::Direct { .. } => {
-                    match cfg.endpoints.resolve_trace_bucket_url() {
-                        Some(resolved) => Some(resolved.value),
+                    match crate::upload::gcs::SESSION_TRACES_BUCKET {
+                        Some(bucket) => Some(format!("gs://{bucket}")),
                         None => {
                             tracing::debug!(
                                 "no trace bucket configured; skipping direct GCS upload"
@@ -3430,44 +3213,9 @@ impl MvpAgent {
         true
     }
     /// Whether `/feedback` may offer to turn trace upload on.
-    /// An individual coding-data opt-out still asks: the card is how opted-out users switch sharing back on.
-    /// ZDR has no self-serve way back, so it never asks.
-    pub(crate) fn feedback_trace_offer(&self) -> bool {
-        if self.auth_manager.current_or_expired().is_some_and(|a| a.is_zdr_team()) {
-            return false;
-        }
-        if self.team_blocks_one_shot_trace_upload() {
-            return false;
-        }
-        let cfg = self.cfg.borrow();
-        if !cfg.is_feature_enabled(crate::agent::config::Feature::FeedbackTraceCard) {
-            return false;
-        }
-        if !Self::trace_upload_posture_allows_offer(&cfg) {
-            return false;
-        }
-        if cfg.is_trace_upload_enabled() {
-            return false;
-        }
-        if Self::has_custom_trace_destination(&cfg) {
-            return false;
-        }
-        cfg.endpoints.deployment_key.is_none()
-            && self.auth_manager.current_or_expired().is_some_and(|a| a.is_xai_auth())
-    }
-    /// Trace upload being off as *policy* (an MDM/requirements pin or a telemetry-disabled posture) must suppress the card. It must not invite the user to override the policy.
-    /// The accepted consent persists at the config tier, which those postures cannot outrank. Trace upload being off via the remote `trace_upload_enabled` default is different: that is the card's audience.
-    /// Individual consent overriding a fleet default is the feature (its own kill switch is `feedback_trace_card_enabled`).
     /// Pig Agent ships no first-party trace pipeline, so the offer never appears.
-    fn trace_upload_posture_allows_offer(
-        _cfg: &crate::agent::config::Config,
-    ) -> bool {
+    pub(crate) fn feedback_trace_offer(&self) -> bool {
         false
-    }
-    fn has_custom_trace_destination(cfg: &crate::agent::config::Config) -> bool {
-        cfg.endpoints.trace_upload_url.is_some()
-            || cfg.endpoints.trace_upload_bucket.is_some()
-            || cfg.endpoints.trace_upload_endpoint_url.is_some()
     }
     /// Upload method for a user-consented feedback trace archive. Blocks ZDR and custom destinations. Deliberately ignores the live `trace_upload` flag and the cached coding-data opt-out.
     /// The consent just granted may not have reached either cache yet. Fails closed on unknown privacy state.
@@ -3608,23 +3356,13 @@ impl MvpAgent {
         turn_number: u64,
     ) -> Option<PromptTraceContext> {
         // No first-party trace pipeline: record the decision locally and stop.
-        let mut decision = self.cfg.borrow().trace_upload_decision_debug();
-        if let Some(obj) = decision.as_object_mut() {
-            obj.insert("uploads_enabled".into(), serde_json::json!(false));
-            obj.insert(
-                "upload_reason".into(),
-                serde_json::json!("disabled_no_first_party_pipeline"),
-            );
-            obj.insert(
-                "data_collection_disabled".into(),
-                serde_json::json!(self.is_data_collection_disabled()),
-            );
-            obj.insert("turn_number".into(), serde_json::json!(turn_number));
-        }
-        xai_grok_telemetry::unified_log::info(
+        tracing::debug!(
+            session_id = %session_info.id.0,
+            turn_number,
+            uploads_enabled = false,
+            upload_reason = "disabled_no_first_party_pipeline",
+            data_collection_disabled = self.is_data_collection_disabled(),
             "trace.upload.decision",
-            Some(session_info.id.0.as_ref()),
-            Some(decision),
         );
         None
     }
@@ -3676,7 +3414,7 @@ impl MvpAgent {
                         path.display(),
                         e
                     );
-                    crate::instrumentation::finalize_and_exit(1);
+                    std::process::exit(1);
                 }
             }
         }
@@ -3863,7 +3601,6 @@ impl MvpAgent {
         &self,
         init: &acp::InitializeRequest,
         spec: SessionSpawnOptions<'_>,
-        spawn_trace: Option<xai_grok_telemetry::startup::SpawnTraceContext>,
     ) -> Result<bool, acp::Error> {
         let SessionSpawnOptions {
             session_info,
@@ -3900,7 +3637,6 @@ impl MvpAgent {
             is_chat_kind,
             prefetch,
         } = spec;
-        let _timer = crate::instrumentation_timer!("session.spawn_and_register");
         reject_direct_hub_cloud_meta(session_meta)?;
         let spawn_remote_settings = self.cfg.borrow().remote_settings.clone();
         let mut prefetch = match prefetch {
@@ -4057,7 +3793,7 @@ impl MvpAgent {
                 let loc_writer = xai_hunk_tracker::JsonlHunkRecordWriter::new(loc_path);
                 let loc_ctx = xai_hunk_tracker::LocSinkContext {
                     session_id: session_info.id.0.to_string(),
-                    agent_id: agent_id(),
+                    agent_id: crate::remote::client::ephemeral_agent_id(),
                     user_id: self.auth_manager.current().map(|a| a.user_id.clone()),
                     aggregate_tx: Some(loc_agg_tx),
                 };
@@ -4073,13 +3809,11 @@ impl MvpAgent {
             }
             _ => None,
         };
-        let session_env_timer = crate::instrumentation_timer!("session.spawn_and_register.session_env");
         let mut session_env = xai_grok_workspace::permission::claude_settings::load_claude_env_with_project(
             cwd.as_path(),
             project_env_trusted,
         );
         session_env.extend(envrc.join().await);
-        drop(session_env_timer);
         if no_color {
             session_env.extend(crate::terminal::no_color_env());
         } else {
@@ -4129,7 +3863,6 @@ impl MvpAgent {
             .borrow()
             .is_feature_enabled(crate::agent::config::Feature::AutoWake);
         let support_permission = self.cfg.borrow().features.support_permission;
-        let telemetry_enabled = self.product_analytics_enabled();
         let origin_client = self.origin_client_info_from_meta(init.meta.as_ref());
         let sampling_config = self
             .resolve_sampling_config_for_model(&session_model_id, origin_client.clone());
@@ -4479,7 +4212,6 @@ impl MvpAgent {
             }
         }
         let (init, session_thread) = {
-            let _timer = crate::instrumentation_timer!("session.spawn_actor_call");
             let session_key = self.auth_manager.current_or_expired().map(|a| a.key);
             let credentials = xai_chat_state::Credentials {
                 api_key: sampling_config.api_key.clone(),
@@ -4522,12 +4254,10 @@ impl MvpAgent {
                     let cwd = std::path::Path::new(&session_info.cwd);
                     let hooks_trusted = project_env_trusted;
                     let git_root = {
-                        let _timer = crate::instrumentation_timer!("session.spawn_git_root");
                         xai_grok_workspace::session::git::find_git_root_from_path(cwd)
                             .ok()
                     };
                     let (disk_registry, disk_errors) = {
-                        let _timer = crate::instrumentation_timer!("session.spawn_hook_discovery");
                         crate::util::hooks::discover_hooks(
                             git_root.as_deref(),
                             &compat,
@@ -4580,7 +4310,6 @@ impl MvpAgent {
             tool_ctx.live_orphan_heal_lock = self
                 .session_registry
                 .live_orphan_heal_lock(&session_info.id);
-            let _spawn_on_thread_timer = crate::instrumentation_timer!("session.spawn_on_thread");
             spawn_session_on_thread(
                     session_info.clone(),
                     self.gateway.clone(),
@@ -4596,7 +4325,6 @@ impl MvpAgent {
                     None,
                     acp_mcp_servers,
                     support_permission,
-                    telemetry_enabled,
                     auto_update,
                     persistence,
                     chat_history.clone(),
@@ -4677,7 +4405,6 @@ impl MvpAgent {
                     Some(self.plugin_registry_handle.clone()),
                     self.models_manager.clone(),
                     None,
-                    None,
                     Some(
                         Arc::new(
                             xai_grok_login::SharedAuthKeyProvider(
@@ -4707,8 +4434,6 @@ impl MvpAgent {
                     },
                     is_chat_kind,
                     None,
-                    None,
-                    spawn_trace,
                 )
                 .await?
         };
@@ -4726,7 +4451,6 @@ impl MvpAgent {
         self.heap_profile_set_session_id(&session_info.id.0);
         self.push_roster_delta_upserted(&session_info.id);
         if chat_history.is_empty() {
-            let _timer = crate::instrumentation_timer!("session.system_prompt_inject");
             let system_prompt = build_spawn_system_prompt(
                 session_meta,
                 init_meta,

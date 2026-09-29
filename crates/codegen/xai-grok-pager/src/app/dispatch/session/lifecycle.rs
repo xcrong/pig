@@ -1720,15 +1720,6 @@ fn report_session_create_failed(
             )
         })
         .unwrap_or_default();
-    xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SessionCreateFailed {
-        outcome: if timed_out {
-            xai_grok_telemetry::startup::StartupOutcome::Timeout
-        } else {
-            xai_grok_telemetry::startup::StartupOutcome::Error
-        },
-        stuck_phase: phase.map(|p| <&'static str>::from(&p).to_owned()),
-        elapsed_ms,
-    });
     phase.and_then(|p| p.get_message())
 }
 /// Failed plain `CreateSession`: drop orphan placeholders, clear the starting-session spinner, and report the error.

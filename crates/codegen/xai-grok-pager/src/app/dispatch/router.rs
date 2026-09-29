@@ -121,7 +121,6 @@ use crate::app::app_view::{ActiveView, AppView, AuthState};
 use crate::app::consent::ConsentState;
 use crate::scrollback::types::DisplayMode;
 use crate::views::session_picker::CONTENT_EXPAND_OFFSET;
-use xai_grok_telemetry::session_ctx::log_event;
 pub(super) fn dispatch_copy_auth_url(
     app: &mut AppView,
     copy: impl FnOnce(&str) -> crate::clipboard::ClipboardDelivery,
@@ -1039,10 +1038,6 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
             ) {
                 let url = url.to_owned();
                 let promo_id = promo.id.clone();
-                log_event(xai_grok_telemetry::events::AnnouncementCtaClicked {
-                    id: promo_id,
-                    source: surface,
-                });
                 open_url_or_show(app, &url);
             }
             vec![]

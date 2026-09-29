@@ -818,7 +818,6 @@ impl SessionActor {
         let session_cwd = std::path::Path::new(&self.session_info.cwd);
 
         let sid = self.session_info.id.0.as_ref();
-        xai_grok_telemetry::unified_log::info("reload_plugins_impl: start", Some(sid), None);
 
         // Folder-trust gates repo-local project plugins (hooks/MCP).
         // Resolve and record the verdict for this cwd before the plugins-config read below, whose project-paths merge reads the gate.
@@ -837,16 +836,6 @@ impl SessionActor {
         let count = handle.reload(Some(session_cwd), &discovery_config, project_trusted, force);
         let discover_ms = t2.elapsed().as_millis();
 
-        xai_grok_telemetry::unified_log::info(
-            "reload_plugins_impl: discovery done",
-            Some(sid),
-            Some(serde_json::json!({
-                "config_read_ms": config_read_ms as u64,
-                "discover_ms": discover_ms as u64,
-                "total_ms": t0.elapsed().as_millis() as u64,
-                "plugin_count": count,
-            })),
-        );
 
         // Adopt plugin hooks, MCP, and plugin-contributed skills into this session.
         // Sessions with `_meta.pluginDirs` rebuild their own view instead; the shared snapshot never carries them
@@ -977,14 +966,6 @@ impl SessionActor {
             }
         }
 
-        xai_grok_telemetry::unified_log::info(
-            "reload_plugins_impl: hooks done",
-            Some(sid),
-            Some(serde_json::json!({
-                "hooks_reload_ms": t_hooks.elapsed().as_millis() as u64,
-                "hooks_reloaded": hooks_reloaded,
-            })),
-        );
 
         // Always re-merge plugin-contributed MCP servers and apply them via an order-insensitive diff.
         // Unchanged servers stay connected; only added, changed, or removed ones are re-initialized.
@@ -1015,14 +996,6 @@ impl SessionActor {
             false
         };
 
-        xai_grok_telemetry::unified_log::info(
-            "reload_plugins_impl: MCP done",
-            Some(sid),
-            Some(serde_json::json!({
-                "mcp_merge_ms": t_mcp.elapsed().as_millis() as u64,
-                "mcp_changed": mcp_changed,
-            })),
-        );
 
         let t_skills = std::time::Instant::now();
         let bridge = self.agent.borrow().tool_bridge().clone();
@@ -1043,14 +1016,6 @@ impl SessionActor {
                     .await
             }
         }
-        xai_grok_telemetry::unified_log::info(
-            "reload_plugins_impl: skills done",
-            Some(sid),
-            Some(serde_json::json!({
-                "skills_ms": t_skills.elapsed().as_millis() as u64,
-                "skill_count": skill_count,
-            })),
-        );
 
         // Notify pager about registry changes so the modal auto-refreshes.
         // Extract all RefCell borrows into locals before the .await so no Ref guard is alive across the suspension point
@@ -1088,16 +1053,6 @@ impl SessionActor {
                 .await;
         }
 
-        xai_grok_telemetry::unified_log::info(
-            "apply_plugin_registry_snapshot: complete",
-            Some(sid),
-            Some(serde_json::json!({
-                "notify_ms": t_notify.elapsed().as_millis() as u64,
-                "hooks_reloaded": hooks_reloaded,
-                "mcp_changed": mcp_changed,
-                "skill_count": skill_count,
-            })),
-        );
 
         (hooks_reloaded, mcp_changed, skill_count)
     }

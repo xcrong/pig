@@ -7,8 +7,6 @@ use crate::app::agent_view::AgentView;
 use crate::app::app_view::AppView;
 use crate::scrollback::block::RenderBlock;
 use std::time::Duration;
-use xai_grok_telemetry::events::{SuperGrokUpsell, SuperGrokUpsellClicked};
-use xai_grok_telemetry::session_ctx::log_event;
 
 /// How long the pager auto-checks subscription status before stopping.
 /// After this, the user can still manually check via the [Refresh] button.
@@ -129,12 +127,6 @@ pub(super) fn open_credit_limit_upsell(
     };
     let unified_billing = matches!(mode, CreditLimitUpsellMode::UnifiedCredits);
 
-    log_event(xai_grok_telemetry::events::CreditLimitUpsellShown {
-        surface: xai_grok_telemetry::events::CreditLimitUpsellSurface::QuestionModal,
-        max_tier,
-        pay_as_you_go: copy.payg_telemetry,
-        unified_billing,
-    });
 
     let mut options = Vec::new();
     let mut choices = Vec::new();
@@ -238,10 +230,6 @@ fn open_supergrok_upsell(
         ),
     };
 
-    log_event(xai_grok_telemetry::events::SuperGrokUpsellShown {
-        source,
-        auth_method,
-    });
 
     // /supergrok lists all plans; every upgrade option lands there.
     let options = vec![

@@ -123,8 +123,6 @@ pub(crate) async fn parse_prompt_with_skills(
     is_cursor: bool,
     skill_information: String,
 ) -> Result<ParsedPrompt, acp::Error> {
-    let parse_span =
-        xai_grok_telemetry::region::Region::from_span(tracing::info_span!("prompt.parse"));
     let allows_file_expansion = authority != super::InputAuthority::ModelAuthoredUntrusted;
     let mut message_parts: Vec<String> = Vec::new();
     let mut image_parts = Vec::new();
@@ -155,36 +153,15 @@ pub(crate) async fn parse_prompt_with_skills(
         Vec::new()
     };
     let mut file_ref_contents = Vec::new();
-    let mut at_mention_bytes: usize = 0;
-    let at_mention_span = (!file_ref_tokens.is_empty()).then(|| {
-        xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
-            parent: parse_span.span(),
-            "prompt.at_mention_resolve",
-            file_count = tracing::field::Empty,
-            bytes = tracing::field::Empty,
-        ))
-    });
     for token in file_ref_tokens {
         let Some(mut file_ref) = FileReference::parse(&token) else {
             continue;
         };
         file_ref.path = working_directory.join(&file_ref.path);
         let rendered_file = render_file_reference(file_ref, is_cursor).await;
-        let success = rendered_file.is_some();
-        xai_grok_telemetry::event_span!("prompt.at_mention", mention_type = "file", success);
         if let Some(rendered_file) = rendered_file {
-            at_mention_bytes += rendered_file.len();
             file_ref_contents.push(rendered_file);
         }
-    }
-    if let Some(at_mention_span) = at_mention_span {
-        at_mention_span
-            .span()
-            .record("file_count", file_ref_contents.len() as i64);
-        at_mention_span
-            .span()
-            .record("bytes", at_mention_bytes as i64);
-        at_mention_span.close();
     }
     let mut embedded_contents = Vec::new();
     for resource in &embedded_resources {

@@ -11,36 +11,6 @@ impl SessionActor {
         .await;
     }
 
-    /// Stamp ttft on the first token of any channel (reasoning, text, or tool call).
-    pub(crate) fn record_turn_first_token(&self, request_id: Option<&xai_grok_sampler::RequestId>) {
-        let Some(generation) = self.turn_generation(request_id) else {
-            return;
-        };
-        self.turn_phases.record_first_token(generation);
-    }
-
-    /// Stamp ttfm on the first assistant text; reasoning and tool calls are excluded.
-    pub(crate) fn record_turn_first_meaningful_output(
-        &self,
-        request_id: Option<&xai_grok_sampler::RequestId>,
-    ) {
-        let Some(generation) = self.turn_generation(request_id) else {
-            return;
-        };
-        self.turn_phases.record_first_meaningful_output(generation);
-    }
-
-    fn turn_generation(&self, request_id: Option<&xai_grok_sampler::RequestId>) -> Option<u64> {
-        match request_id {
-            Some(id) => self
-                .turn_stream_drained
-                .lock()
-                .get(id)
-                .map(|ownership| ownership.generation),
-            None => Some(self.turn_phases.current_generation()),
-        }
-    }
-
     fn open_stream_apply_span(&self, request_id: &xai_grok_sampler::RequestId) {
         let parent_id = self.current_turn_span_id.lock().clone();
         let span = match parent_id {
@@ -56,10 +26,9 @@ impl SessionActor {
                 bytes = tracing::field::Empty,
             ),
         };
-        let region = xai_grok_telemetry::region::Region::from_span(span);
         let prior = self.stream_apply_span.lock().replace(StreamApplySpan {
             request_id: request_id.clone(),
-            region,
+            span,
             chunk_count: 0,
             bytes: 0,
         });
@@ -194,8 +163,6 @@ impl SessionActor {
                         cap.append(false, &text);
                     }
 
-                    self.record_turn_first_token(Some(&request_id));
-                    self.record_turn_first_meaningful_output(Some(&request_id));
 
                     // The phase change is emitted alongside each text delta so the UI flips to "streaming text" the moment content starts arriving
                     // The `PhaseChanged` event itself is idempotent on the consumer side
@@ -231,7 +198,6 @@ impl SessionActor {
                     }
 
                     // Reasoning is a token (ttft) but not meaningful output (ttfm).
-                    self.record_turn_first_token(Some(&request_id));
 
                     self.emit_event(crate::session::events::Event::PhaseChanged {
                         phase: crate::session::events::Phase::StreamingReasoning,
@@ -257,7 +223,6 @@ impl SessionActor {
                 }
 
                 // A tool call is a token (ttft) but not meaningful text output (ttfm).
-                self.record_turn_first_token(Some(&request_id));
 
                 self.send_buffered_xai_update(XaiSessionUpdate::ToolCallDeltaChunk {
                     tool_call_id: id,
@@ -442,17 +407,6 @@ impl SessionActor {
                         );
                     }
                 }
-                xai_grok_telemetry::unified_log::warn(
-                    "shell.turn.inference_retry",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "sampler_request_id": request_id.as_str(),
-                        "attempt": attempt,
-                        "max_retries": max_retries,
-                        "kind": kind.as_ref(),
-                        "reason": crate::util::truncate(&reason, 300),
-                    })),
-                );
                 self.send_xai_notification(XaiSessionUpdate::RetryState(
                     crate::extensions::notification::RetryState::Retrying {
                         attempt,
@@ -473,17 +427,6 @@ impl SessionActor {
                 // This arm only records telemetry
                 // The terminal error fires through `submit_and_collect`'s Result branch
                 // The turn loop's `handle_sampling_failure` decides whether to compact or show a friendly message
-                xai_grok_telemetry::unified_log::error(
-                    "shell.turn.inference_failed",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "sampler_request_id": request_id.as_str(),
-                        "kind": error.kind.as_ref(),
-                        "status_code": error.status_code,
-                        "is_retryable": error.is_retryable,
-                        "message": crate::util::truncate(&error.message, 300),
-                    })),
-                );
                 self.signals_handle()
                     .record_error_typed(error.kind.as_ref());
                 if let Some(ref ctx) = error.empty_response_context {
@@ -517,7 +460,6 @@ impl SessionActor {
             } => {
                 self.signals_handle().record_tool_call(&name);
                 // A backend tool start is a token (ttft) but not meaningful text output (ttfm).
-                self.record_turn_first_token(Some(&request_id));
                 let (title, kind, raw_input) = backend_tool_display(&name);
                 self.send_update(
                     acp::SessionUpdate::ToolCall(

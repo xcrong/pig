@@ -1034,7 +1034,7 @@ fn minimal_will_open_session(term_state: &TerminalState, app: &AppView) -> bool 
 pub(crate) async fn run(
     terminal: &mut PagerTerminal,
     connection: crate::acp::AcpConnection,
-    pending_startup: xai_grok_telemetry::startup::PendingStartup,
+    pending_startup: crate::acp::startup::PendingStartup,
     tracing_handle: crate::tracing::TracingHandle,
     config_watcher: &mut ConfigWatcher,
     args: &PagerArgs,
@@ -1048,11 +1048,8 @@ pub(crate) async fn run(
     mut writer_event_rx: tokio::sync::mpsc::UnboundedReceiver<WriterEvent>,
     reader_thread: &mut ReaderThread,
 ) -> anyhow::Result<RunResult> {
-    crate::unified_log::init(connection.tx.clone());
     crate::unified_log::info("pager started", None, None);
-    xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::AppInit);
     let mut app = {
-        let _t = xai_grok_telemetry::instrumentation::timer("startup.app_init.app_view_new");
         AppView::new(
             connection.tx,
             connection.models,
@@ -1094,7 +1091,6 @@ pub(crate) async fn run(
         app.current_ui.permission_mode = Some("auto".into());
     }
     let launch_effective_config = {
-        let _t = xai_grok_telemetry::instrumentation::timer("startup.app_init.launch_config");
         xai_grok_shell::config::load_effective_config().ok()
     };
     let launch_effective_ui = launch_effective_config
@@ -1336,7 +1332,6 @@ pub(crate) async fn run(
     let user_config = xai_grok_shell::config::load_from_disk().ok();
     let managed_config = xai_grok_shell::config::load_managed_config().ok();
     let (config_layers, effective_config) = {
-        let _t = xai_grok_telemetry::instrumentation::timer("startup.app_init.effective_config");
         match xai_grok_shell::config::load_effective_config_with_layers() {
             Ok((layers, raw)) => (Some(layers), Some(raw)),
             Err(e) => {
@@ -1796,7 +1791,7 @@ pub(crate) async fn run(
         }
         presenter.request_presentation(&mut app, terminal, false);
     } else if args.initial_prompt().is_none() && !minimal_will_open_session(&term_state, &app) {
-        app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Ok);
+        app.finish_startup(crate::acp::startup::StartupOutcome::Ok);
     }
     if let Some(initial_prompt) = args.initial_prompt() {
         if !app.session_startup_allowed() {
@@ -1808,7 +1803,7 @@ pub(crate) async fn run(
             }
             presenter.request_presentation(&mut app, terminal, false);
         } else {
-            app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Ok);
+            app.finish_startup(crate::acp::startup::StartupOutcome::Ok);
         }
     }
     if std::env::var("GROK_OPEN_DASHBOARD_AT_STARTUP").as_deref() == Ok("1") {
@@ -1917,7 +1912,7 @@ pub(crate) async fn run(
             &mut suspend_retry_after,
             &mut suspend_wait_reports,
         ) {
-            app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+            app.finish_startup(crate::acp::startup::StartupOutcome::Error);
             flush_pending_stall(&mut stall_rollup);
             return Err(e);
         }
@@ -2141,7 +2136,7 @@ pub(crate) async fn run(
 
             writer_event = writer_event_rx.recv() => {
                 let Some(writer_event) = writer_event else {
-                    app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+                    app.finish_startup(crate::acp::startup::StartupOutcome::Error);
                     flush_pending_stall(&mut stall_rollup);
                     return Err(anyhow::anyhow!("terminal writer stopped"));
                 };
@@ -2150,14 +2145,14 @@ pub(crate) async fn run(
                 {
                     Ok(sequence) => sequence,
                     Err(e) => {
-                        app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Error);
+                        app.finish_startup(crate::acp::startup::StartupOutcome::Error);
                         flush_pending_stall(&mut stall_rollup);
                         return Err(e);
                     }
                 };
                 if presenter.acknowledge(sequence) {
-                    let first_frame = xai_grok_telemetry::startup::record_interactive_frame();
-                    if first_frame && xai_grok_telemetry::startup::exit_after_first_render() {
+                    let first_frame = crate::acp::startup::record_interactive_frame();
+                    if first_frame && crate::acp::startup::exit_after_first_render() {
                         break;
                     }
                 }
@@ -2176,11 +2171,6 @@ pub(crate) async fn run(
                         "payloads_queued": writer_progress_sync.queued(),
                         "payloads_written": writer_progress_sync.written(),
                     })),
-                );
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::events::TermWriterBlocked {
-                        blocked_ms: blocked_for.as_millis() as u64,
-                    },
                 );
             }
 
@@ -3089,9 +3079,6 @@ fn sync_appearance_watcher(watcher: &mut Option<SystemAppearanceWatcher>) {
     }
 }
 fn emit_event_loop_stall(window: super::event_loop_stall::StallWindow) {
-    xai_grok_telemetry::session_ctx::log_event(super::event_loop_stall::event_loop_stall_event(
-        window,
-    ));
 }
 fn flush_pending_stall(stall_rollup: &mut super::event_loop_stall::StallRollup) {
     if let Some(window) = stall_rollup.take() {

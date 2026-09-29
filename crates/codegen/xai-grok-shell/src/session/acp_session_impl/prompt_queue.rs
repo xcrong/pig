@@ -36,7 +36,6 @@ pub(crate) struct QueueInputRequest {
     pub(crate) persist_ack: Option<oneshot::Sender<()>>,
     pub(crate) parsed_prompt_tx: Option<oneshot::Sender<ParsedPromptInfo>>,
     pub(crate) initial_child_prompt_ready: Option<oneshot::Sender<oneshot::Sender<()>>>,
-    pub(crate) traceparent: Option<String>,
 }
 
 impl QueueInputRequest {
@@ -81,7 +80,6 @@ impl QueueInputRequest {
             persist_ack: None,
             parsed_prompt_tx: None,
             initial_child_prompt_ready: None,
-            traceparent: None,
         }
     }
 }
@@ -129,18 +127,9 @@ impl SessionActor {
             persist_ack,
             parsed_prompt_tx,
             initial_child_prompt_ready,
-            traceparent,
         } = request;
         tracing::info!("queueing prompt: {prompt_id}");
         let queue_depth = { self.state.lock().await.pending_inputs.len() };
-        xai_grok_telemetry::unified_log::info(
-            "shell.prompt.queued",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "prompt_id": prompt_id,
-                "queue_depth": queue_depth,
-            })),
-        );
 
         // Log the prompt to the per-CWD fast history file when queued, not in handle_prompt, because the prompt might be cancelled before processing
         // Extract raw text from prompt_blocks (without <user_query> tags)
@@ -305,7 +294,6 @@ impl SessionActor {
             queue_meta,
             queue_mutation_policy,
             send_now: false,
-            traceparent,
         };
 
         // Use `running_prompt_id()`, not `current_prompt_id`, which is cleared while the front is still unpopped
@@ -360,18 +348,6 @@ impl SessionActor {
             "server appended prompt to pending_inputs",
         );
         if send_now && turn_running {
-            xai_grok_telemetry::unified_log::info(
-                "shell.prompt.send_now_decision",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "prompt_id": log_prompt_id,
-                    "cancels_turn": cancel_running_turn,
-                    "blocked_in_wait": blocked_in_wait,
-                    "goal_active": goal_active,
-                    "merged_as_interjection": merge_into_goal,
-                    "front_awaiting_commit": front_awaiting_commit_now,
-                })),
-            );
         }
         if merge_into_goal || send_now {
             self.broadcast_queue_changed(&state);
@@ -851,18 +827,6 @@ impl SessionActor {
                 cancel_running_turn = cancel_decision;
                 tracing::info!(queued_id = %id, cancel_running_turn, "send-now: promoted queued prompt to run next");
             }
-            xai_grok_telemetry::unified_log::info(
-                "shell.prompt.send_now_decision",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "prompt_id": id,
-                    "from_queue_row": true,
-                    "cancels_turn": cancel_running_turn,
-                    "goal_active": goal_active,
-                    "merged_as_interjection": merge_into_goal,
-                    "front_awaiting_commit": front_awaiting_commit_now,
-                })),
-            );
         } else if let Some(new_text) = new_text
             && !new_text.trim().is_empty()
             && !running_is_row
@@ -1048,11 +1012,6 @@ impl SessionActor {
         if !self.state.lock().await.take_hook_block_hold() {
             return;
         }
-        xai_grok_telemetry::unified_log::info(
-            "shell.prompt.hook_block_hold_released",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({ "reason": reason })),
-        );
     }
 
     fn has_editable_row(state: &State, id: &str) -> bool {

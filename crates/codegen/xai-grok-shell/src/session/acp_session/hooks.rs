@@ -9,7 +9,6 @@ use serde_json::value::RawValue;
 use xai_grok_hooks::event::{
     HookEventEnvelope, HookEventName, HookPayload, MAX_HOOK_FEEDBACK_CHARS, clip_text,
 };
-use xai_grok_telemetry::events::{ClientHookGateOutcome, HookBlockCause};
 
 use super::{SessionActor, ToolLoop};
 use crate::extensions::hooks::{
@@ -25,6 +24,17 @@ const CLIENT_HOOK_TIMEOUT: Duration = Duration::from_secs(30);
 
 const CLIENT_VERIFICATION_GATE_TIMEOUT: Duration =
     Duration::from_secs(xai_grok_hooks::config::DEFAULT_VERIFICATION_GATE_TIMEOUT_SECS);
+
+/// Local outcome of a client-hook gate call, for fail-open logging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientHookGateOutcome {
+    Denied,
+    Proceeded,
+    TimedOut,
+    TransportError,
+    Malformed,
+    UnknownDecision,
+}
 
 fn default_client_gate_timeout(gate: xai_grok_hooks::event::GateKind) -> Duration {
     use xai_grok_hooks::event::GateKind;
@@ -198,10 +208,7 @@ impl SessionActor {
         self.block_tool_call(
             model_call_id,
             tool_call_id,
-            tool_name,
-            hook_name,
-            HookBlockCause::Denied,
-            &reason,
+            tool_name, hook_name, &reason,
         )
         .await
     }
@@ -225,7 +232,6 @@ impl SessionActor {
             tool_call_id,
             tool_name,
             hook_name,
-            HookBlockCause::UnusableRewrite,
             &problem.to_string(),
         )
         .await
@@ -237,13 +243,8 @@ impl SessionActor {
         tool_call_id: &acp::ToolCallId,
         tool_name: &str,
         hook_name: String,
-        cause: HookBlockCause,
         detail: &str,
     ) -> Result<ToolLoop, acp::Error> {
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::HookBlocked {
-            hook_name: hook_name.clone(),
-            cause,
-        });
         self.handle_tool_not_executed(
             model_call_id,
             tool_call_id,
@@ -293,14 +294,6 @@ impl SessionActor {
                     let (response, gate_outcome) =
                         classify(self.send_hook_run(&dispatch, timeout).await);
                     let elapsed = started.elapsed();
-                    xai_grok_telemetry::session_ctx::log_event(
-                        xai_grok_telemetry::events::ClientHookGate {
-                            callback_id: callback_id.to_string(),
-                            tool_name: tool_name.map(str::to_string),
-                            outcome: gate_outcome,
-                            duration_ms: elapsed.as_millis() as u64,
-                        },
-                    );
                     (callback_id, response, elapsed, gate_outcome)
                 }
             })

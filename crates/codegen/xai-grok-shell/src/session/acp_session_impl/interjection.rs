@@ -66,7 +66,6 @@ impl SessionActor {
             queue_mutation_policy: QueueMutationPolicy::hidden(),
             // Send-now placement (see doc): a later real send-now must not leapfrog this fallback in `queue_input`'s FIFO scan
             send_now: front,
-            traceparent: None,
         };
         let mut state = self.state.lock().await;
         if front {
@@ -271,23 +270,8 @@ impl SessionActor {
         // Those attribute the turn, which this skill did not start
         // `SkillDispatched` still carries `plugin_source`, so dispatch counts stay complete
         for sk in &parsed {
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::SlashCommandUsed {
-                    command: sk.name.clone(),
-                    args_provided: !sk.args.is_empty(),
-                },
-            );
             let skill_source =
                 crate::session::telemetry::skill_source(sk.scope, sk.plugin_name.as_deref());
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::SkillDispatched {
-                    skill_name: sk.name.clone(),
-                    plugin_source: sk.plugin_name.clone(),
-                    trigger: xai_grok_telemetry::events::SkillTrigger::SlashCommand,
-                    skill_source: Some(skill_source.to_owned()),
-                    skill_origin: sk.origin.clone(),
-                },
-            );
         }
         slash_commands::build_skill_information_for_refs(
             &parsed,

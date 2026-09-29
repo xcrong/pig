@@ -606,7 +606,6 @@ pub(crate) async fn build_mcp_status(
     tool_bridge: &Arc<xai_grok_tools::bridge::ToolBridge>,
     event_writer: Option<&xai_grok_session_events::EventWriter>,
 ) -> McpStatusSnapshot {
-    let _build_mcp_status_timer = crate::instrumentation::timer("build_mcp_status");
     let (
         configs,
         clients,
@@ -641,7 +640,6 @@ pub(crate) async fn build_mcp_status(
     };
 
     let mut client_statuses = Vec::with_capacity(clients.len());
-    let _client_loop_timer = crate::instrumentation::timer("mcp_status_client_loop");
 
     for client in &clients {
         let name = client.server_name().to_string();
@@ -660,7 +658,6 @@ pub(crate) async fn build_mcp_status(
         // Otherwise a server that connected but hung on `tools/list` (0 tools registered) would misleadingly show as Ready
         let ready = healthy && !init_failed.contains_key(name.as_str());
         let (status, tools) = if ready {
-            let _tool_defs_timer = crate::instrumentation::timer("mcp_status_tool_definitions");
             let mut tools: Vec<McpToolEntry> = tool_bridge
                 .tool_definitions()
                 .await

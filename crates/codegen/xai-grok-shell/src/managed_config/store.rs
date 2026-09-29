@@ -638,7 +638,7 @@ pub(super) fn current_serving_identity_any_expiry() -> crate::config::ServingIde
     serving_identity_from(active_team_id_any_expiry())
 }
 
-pub fn classify_auth_mode() -> xai_grok_telemetry::startup::AuthMode {
+pub fn classify_auth_mode() -> super::AuthMode {
     auth_mode(
         resolve_deployment_key().is_some(),
         &team_principal_signed_in(),

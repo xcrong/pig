@@ -528,7 +528,7 @@ async fn create_test_actor_inner(
         events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
         observability_bridge: noop_observability_bridge(),
         current_turn_number: std::cell::Cell::new(0),
-        turn_phases: std::sync::Arc::default(),
+        turn_generation: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(0),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
@@ -626,7 +626,6 @@ pub(crate) fn user_item_with_rx(
         }),
         queue_mutation_policy: QueueMutationPolicy::editable(),
         send_now: false,
-        traceparent: None,
     };
     (item, rx)
 }
@@ -662,7 +661,6 @@ pub(crate) fn input_with_origin_rx(
         queue_meta: None,
         queue_mutation_policy: QueueMutationPolicy::hidden(),
         send_now: false,
-        traceparent: None,
     };
     (item, rx)
 }

@@ -19,14 +19,6 @@ impl SessionActor {
             } else {
                 crate::agent::auth_method::AUTH_ERROR_API_KEY
             };
-            xai_grok_telemetry::unified_log::error(
-                "sampling auth error",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "method": method.map(|id| id.0.as_ref()),
-                    "error": format!("{err}"),
-                })),
-            );
             return acp::Error::auth_required().data(msg);
         }
         map_sampling_err_to_acp(err)
@@ -270,15 +262,6 @@ impl SessionActor {
         if !matches!(trigger, AdvertiseTrigger::UsageMeta) {
             let mut names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
             names.sort_unstable();
-            xai_grok_telemetry::unified_log::info(
-                "slash.advertise",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "trigger": trigger.as_label(),
-                    "count": commands.len(),
-                    "names": names,
-                })),
-            );
         }
         tracing::info!(
             session_id = %self.session_info.id.0,

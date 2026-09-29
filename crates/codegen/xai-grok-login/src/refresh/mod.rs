@@ -6,13 +6,7 @@ pub use crate::manager::RefreshReason;
 use crate::model::GrokAuth;
 pub use external_refresher::ExternalBinaryRefresher;
 pub use oidc_refresher::OidcRefresher;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-/// Callback for diagnostic log upload on auth refresh failure.
-/// Args: `(log_bytes, auth_token_suffix, user_id)`. The upload path is keyed by the user id, never the email.
-pub type DiagnosticUploader =
-    Arc<dyn Fn(Vec<u8>, String, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 /// Read-only view of `AuthManager` for refreshers.
 /// Refreshers hold `Arc<dyn AuthSnapshot>`, so the type system stops them calling `update()`, `clear()`, `hot_swap()`, or `refresh_chain()`.
 pub trait AuthSnapshot: Send + Sync {
@@ -21,7 +15,7 @@ pub trait AuthSnapshot: Send + Sync {
     /// Read the expired in-memory bearer (for its `refresh_token`).
     fn expired_auth(&self) -> Option<GrokAuth>;
     /// Re-read auth.json from disk for the configured scope.
-    /// Credentials are untouched, but the call records what it saw on disk and may emit telemetry about the change.
+    /// Credentials are untouched, but the call records what it saw on disk.
     fn read_disk_auth(&self) -> Option<GrokAuth>;
     /// Whether the in-memory bearer is expired.
     fn is_expired(&self) -> bool;
@@ -150,13 +144,8 @@ pub trait TokenRefresher: Send + Sync {
 pub fn build_refresher(
     auth_manager: Arc<AuthManager>,
     auth_provider_command: Option<String>,
-    diagnostic_uploader: Option<DiagnosticUploader>,
 ) -> Arc<dyn TokenRefresher> {
-    crate::backend::ActiveAuthBackend::default().refresher(
-        auth_manager,
-        auth_provider_command,
-        diagnostic_uploader,
-    )
+    crate::backend::ActiveAuthBackend::default().refresher(auth_manager, auth_provider_command)
 }
 #[cfg(test)]
 mod tests {

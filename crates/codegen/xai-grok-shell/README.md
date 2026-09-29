@@ -68,13 +68,13 @@ curl -fsSL https://x.ai/cli/install.sh | bash -s 0.1.42
 Verify installation:
 
 ```bash
-grok --version
+pig --version
 ```
 
 Update to the latest version:
 
 ```bash
-grok update
+pig update
 ```
 
 ---

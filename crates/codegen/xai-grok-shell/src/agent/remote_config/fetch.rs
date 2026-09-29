@@ -113,7 +113,6 @@ pub(in crate::agent::remote_config) fn fetch_models_uncommitted(
         return ModelsPrefetch::Unavailable;
     }
 
-    let _timer = crate::instrumentation_timer!("startup.fetch_models_blocking");
     let fetched_at = Utc::now();
     match source.fetch(auth) {
         Ok(FetchModelsResult { models, etag }) if !models.is_empty() => {

@@ -609,13 +609,13 @@ required_maximum_version = "0.2.200" # refuse to start above this
 - `required_minimum_version` (`GROK_REQUIRED_MINIMUM_VERSION`) and
   `required_maximum_version` (`GROK_REQUIRED_MAXIMUM_VERSION`) are hard bounds. If
   the running version is outside the range, the CLI exits at startup and instructs
-  the user to install an approved version. `grok update` and `grok --version` keep
+  the user to install an approved version. `pig update` and `pig --version` keep
   working so an out-of-range install can recover.
 - Bounds resolve across config layers by tightening only: a floor takes the
   highest value and a ceiling the lowest, so a managed bound can't be loosened,
   and a user or environment bound can't cancel a managed hard bound. An invalid
   value is ignored so a bad policy can't block startup.
-- An explicit `grok update --version X` is allowed above the ceiling, to recover
+- An explicit `pig update --version X` is allowed above the ceiling, to recover
   from a too-new install, and rejected below the hard floor.
 
 ### Enterprise deployment

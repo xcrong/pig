@@ -21,10 +21,9 @@ impl ProcessLimits {
     }
 
     pub(crate) fn log(&self) {
-        xai_grok_telemetry::unified_log::info(
-            "process resource limits",
-            None,
-            Some(self.to_json()),
+        tracing::info!(
+            limits = %self.to_json(),
+            "process resource limits"
         );
     }
 
@@ -42,20 +41,6 @@ impl ProcessLimits {
 
     fn cgroup_field(&self, name: &str) -> Option<String> {
         Some(self.cgroup.as_ref()?.get(name)?.as_str()?.to_owned())
-    }
-
-    pub(crate) fn into_event(self) -> xai_grok_telemetry::events::ProcessResourceLimits {
-        let (nofile_soft, nofile_hard) = self.nofile.unwrap_or_default();
-        let (nproc_soft, nproc_hard) = self.nproc.unwrap_or_default();
-        xai_grok_telemetry::events::ProcessResourceLimits {
-            nofile_soft,
-            nofile_hard,
-            nproc_soft,
-            nproc_hard,
-            available_parallelism: self.available_parallelism,
-            cgroup_pids_max: self.cgroup_field("pids_max"),
-            cgroup_memory_max: self.cgroup_field("memory_max"),
-        }
     }
 }
 

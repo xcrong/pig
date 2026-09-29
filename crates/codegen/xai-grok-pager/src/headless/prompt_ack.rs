@@ -72,7 +72,7 @@ pub(super) async fn abort_unacknowledged_prompt(
     waited: Duration,
     deadlines: &PromptAckDeadlines,
 ) -> acp::Error {
-    crate::unified_log::write_direct_warn(
+    crate::unified_log::warn(
         "prompt.ack_timeout",
         Some(session_id.0.as_ref()),
         Some(serde_json::json!({
@@ -82,13 +82,6 @@ pub(super) async fn abort_unacknowledged_prompt(
             "surface": PromptAckSurface::Headless,
         })),
     );
-    xai_grok_telemetry::session_ctx::log_event(PromptAckTimeoutFired {
-        limit_ms: deadlines.hard.as_millis() as u64,
-        waited_ms: waited.as_millis() as u64,
-        surface: PromptAckSurface::Headless,
-        disposition: PromptAckDisposition::NotRestorable,
-        prompt_kind: PromptAckPromptKind::Prompt,
-    });
     // A prompt that lands late is trimmed shell-side instead of running unobserved
     let cancel = acp::CancelNotification::new(session_id.clone()).meta(Some(
         crate::app::cancel_notification_meta(

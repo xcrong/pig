@@ -58,7 +58,7 @@ pub async fn maybe_run_pre_tui_external_login(
         grok_com_config.clone(),
         proxy_base_url,
     ));
-    auth_manager.configure_refresher(Some(cmd.to_owned()), None);
+    auth_manager.configure_refresher(Some(cmd.to_owned()));
     run_pre_tui_external_login_with(&auth_manager, cmd, force_login).await
 }
 

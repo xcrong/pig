@@ -3,11 +3,6 @@
 use std::sync::Arc;
 
 use xai_grok_agent::prompt::context::PromptAudience;
-use xai_grok_telemetry::events::{
-    SubagentModelCatalogKind, SubagentModelOverrideRejected, SubagentModelPresentationApplied,
-    SubagentModelRejectionReason, SubagentModelSelectionKind, SubagentOwnerKind,
-    SubagentPresentationAudience,
-};
 use xai_grok_tools::implementations::grok_build::task::model_policy::{
     TaskModelRejection, TaskModelRejectionSink,
 };
@@ -134,35 +129,17 @@ pub(crate) async fn latch_task_model_presentation(
     presentation
 }
 
-pub(crate) fn presentation_applied_event(
-    presentation: &TaskModelPresentation,
-    inputs: &TaskModelPolicyInputs,
-    audience: PromptAudience,
-) -> SubagentModelPresentationApplied {
-    SubagentModelPresentationApplied {
-        selection: selection_telemetry_kind(presentation.selection),
-        classification: presentation.classification.into(),
-        eligible_count: u32::try_from(presentation.model_slugs.len()).unwrap_or(u32::MAX),
-        inheritance_enabled: inputs.inheritance.value,
-        feature_source: inputs.inheritance.source.to_string(),
-        audience: match audience {
-            PromptAudience::Primary => SubagentPresentationAudience::Primary,
-            PromptAudience::Subagent => SubagentPresentationAudience::Subagent,
-        },
-    }
-}
 
 pub(crate) fn rejection_sink(parent_session_id: String) -> TaskModelRejectionSink {
     TaskModelRejectionSink::new(move |rejection| {
-        xai_grok_telemetry::session_ctx::log_event(SubagentModelOverrideRejected {
-            parent_session_id: parent_session_id.clone(),
-            owner: SubagentOwnerKind::Task,
-            reason: match rejection {
-                TaskModelRejection::HiddenSelection => {
-                    SubagentModelRejectionReason::HiddenSelection
-                }
-            },
-        });
+        let reason = match rejection {
+            TaskModelRejection::HiddenSelection => "hidden_selection",
+        };
+        tracing::warn!(
+            parent_session_id = %parent_session_id,
+            reason,
+            "subagent model override rejected",
+        );
     })
 }
 
@@ -177,29 +154,6 @@ impl LatchedTaskModelSelection {
 
     pub(crate) fn set(&self, selection: TaskModelSelection) {
         *self.0.lock() = selection;
-    }
-}
-
-/// Both types are foreign here, so this cannot be a `From` impl.
-pub(crate) fn selection_telemetry_kind(
-    selection: TaskModelSelection,
-) -> SubagentModelSelectionKind {
-    match selection {
-        TaskModelSelection::Selectable => SubagentModelSelectionKind::Selectable,
-        TaskModelSelection::Inherited => SubagentModelSelectionKind::Inherited,
-    }
-}
-
-impl From<TaskCatalogClassification> for SubagentModelCatalogKind {
-    fn from(classification: TaskCatalogClassification) -> Self {
-        match classification {
-            TaskCatalogClassification::Provisional => Self::Provisional,
-            TaskCatalogClassification::Empty => Self::Empty,
-            TaskCatalogClassification::UnknownFamily => Self::UnknownFamily,
-            TaskCatalogClassification::FirstPartyOnly => Self::FirstPartyOnly,
-            TaskCatalogClassification::ThirdPartyOnly => Self::ThirdPartyOnly,
-            TaskCatalogClassification::Mixed => Self::Mixed,
-        }
     }
 }
 

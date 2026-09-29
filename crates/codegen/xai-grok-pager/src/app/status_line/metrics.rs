@@ -56,15 +56,6 @@ impl StatusLineMetrics {
             return;
         }
         self.draws_a_row.store(draws_a_row(cfg), Ordering::Relaxed);
-        xai_grok_telemetry::session_ctx::log_event(
-            xai_grok_telemetry::events::StatusLineConfigured {
-                kind,
-                // Answers for the row, not the section: a rejected value in a section already switched off reserves nothing
-                row_shows_a_problem: cfg.problem_to_paint().is_some(),
-                items: items_label(cfg),
-                custom_items: cfg.has_custom_items(),
-            },
-        );
     }
 
     pub(crate) fn record_ok(&self, duration_ms: u64) {
@@ -91,7 +82,6 @@ impl StatusLineMetrics {
 
     pub(crate) fn report_health(&self) {
         if let Some(event) = self.health_event() {
-            xai_grok_telemetry::session_ctx::log_event(event);
         }
     }
 

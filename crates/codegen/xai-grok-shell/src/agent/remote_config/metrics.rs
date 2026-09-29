@@ -16,25 +16,35 @@ pub(crate) fn record_degraded_start(
     deadline: std::time::Duration,
     wait: std::time::Duration,
 ) {
-    xai_grok_telemetry::unified_log::emit(
-        degraded_log_level(profile),
-        "startup proceeding without remote settings",
-        None,
-        Some(serde_json::json!({
-            "cause": cause.as_ref(),
-            "deadline_ms": deadline.as_millis() as u64,
-            "wait_ms": wait.as_millis() as u64,
-            "outcome": "settings unavailable at gate time",
-        })),
-    );
+    if matches!(profile, LaunchProfile::Managed) {
+        tracing::warn!(
+            cause = cause.as_ref(),
+            deadline_ms = deadline.as_millis() as u64,
+            wait_ms = wait.as_millis() as u64,
+            outcome = "settings unavailable at gate time",
+            "startup proceeding without remote settings",
+        );
+    } else {
+        tracing::debug!(
+            cause = cause.as_ref(),
+            deadline_ms = deadline.as_millis() as u64,
+            wait_ms = wait.as_millis() as u64,
+            outcome = "settings unavailable at gate time",
+            "startup proceeding without remote settings",
+        );
+    }
 }
 
-pub(crate) fn degraded_log_level(
-    profile: LaunchProfile,
-) -> xai_grok_telemetry::unified_log::LogLevel {
-    use xai_grok_telemetry::unified_log::LogLevel;
+/// Local log level for degraded-startup records (managed boots warn, personal boots debug).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DegradedLogLevel {
+    Warn,
+    Debug,
+}
+
+pub(crate) fn degraded_log_level(profile: LaunchProfile) -> DegradedLogLevel {
     match profile {
-        LaunchProfile::Managed => LogLevel::Warn,
-        LaunchProfile::Personal => LogLevel::Debug,
+        LaunchProfile::Managed => DegradedLogLevel::Warn,
+        LaunchProfile::Personal => DegradedLogLevel::Debug,
     }
 }

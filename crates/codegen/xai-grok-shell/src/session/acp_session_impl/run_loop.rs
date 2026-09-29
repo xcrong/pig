@@ -1,9 +1,6 @@
 //! The session actor's main loop (`run_session`): command dispatch, the idle timer arms, and the free helpers only the loop consumes.
 #![allow(clippy::items_after_test_module)]
 use super::*;
-use xai_grok_telemetry::instrument_task;
-use xai_grok_telemetry::region::Parent;
-use xai_grok_telemetry::session_end::{self, Phase, SharedSessionEndTimer};
 /// The `YoloToggled` event to emit after `set_yolo_mode(requested)`: `Some(actual)` only on a real change.
 /// Callers MUST pass the post-call state read back via `is_yolo_mode()`, never the request.
 /// Under the always-approve pin the manager clamps a requested ON to OFF, so reporting the request would announce a turn-on that never happened.
@@ -78,10 +75,8 @@ impl DeferredStart {
 pub(super) async fn fire_session_end_hooks(
     session: &SessionActor,
     reason: &str,
-    timer: &SharedSessionEndTimer,
     start: &mut DeferredStart,
 ) {
-    let span = session_end::span(Phase::Hooks);
     start.seal_and_join().await;
     let envelope = session.fire_hook(
         xai_grok_hooks::event::HookEventName::SessionEnd,
@@ -94,7 +89,6 @@ pub(super) async fn fire_session_end_hooks(
         },
     );
     if let Some(registry) = session.hook_registry.borrow().clone() {
-        let _dispatch = session_end::timed_child(timer, Phase::HooksDispatch, span.span());
         let ctx = session.hook_run_ctx();
         let results = xai_grok_hooks::dispatcher::dispatch_non_blocking(
             &registry,
@@ -107,26 +101,22 @@ pub(super) async fn fire_session_end_hooks(
             .send_hook_execution(&HookBatch::from_envelope(&envelope), &results)
             .await;
     }
-    let _stop = session_end::timed_child(timer, Phase::HooksStop, span.span());
     session.dispatch_session_end_stop(reason).await;
 }
 /// Cancel the feedback sync loop, drain/sync under exit budgets, persist background-task state, and drop scratch.
 /// Owns the single final signal sync via [`FeedbackManager::shutdown`]; the sync loop cancel arm does not sync.
-/// `FeedbackManager::shutdown` short-circuits force_sync/drain when telemetry is off or the session is empty with nothing pending.
-async fn finish_session_exit_feedback(session: &SessionActor, timer: &SharedSessionEndTimer) {
-    let span = session_end::span(Phase::Feedback);
+/// `FeedbackManager::shutdown` short-circuits force_sync/drain when the session is empty with nothing pending.
+async fn finish_session_exit_feedback(session: &SessionActor) {
     if let Some(cancel) = &session.sync_loop_cancel {
         cancel.cancel();
     }
     {
-        let _drain = session_end::timed_child(timer, Phase::FeedbackDrain, span.span());
         session
             .feedback_manager
             .shutdown(session.upload_queue.get())
             .await;
     }
     if !session.startup_hints.is_subagent {
-        let _tasks = session_end::timed_child(timer, Phase::BackgroundTasksSave, span.span());
         session.persist_resume_status().await;
     }
     cleanup_session_scratch(session);
@@ -156,16 +146,6 @@ impl SessionActor {
         if !admitted {
             Self::push_task_wake_fallback(&mut state, fallback);
             drop(state);
-            xai_grok_telemetry::unified_log::info(
-                "shell.task_wake.actor_admission",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "task_id": task_id,
-                    "gate": gate_suppressed,
-                    "state": state_suppressed,
-                    "admitted": false,
-                })),
-            );
             let _ = respond_to.send(false);
             return None;
         }
@@ -174,26 +154,14 @@ impl SessionActor {
             return None;
         }
         drop(state);
-        xai_grok_telemetry::unified_log::info(
-            "shell.task_wake.actor_admission",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "task_id": task_id,
-                "gate": gate_suppressed,
-                "state": state_suppressed,
-                "admitted": true,
-            })),
-        );
         Some(fallback)
     }
 }
-async fn shutdown_workflows(session: &SessionActor, timer: &SharedSessionEndTimer) {
+async fn shutdown_workflows(session: &SessionActor) {
     if !session.startup_hints.is_subagent {
         session.persist_resume_status().await;
     }
-    let span = session_end::span(Phase::Workflows);
     {
-        let _drain = session_end::timed_child(timer, Phase::WorkflowsDrain, span.span());
         if let Err(run_ids) = session
             .workflow_manager
             .lock()
@@ -207,7 +175,6 @@ async fn shutdown_workflows(session: &SessionActor, timer: &SharedSessionEndTime
             );
         }
     }
-    let _persist = session_end::timed_child(timer, Phase::WorkflowsPersist, span.span());
     let (respond_to, ack) = tokio::sync::oneshot::channel();
     if session
         .notifications
@@ -232,33 +199,20 @@ async fn shutdown_workflows(session: &SessionActor, timer: &SharedSessionEndTime
 async fn log_session_ended(session: &SessionActor) {
     let model_id = session.current_model_id().await;
     if let Some(signals) = session.signals_handle().snapshot().await {
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SessionEnded {
-            duration_secs: session.session_start.elapsed().as_secs(),
-            turn_count: signals.turn_count as u64,
-            tool_call_count: signals.tool_call_count as u64,
-            compaction_count: signals.compaction_count as u64,
-            model_id,
-        });
+        tracing::info!(
+            session_id = %session.session_info.id.0,
+            duration_secs = session.session_start.elapsed().as_secs(),
+            turn_count = signals.turn_count,
+            tool_call_count = signals.tool_call_count,
+            compaction_count = signals.compaction_count,
+            model_id = %model_id,
+            "session ended",
+        );
     }
-}
-const SESSION_END_EMIT_BUDGET: Duration = Duration::from_secs(1);
-async fn emit_session_end_timings(timer: &SharedSessionEndTimer, is_subagent: bool) {
-    if is_subagent {
-        return;
-    }
-    let mut event = xai_grok_telemetry::events::SessionEndTimings::default();
-    timer.write_event_phases(&mut event);
-    event.total_ms = Some(timer.elapsed_ms());
-    let _ = tokio::time::timeout(
-        SESSION_END_EMIT_BUDGET,
-        xai_grok_telemetry::session_ctx::log_event_now(event),
-    )
-    .await;
 }
 /// The deferred startup jobs, owned by the run loop so a session ending mid-startup aborts them instead of leaving them detached.
 struct StartupTasks {
     _mcp_init_prompt_promote: crate::util::AbortOnDrop,
-    _context_snapshot: Option<crate::util::AbortOnDrop>,
     mcp_startup: StartupTaskSet,
 }
 /// Startup tasks handed over by `&self` actor methods, each holding a strong `Arc` to the actor. Owned by the run
@@ -332,21 +286,8 @@ impl StartupTasks {
                 SessionActor::maybe_start_running_task(session_for_mcp.clone(), completion_tx)
                     .await;
             }));
-        let context_snapshot = if session.startup_hints.is_subagent {
-            tracing::info!("session_context_snapshot: skipped (subagent)");
-            None
-        } else {
-            let s = session.clone();
-            Some(crate::util::AbortOnDrop(tokio::task::spawn_local(
-                instrument_task!("session.context_snapshot", Parent::Inherit, async move {
-                    s.wait_for_mcp_initialized().await;
-                    s.emit_session_context_snapshot().await;
-                }),
-            )))
-        };
         Self {
             _mcp_init_prompt_promote: mcp_init_prompt_promote,
-            _context_snapshot: context_snapshot,
             mcp_startup,
         }
     }
@@ -531,7 +472,7 @@ pub(super) async fn run_session(
                     let last_len = session.last_idle_flush_conversation_len
                         .load(std::sync::atomic::Ordering::Relaxed);
                     if current_len > last_len {
-                        tracing::info!(target: xai_grok_telemetry::memory_log::TARGET,
+                        tracing::info!(target: crate::session::memory::MEMORY_LOG_TARGET,
                             "MEMORY_IDLE_FLUSH: timer fired (conversation {last_len} → {current_len})");
                         session.last_idle_flush_conversation_len
                             .store(current_len, std::sync::atomic::Ordering::Relaxed);
@@ -539,13 +480,13 @@ pub(super) async fn run_session(
                             let session = session.clone();
                             async move {
                                 if !session.run_memory_flush("interval", None).await {
-                                    tracing::info!(target: xai_grok_telemetry::memory_log::TARGET,
+                                    tracing::info!(target: crate::session::memory::MEMORY_LOG_TARGET,
                                         "MEMORY_IDLE_FLUSH: skipped — another flush already in progress");
                                 }
                             }
                         });
                     } else {
-                        tracing::debug!(target: xai_grok_telemetry::memory_log::TARGET,
+                        tracing::debug!(target: crate::session::memory::MEMORY_LOG_TARGET,
                             "MEMORY_IDLE_FLUSH: skipped, no new messages since last flush (len={current_len})");
                     }
                     // Reset for next idle period
@@ -557,7 +498,7 @@ pub(super) async fn run_session(
                 _ = &mut dream_check_sleep, if session.dream_check_timeout.is_some()
                     && session.memory.uses_legacy_pipeline()
                     && !session.startup_hints.is_subagent => {
-                    tracing::debug!(target: xai_grok_telemetry::memory_log::TARGET,
+                    tracing::debug!(target: crate::session::memory::MEMORY_LOG_TARGET,
                         "MEMORY_DREAM_CHECK: timer fired");
                     // Only start a new dream when the previous one has finished; a shorter check
                     // interval must not abort an in-flight consolidation.
@@ -598,20 +539,6 @@ pub(super) async fn run_session(
                             body_bytes_after,
                         }) => {
                             // Log to the unified log so image eviction can be verified locally
-                            xai_grok_telemetry::unified_log::info(
-                                "shell.image_budget",
-                                Some(session.session_info.id.0.as_ref()),
-                                Some(serde_json::json!({
-                                    "body_bytes": body_bytes,
-                                    "body_bytes_after": body_bytes_after,
-                                    "trigger_bytes": trigger_bytes,
-                                    "reclaim_target_bytes": reclaim_target_bytes,
-                                    "inline_images": inline_images,
-                                    "images_remaining": inline_images.saturating_sub(evicted),
-                                    "needs_image_compaction": needs_image_compaction,
-                                    "evicted": evicted,
-                                })),
-                            );
                         }
                         Some(xai_chat_state::ChatStateEvent::PromptIndexChanged { .. }) |
                         Some(xai_chat_state::ChatStateEvent::TokensUpdated { .. }) => {
@@ -660,28 +587,22 @@ pub(super) async fn run_session(
                         // ── session_end (channel-closed path) ────────
                         // Queued reports first, so an earlier turn's report precedes the session-end `Stop`
                         // Hooks fire BEFORE memory auto-save
-                        let end_timer = session_end::SessionEndTimer::new_shared();
                         turn_end_queue.flush().await;
-                        fire_session_end_hooks(&session, "channel_closed", &end_timer, &mut deferred_start).await;
+                        fire_session_end_hooks(&session, "channel_closed", &mut deferred_start).await;
                         session.memory.stop_capture_worker().await;
                         session.memory.dream_workers.cancel_and_join().await;
                         // Stop the dream before the end-pipeline reindex so their index writes cannot race.
                         stop_dream(&mut dream_task).await;
                         session
-                            .run_session_end_memory_pipeline(
-                                "channel closed, session summary saved",
-                                &end_timer,
-                            )
+                            .run_session_end_memory_pipeline("channel closed, session summary saved")
                             .await;
                         if let Some(notification) = replay_buffer.flush() {
                             session.emit_buffered(notification).await;
                         }
                         log_session_ended(&session).await;
-                        shutdown_workflows(&session, &end_timer).await;
+                        shutdown_workflows(&session).await;
                         turn_end_queue.drain().await;
-                        finish_session_exit_feedback(&session, &end_timer).await;
-                        emit_session_end_timings(&end_timer, session.startup_hints.is_subagent)
-                            .await;
+                        finish_session_exit_feedback(&session).await;
                         return;
                     };
 
@@ -690,11 +611,9 @@ pub(super) async fn run_session(
                             session.initialize(system_prompt).await;
                             let s = session.clone();
                             let full_wait = session.requires_full_mcp_wait();
-                            let handle = tokio::task::spawn_local(instrument_task!(
-                                "session.prefix_task",
-                                Parent::Inherit,
-                                async move { s.build_prefix_after_mcp_wait(full_wait).await }
-                            ));
+                            let handle = tokio::task::spawn_local(
+                                async move { s.build_prefix_after_mcp_wait(full_wait).await },
+                            );
                             session.deferred_prefix.arm(handle, full_wait);
                         }
                         SessionCommand::ReplaceSystemPrompt { system_prompt } => {
@@ -722,7 +641,7 @@ pub(super) async fn run_session(
                         SessionCommand::SetToolOverrides { overrides } => {
                             session.set_tool_overrides(overrides);
                         }
-                        SessionCommand::Prompt { prompt_id, prompt_blocks, prompt_mode, artifact_upload_ctx, client_identifier, screen_mode, verbatim, traceparent, json_schema, send_now, admission, tool_overrides_update, respond_to, prompt_admitted, persist_ack, parsed_prompt_tx } => {
+                        SessionCommand::Prompt { prompt_id, prompt_blocks, prompt_mode, artifact_upload_ctx, client_identifier, screen_mode, verbatim, json_schema, send_now, admission, tool_overrides_update, respond_to, prompt_admitted, persist_ack, parsed_prompt_tx } => {
                             let origin = super::PromptOrigin::from_prompt_id(&prompt_id);
                             let (actor_admitted, task_wake_fallback) = match admission {
                                 Some(admission) => {
@@ -747,17 +666,7 @@ pub(super) async fn run_session(
                                 let mut state = session.state.lock().await;
                                 state.notifications_suppressed = false;
                                 if state.take_hook_block_hold() {
-                                    xai_grok_telemetry::unified_log::info(
-                                        "shell.prompt.hook_block_hold_released",
-                                        Some(session.session_info.id.0.as_ref()),
-                                        Some(serde_json::json!({ "reason": "user_intake" })),
-                                    );
                                 }
-                                xai_grok_telemetry::unified_log::info(
-                                    "shell.task_wake.gate_cleared",
-                                    Some(session.session_info.id.0.as_ref()),
-                                    Some(serde_json::json!({ "reason": "user_intake" })),
-                                );
                                 // Layer-3 LazinessDetector wake: bump the monotonic counter.
                                 // Any classifier poll-loop already running snapshots a stale value and aborts.
                                 // Synthetic prompts (NotificationDrain, GoalSummary, auto-wake) are not real user input and must NOT bump it.
@@ -800,7 +709,6 @@ pub(super) async fn run_session(
                                     persist_ack,
                                     parsed_prompt_tx,
                                     initial_child_prompt_ready: prompt_admitted,
-                                    traceparent,
                                 })
                                 .await;
                             // An unsettled cancel means another finalization owns the turn; its release will re-kick the queue.
@@ -819,14 +727,12 @@ pub(super) async fn run_session(
                         SessionCommand::ParentAgentMessage {
                             delivery,
                             receipt_sink,
-                            parent_telemetry_ctx,
                             respond_to,
                         } => {
                             session
                                 .admit_parent_agent_message(
                                     delivery,
                                     receipt_sink,
-                                    parent_telemetry_ctx,
                                     respond_to,
                                     completion_tx.clone(),
                                 )
@@ -1143,7 +1049,7 @@ pub(super) async fn run_session(
                         SessionCommand::Cancel(options) => {
                             // Flush the actor-owned replay buffer before tearing down the running turn.
                             // Chunks still pending at cancel (notably.
-                            // Ctrl+C It must reach disk before the trace upload snapshots the session directory.
+                            // Ctrl+C It must reach disk before the session-directory snapshot.
                             if let Some(notification) = replay_buffer.flush() {
                                 session.emit_buffered(notification).await;
                             }
@@ -2118,7 +2024,6 @@ pub(super) async fn run_session(
                                     queue_meta: None,
                                     queue_mutation_policy: QueueMutationPolicy::hidden(),
                                     send_now: false,
-                                    traceparent: None,
                                 });
                             }
                             SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
@@ -2177,7 +2082,6 @@ pub(super) async fn run_session(
                                     queue_meta: None,
                                     queue_mutation_policy: QueueMutationPolicy::hidden(),
                                     send_now: false,
-                                    traceparent: None,
                                 });
                             }
                             SessionActor::maybe_start_running_task(session.clone(), completion_tx.clone()).await;
@@ -2232,11 +2136,10 @@ pub(super) async fn run_session(
                             let _ = respond_to.send(());
                         }
                         SessionCommand::Shutdown(kind) => {
-                            let end_timer = session_end::SessionEndTimer::new_shared();
                             session.persist_resume_status().await;
-                            shutdown_workflows(&session, &end_timer).await;
+                            shutdown_workflows(&session).await;
                             // Flush the actor-owned replay buffer so streamed chunks still pending at shutdown are committed to updates.jsonl.
-                            // The commit must precede the session-directory snapshot for trace upload.
+                            // The commit must precede the session-directory snapshot.
                             // Mirrors the same flush in the.
                             if let Some(notification) = replay_buffer.flush() {
                                 session.emit_buffered(notification).await;
@@ -2270,22 +2173,17 @@ pub(super) async fn run_session(
                             // ── session_end (shutdown path) ────────────
                             // Hooks fire BEFORE memory auto-save
                             turn_end_queue.flush().await;
-                            fire_session_end_hooks(&session, "shutdown", &end_timer, &mut deferred_start).await;
+                            fire_session_end_hooks(&session, "shutdown", &mut deferred_start).await;
                             session.memory.stop_capture_worker().await;
                             session.memory.dream_workers.cancel_and_join().await;
                             // Stop the dream before the end-pipeline reindex so their index writes cannot race.
                             stop_dream(&mut dream_task).await;
                             session
-                                .run_session_end_memory_pipeline(
-                                    "session summary saved",
-                                    &end_timer,
-                                )
+                                .run_session_end_memory_pipeline("session summary saved")
                                 .await;
                             log_session_ended(&session).await;
                             turn_end_queue.drain().await;
-                            finish_session_exit_feedback(&session, &end_timer).await;
-                            emit_session_end_timings(&end_timer, session.startup_hints.is_subagent)
-                                .await;
+                            finish_session_exit_feedback(&session).await;
                             return;
                         }
                     }
@@ -2310,17 +2208,14 @@ pub(super) async fn run_session(
                         // Completion channel closed: full feedback teardown so the final signal sync and upload drain still run
                         // Cancel alone does not force-sync; shutdown owns that
                         // No session-end hooks here, but the flush still precedes `shutdown_workflows`, which makes a queued report's entry durable
-                        let end_timer = session_end::SessionEndTimer::new_shared();
                         turn_end_queue.flush().await;
                         session.memory.stop_capture_worker().await;
                         session.memory.dream_workers.cancel_and_join().await;
                         // Stop the dream so it does not outlive the session holding the mutex.
                         stop_dream(&mut dream_task).await;
-                        shutdown_workflows(&session, &end_timer).await;
+                        shutdown_workflows(&session).await;
                         turn_end_queue.drain().await;
-                        finish_session_exit_feedback(&session, &end_timer).await;
-                        emit_session_end_timings(&end_timer, session.startup_hints.is_subagent)
-                            .await;
+                        finish_session_exit_feedback(&session).await;
                         return;
                     };
                     // Flush any buffered turn deltas before `handle_completion` emits the durable `TurnCompleted`

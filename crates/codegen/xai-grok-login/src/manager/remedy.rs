@@ -91,11 +91,6 @@ impl AuthManager {
             SilentRefresh::Renewed(_) => "Renewed".to_owned(),
             SilentRefresh::Failed(remedy) => format!("Failed({remedy:?})"),
         };
-        xai_grok_telemetry::unified_log::info(
-            "auth: silent refresh",
-            None,
-            Some(serde_json::json!({ "outcome": logged })),
-        );
         outcome
     }
     /// Never blocks the caller; a no-op when the credential needs no refresh.
@@ -149,14 +144,6 @@ impl AuthManager {
                     is_panic = join_error.is_panic(),
                     "bounded refresh task failed"
                 );
-                xai_grok_telemetry::unified_log::error(
-                    "auth: bounded refresh task failed",
-                    None,
-                    Some(serde_json::json!({
-                        "reason": format!("{reason:?}"),
-                        "is_panic": join_error.is_panic(),
-                    })),
-                );
                 if let Some(key) = self.attempted_verdict_key(reason) {
                     self.record_permanent_failure(
                         key,
@@ -172,14 +159,6 @@ impl AuthManager {
             }
             Err(_) => (BoundedRefresh::DeadlineElapsed, "timeout"),
         };
-        xai_grok_telemetry::unified_log::info(
-            "auth: bounded refresh",
-            None,
-            Some(serde_json::json!({
-                "reason": format!("{reason:?}"),
-                "outcome": outcome,
-            })),
-        );
         result
     }
     /// Classify the current credential's way back.
@@ -226,7 +205,7 @@ mod tests {
         let command = config.auth_provider_command.clone();
         let manager = Arc::new(AuthManager::new(dir, config));
         manager.hot_swap(credential);
-        manager.configure_refresher(command, None);
+        manager.configure_refresher(command);
         manager
     }
     /// The verdict-free arm.
@@ -298,7 +277,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let manager = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
         manager.hot_swap(external_credential(Utc::now() - Duration::hours(1)));
-        manager.configure_refresher(None, None);
+        manager.configure_refresher(None);
         assert_eq!(manager.auth_remedy(), AuthRemedy::SelfHealing);
         manager.record_permanent_failure(
             "external".to_owned(),

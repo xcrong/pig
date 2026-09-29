@@ -2,7 +2,6 @@
 
 use super::parent_interject::ParentInterjectSignal;
 use super::*;
-use crate::session::telemetry::ActiveAgentMessageSafePointTrigger;
 use std::sync::Arc;
 use xai_grok_tools::implementations::grok_build::task::coordinator::ActiveMessageAdmission;
 use xai_grok_tools::implementations::grok_build::task::types::{
@@ -27,7 +26,6 @@ pub(super) struct PendingParentAgentMessage {
     text: Arc<str>,
     /// Effective operation; a safe-point slot holds `Steer` or `Interject`, which sets drain order.
     operation: ActiveAgentMessageOperation,
-    telemetry: crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry,
 }
 
 type ParentMessageCompletion = oneshot::Sender<crate::session::commands::PromptTurnResult>;
@@ -109,22 +107,13 @@ impl MessageDeliveryState {
     /// Consumes the wait-abort mark in the same step, so an abort noted after this call belongs
     /// to a later drain and a failed barrier cannot leave it set; only a mark noted for `running`
     /// counts.
-    fn begin_delivery(
-        &mut self,
-        running: &AgentTask,
-    ) -> (
-        Vec<ParentDeliveryMessage>,
-        ActiveAgentMessageSafePointTrigger,
-    ) {
+    fn begin_delivery(&mut self, running: &AgentTask) -> Vec<ParentDeliveryMessage> {
         let binding = turn_binding(running);
         let messages = self.lifecycle.begin_delivery(&binding);
         self.sync_interject_signal(Some(&binding));
-        let trigger = if self.interject_signal.take_wait_aborted(running.epoch) {
-            ActiveAgentMessageSafePointTrigger::WaitAbort
-        } else {
-            ActiveAgentMessageSafePointTrigger::Natural
-        };
-        (messages, trigger)
+        // Consume a wait-abort mark noted for `running` so it does not leak into a later drain.
+        let _ = self.interject_signal.take_wait_aborted(running.epoch);
+        messages
     }
 
     fn finish_delivery<Error>(
@@ -241,7 +230,6 @@ impl PendingParentAgentMessage {
             queue_meta: Some(queue_meta),
             queue_mutation_policy: QueueMutationPolicy::new(true, false),
             send_now: false,
-            traceparent: None,
         }
     }
 }
@@ -266,7 +254,6 @@ impl SessionActor {
         self: &Arc<Self>,
         delivery: ActiveAgentMessageDelivery,
         receipt_sink: mpsc::Sender<crate::agent::subagent::PromptTurnReceipt>,
-        parent_telemetry_ctx: xai_grok_telemetry::TelemetryCtx,
         respond_to: oneshot::Sender<ActiveMessageAdmission>,
         completion_tx: mpsc::UnboundedSender<super::turn_task::TurnCompletionMsg>,
     ) {
@@ -279,7 +266,6 @@ impl SessionActor {
             message,
             requested,
             receipt_sink,
-            parent_telemetry_ctx,
             respond_to,
             completion_tx,
         )
@@ -293,7 +279,6 @@ impl SessionActor {
         message: ActiveAgentMessage,
         requested: ActiveAgentMessageOperation,
         receipt_sink: mpsc::Sender<crate::agent::subagent::PromptTurnReceipt>,
-        parent_telemetry_ctx: xai_grok_telemetry::TelemetryCtx,
         respond_to: oneshot::Sender<ActiveMessageAdmission>,
         completion_tx: mpsc::UnboundedSender<super::turn_task::TurnCompletionMsg>,
     ) {
@@ -308,7 +293,6 @@ impl SessionActor {
 
         let prompt_id = format!("parent-message-{}", message.message_id);
         let (turn_result_tx, turn_result_rx) = oneshot::channel();
-        let admitted_at = std::time::Instant::now();
         let mut state = self.state.lock().await;
         if state.message_delivery.has_slot_for(&message)
             || contains_queued_identity(&state, &message.message_id)
@@ -335,21 +319,11 @@ impl SessionActor {
             let _ = respond_to.send(ActiveMessageAdmission::Rejected);
             return;
         }
-        let telemetry = crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry::new(
-            admitted_at,
-            parent_telemetry_ctx,
-            requested,
-            effective,
-            (requested != ActiveAgentMessageOperation::Queue
-                && effective == ActiveAgentMessageOperation::Queue)
-                .then_some(crate::session::telemetry::ActiveAgentMessageFallbackReason::Idle),
-        );
         let content = PendingParentAgentMessage {
             prompt_id: prompt_id.clone(),
             message_id: message.message_id.clone(),
             text: message.text,
             operation: effective,
-            telemetry: telemetry.clone(),
         };
         let origin = ParentMessageOrigin {
             sender_session_id: message.sender_session_id,
@@ -395,7 +369,6 @@ impl SessionActor {
         receipt_permit.send(crate::agent::subagent::PromptTurnReceipt {
             prompt_id,
             result: turn_result_rx,
-            telemetry,
         });
         let _ = respond_to.send(ActiveMessageAdmission::Admitted);
         Self::maybe_start_running_task(self.clone(), completion_tx).await;
@@ -407,18 +380,18 @@ impl SessionActor {
             .as_object()
             .cloned();
         let notification_meta = self.build_notification_meta();
-        let (binding, trigger) = {
+        let binding = {
             let mut state = self.state.lock().await;
             // Reborrow once so `running_task` and `message_delivery` can be borrowed disjointly.
             let state = &mut *state;
             let Some(task) = state.running_task.as_ref() else {
                 return false;
             };
-            let (messages, trigger) = state.message_delivery.begin_delivery(task);
+            let messages = state.message_delivery.begin_delivery(task);
             if messages.is_empty() {
                 return false;
             }
-            (turn_binding(task), trigger)
+            turn_binding(task)
         };
         // The barrier precedes every visible side effect: a dead or cancelled
         // persistence actor skips delivery, and a teardown settlement landing
@@ -471,13 +444,6 @@ impl SessionActor {
                             .collect(),
                     )
                     .map_err(|_| DrainCommitError::ChatStateUnavailable)?;
-                let delivered_at = std::time::Instant::now();
-                for message in messages {
-                    message
-                        .content()
-                        .telemetry
-                        .record_safe_point_delivery(delivered_at, trigger);
-                }
                 Ok(())
             });
         match committed {
@@ -509,23 +475,8 @@ impl SessionActor {
         let transition = state.message_delivery.transition(target, cause, running);
         let has_fallbacks = !transition.fallbacks.is_empty();
         for owned in transition.fallbacks {
-            let fallback_reason = match cause {
-                TerminalCause::Completion => {
-                    crate::session::telemetry::ActiveAgentMessageFallbackReason::Completion
-                }
-                TerminalCause::SoftCancel => {
-                    crate::session::telemetry::ActiveAgentMessageFallbackReason::SoftCancel
-                }
-                TerminalCause::Rewind => {
-                    crate::session::telemetry::ActiveAgentMessageFallbackReason::Rewind
-                }
-                TerminalCause::HardTeardown | TerminalCause::ActorDrop => {
-                    unreachable!("terminal cause cannot produce a fallback")
-                }
-            };
             let (_, message, completion) = owned.into_parts();
             let (_, origin, content) = message.into_parts();
-            content.telemetry.record_fallback(fallback_reason);
             state
                 .pending_inputs
                 .push_back(content.into_input(origin, completion));
@@ -575,10 +526,6 @@ impl SessionActor {
             message,
             operation,
             receipt_sink,
-            xai_grok_telemetry::TelemetryCtx::new(
-                "test-parent".to_owned(),
-                std::sync::Arc::new(tokio::sync::Mutex::new(0)),
-            ),
             respond_to,
             completion_tx,
         )

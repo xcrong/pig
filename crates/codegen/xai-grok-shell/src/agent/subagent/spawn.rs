@@ -17,7 +17,6 @@ use crate::session::SessionCommand;
 use agent_client_protocol as acp;
 use tokio::sync::mpsc;
 use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use xai_grok_telemetry::region::Region;
 use xai_grok_tools::implementations::grok_build::task::coordinator::{self, ChildCompletion};
 use xai_grok_tools::implementations::grok_build::task::types::{
     SubagentRequest, SubagentResult, SubagentSnapshot,
@@ -120,12 +119,12 @@ impl coordinator::ChildRunner for ShellChildRunner {
                 .filter(|sid| sid != &parent_sid);
             let claim_reporter = run.reporter.clone();
             let ctx = {
-                let _region = Region::from_span(tracing::info_span!(
+                let _region = tracing::info_span!(
                     parent: &root_parent,
                     "subagent.spawn_context",
                     parent_session_id = %parent_sid,
                     subagent_id = %run.request.id,
-                ));
+                );
                 this.try_build_subagent_spawn_context(&parent_sid)
             };
             let Some(mut ctx) = ctx else {
@@ -149,11 +148,11 @@ impl coordinator::ChildRunner for ShellChildRunner {
             };
             let parent_handle = this.resident_handle(&acp::SessionId::new(parent_sid.clone()));
             if let Some(handle) = parent_handle {
-                let _region = Region::from_span(tracing::info_span!(
+                let _region = tracing::info_span!(
                     parent: &root_parent,
                     "subagent.parent_snapshot",
                     parent_session_id = %parent_sid,
-                ));
+                );
                 let (pool, hooks, definitions) = tokio::join!(
                     handle.snapshot_mcp_pool(),
                     handle.snapshot_client_hooks(),
@@ -206,12 +205,12 @@ impl coordinator::ChildRunner for ShellChildRunner {
                 ShellCompletionData::from_context(&ctx, run.attempt_id.clone(), turn_number);
             let panic_completion_data = completion_data.clone();
             let task = {
-                let _region = Region::from_span(tracing::info_span!(
+                let _region = tracing::info_span!(
                     parent: &root_parent,
                     "subagent.worker_handoff",
                     parent_session_id = %parent_sid,
                     subagent_id = %run.request.id,
-                ));
+                );
                 handle.spawn(crate::agent::subagent::run_shell_child(
                     run,
                     ctx,
@@ -329,31 +328,28 @@ impl coordinator::ChildRunner for ShellChildRunner {
             .map(std::sync::Arc::from)
     }
 }
-/// Coordinator limit sink; the coordinator cannot link telemetry directly.
+/// Coordinator limit sink; the coordinator only logs locally.
 fn log_limit_notice(notice: coordinator::SubagentLimitNotice) {
     use coordinator::{LimitedSpawnOrigin, SubagentLimitDecision};
-    use xai_grok_telemetry::events::{
-        SubagentLimitDisposition, SubagentLimitHit, SubagentOwnerKind,
-    };
     let (disposition, limit) = match notice.decision {
-        SubagentLimitDecision::QueuedAtConcurrentLimit { limit } => {
-            (SubagentLimitDisposition::Queued, limit as u64)
-        }
+        SubagentLimitDecision::QueuedAtConcurrentLimit { limit } => ("queued", limit as u64),
         SubagentLimitDecision::RejectedAtConcurrentLimit { limit } => {
-            (SubagentLimitDisposition::Failed, limit as u64)
+            ("rejected", limit as u64)
         }
     };
-    xai_grok_telemetry::session_ctx::log_event(SubagentLimitHit::session_concurrent(
-        notice.parent_session_id,
+    let origin = match notice.origin {
+        LimitedSpawnOrigin::SchedulerLoop => "scheduler_loop",
+        LimitedSpawnOrigin::Task => "task",
+    };
+    tracing::warn!(
+        parent_session_id = %notice.parent_session_id,
         disposition,
         limit,
-        u32::try_from(notice.running).unwrap_or(u32::MAX),
-        u32::try_from(notice.queue_depth).unwrap_or(u32::MAX),
-        match notice.origin {
-            LimitedSpawnOrigin::SchedulerLoop => SubagentOwnerKind::SchedulerLoop,
-            LimitedSpawnOrigin::Task => SubagentOwnerKind::Task,
-        },
-    ));
+        running = notice.running,
+        queue_depth = notice.queue_depth,
+        origin,
+        "subagent spawn hit the concurrency limit",
+    );
 }
 /// Wire the shared subagent coordinator actor onto the current `LocalSet`. Builds the `ShellChildRunner`, attaches the limit sink, and `spawn_local`s the `SubagentCoordinator` draining `rx`.
 /// Coordinator/runner construction lives here in the boundary module. `MvpAgent::start_subagent_coordinator` owns the parent state (the event receiver and concurrency limits) it feeds in.
@@ -542,7 +538,6 @@ pub(crate) fn inject_subagent_completed_prompt(params: InjectParams) {
             client_identifier: None,
             screen_mode: None,
             verbatim: true,
-            traceparent: None,
             json_schema: None,
             send_now: false,
             admission: None,

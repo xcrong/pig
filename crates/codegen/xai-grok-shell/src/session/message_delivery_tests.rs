@@ -14,7 +14,6 @@ fn human_unsupported_operation_rejects_without_command() {
         client_identifier: None,
         screen_mode: None,
         verbatim: false,
-        traceparent: None,
         json_schema: None,
         tool_overrides_update: None,
         respond_to,

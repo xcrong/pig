@@ -31,29 +31,8 @@ struct V2DreamPass {
 }
 
 struct V2DreamModelFailure {
-    class: xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass,
     detail: String,
-    usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
-}
-
-fn classify_consolidation_error(
-    error: &xai_grok_memory::V2ConsolidationError,
-) -> xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass {
-    use xai_grok_memory::V2ConsolidationError;
-    use xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass;
-    match error {
-        V2ConsolidationError::Busy | V2ConsolidationError::StaleLease => {
-            MemoryV2FailureClass::Lease
-        }
-        V2ConsolidationError::Access(_) => MemoryV2FailureClass::AccessPolicy,
-        V2ConsolidationError::Invalid(_) => MemoryV2FailureClass::MalformedOutput,
-        V2ConsolidationError::Conflict(_) | V2ConsolidationError::Convergence(_) => {
-            MemoryV2FailureClass::Convergence
-        }
-        V2ConsolidationError::Database(_) | V2ConsolidationError::Io { .. } => {
-            MemoryV2FailureClass::Storage
-        }
-    }
+    usage: crate::session::memory_observation::V2ModelUsage,
 }
 
 #[derive(serde::Deserialize)]
@@ -301,47 +280,6 @@ fn v2_capture_followups(config: crate::config::MemoryV2Config) -> V2CaptureFollo
     }
 }
 
-fn emit_v2_dream_lifecycle(
-    disposition: xai_grok_telemetry::memory_telemetry::MemoryV2DreamDisposition,
-    observation_count: usize,
-    topic_change_count: usize,
-    started_at: std::time::Instant,
-    failure_class: Option<xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass>,
-) {
-    xai_grok_telemetry::session_ctx::log_event(
-        xai_grok_telemetry::memory_telemetry::MemoryV2DreamLifecycle {
-            disposition,
-            observation_count,
-            topic_change_count,
-            latency_ms: started_at.elapsed().as_millis() as u64,
-            failure_class,
-            usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
-        },
-    );
-}
-
-fn emit_v2_dream_lifecycle_with_usage(
-    session: &SessionActor,
-    disposition: xai_grok_telemetry::memory_telemetry::MemoryV2DreamDisposition,
-    observation_count: usize,
-    topic_change_count: usize,
-    started_at: std::time::Instant,
-    failure_class: Option<xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass>,
-    usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
-) {
-    session.memory.record_dream_usage(&usage);
-    xai_grok_telemetry::session_ctx::log_event(
-        xai_grok_telemetry::memory_telemetry::MemoryV2DreamLifecycle {
-            disposition,
-            observation_count,
-            topic_change_count,
-            latency_ms: started_at.elapsed().as_millis() as u64,
-            failure_class,
-            usage,
-        },
-    );
-}
-
 fn parse_v2_dream_plan(response: &str) -> Result<Vec<xai_grok_memory::TopicOperation>, String> {
     let response = response.trim();
     let response = response
@@ -485,9 +423,6 @@ impl SessionActor {
         cancel: tokio_util::sync::CancellationToken,
         clock: xai_grok_memory::SharedV2Clock,
     ) {
-        use xai_grok_telemetry::memory_telemetry::{
-            MemoryV2Component, MemoryV2FailClosed, MemoryV2FailureClass,
-        };
         let followups = v2_capture_followups(self.memory.v2_config);
         let Some(storage) = self.memory.storage() else {
             return;
@@ -514,40 +449,13 @@ impl SessionActor {
             })
             .await
             {
-                Ok(Ok(result)) => {
-                    xai_grok_telemetry::session_ctx::log_event(
-                        xai_grok_telemetry::memory_telemetry::MemoryV2GcCompleted {
-                            archived_observations_removed: result.archived_observations_removed,
-                            terminal_jobs_removed: result.terminal_jobs_removed,
-                        },
-                    );
+                Ok(Ok(_)) => {
                 }
                 Ok(Err(error)) => {
-                    let reason = match &error {
-                        xai_grok_memory::V2MaintenanceError::ActiveLease => {
-                            MemoryV2FailureClass::Lease
-                        }
-                        xai_grok_memory::V2MaintenanceError::Access(_) => {
-                            MemoryV2FailureClass::AccessPolicy
-                        }
-                        xai_grok_memory::V2MaintenanceError::Index(_)
-                        | xai_grok_memory::V2MaintenanceError::Manifest(_) => {
-                            MemoryV2FailureClass::Convergence
-                        }
-                        _ => MemoryV2FailureClass::Storage,
-                    };
                     tracing::warn!(error = %error, "memory-v2 maintenance failed");
-                    xai_grok_telemetry::session_ctx::log_event(MemoryV2FailClosed {
-                        component: MemoryV2Component::GarbageCollection,
-                        reason,
-                    });
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, "memory-v2 maintenance task panicked");
-                    xai_grok_telemetry::session_ctx::log_event(MemoryV2FailClosed {
-                        component: MemoryV2Component::GarbageCollection,
-                        reason: MemoryV2FailureClass::Convergence,
-                    });
                 }
             }
         }
@@ -555,7 +463,6 @@ impl SessionActor {
             return;
         }
         let is_shadow = self.memory.v2_config.rollout == crate::config::MemoryV2Rollout::Shadow;
-        let started_at = std::time::Instant::now();
         let eligibility_clock = clock.clone();
         let eligibility = tokio::task::spawn_blocking(move || {
             let store = xai_grok_memory::V2ConsolidationStore::open_with_clock(
@@ -585,35 +492,10 @@ impl SessionActor {
             Ok(Ok(eligibility))
                 if eligibility.disposition == xai_grok_memory::DreamTriggerDisposition::Ready =>
             {
-                emit_v2_dream_lifecycle(
-                    xai_grok_telemetry::memory_telemetry::MemoryV2DreamDisposition::Ready,
-                    eligibility.pending_count,
-                    0,
-                    started_at,
-                    None,
-                );
                 self.run_v2_dream_with_cancel(V2DreamInvocation::Automatic, cancel, clock)
                     .await;
             }
-            Ok(Ok(eligibility)) => {
-                let disposition = match eligibility.disposition {
-                    xai_grok_memory::DreamTriggerDisposition::Ineligible => {
-                        xai_grok_telemetry::memory_telemetry::MemoryV2DreamDisposition::Ineligible
-                    }
-                    xai_grok_memory::DreamTriggerDisposition::Coalesced => {
-                        xai_grok_telemetry::memory_telemetry::MemoryV2DreamDisposition::Coalesced
-                    }
-                    xai_grok_memory::DreamTriggerDisposition::Ready => {
-                        xai_grok_telemetry::memory_telemetry::MemoryV2DreamDisposition::Ready
-                    }
-                };
-                emit_v2_dream_lifecycle(
-                    disposition,
-                    eligibility.pending_count,
-                    0,
-                    started_at,
-                    None,
-                );
+            Ok(Ok(_)) => {
             }
             Ok(Err(error)) => {
                 tracing::warn!(error = %error, "memory-v2 Dream eligibility update failed");
@@ -640,14 +522,7 @@ impl SessionActor {
         cancel: tokio_util::sync::CancellationToken,
         clock: xai_grok_memory::SharedV2Clock,
     ) -> MemoryDreamResponse {
-        use xai_grok_telemetry::memory_telemetry::{
-            MemoryV2Component, MemoryV2FailClosed, MemoryV2FailureClass,
-        };
         if !v2_dream_invocation_enabled(self.memory.v2_config, invocation) {
-            xai_grok_telemetry::session_ctx::log_event(MemoryV2FailClosed {
-                component: MemoryV2Component::Dream,
-                reason: MemoryV2FailureClass::Disabled,
-            });
             return MemoryDreamResponse::new(MemoryDreamDisposition::Disabled);
         }
         let cancel = cancel.child_token();
@@ -657,7 +532,7 @@ impl SessionActor {
         let cancel_on_drop = V2DreamCancellationGuard(cancel.clone());
         let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
         let session = Arc::clone(self);
-        let task = xai_grok_telemetry::session_ctx::spawn_local_in_session_ctx(async move {
+        let task = tokio::task::spawn_local(async move {
             let mut outcome = MemoryDreamResponse::new(MemoryDreamDisposition::Cancelled);
             loop {
                 if cancel.is_cancelled() {
@@ -715,14 +590,10 @@ impl SessionActor {
         cancel: &tokio_util::sync::CancellationToken,
         clock: xai_grok_memory::SharedV2Clock,
     ) -> V2DreamPass {
-        use xai_grok_telemetry::memory_telemetry::{
-            MemoryV2DreamDisposition, MemoryV2FailureClass,
-        };
         let cancelled = |coalesced| V2DreamPass {
             outcome: MemoryDreamResponse::new(MemoryDreamDisposition::Cancelled),
             coalesced,
         };
-        let started_at = std::time::Instant::now();
         if cancel.is_cancelled() {
             return cancelled(false);
         }
@@ -792,38 +663,17 @@ impl SessionActor {
         let outcome = match claimed {
             Ok(Ok(claimed)) => claimed,
             Ok(Err(xai_grok_memory::V2ConsolidationError::Busy)) => {
-                emit_v2_dream_lifecycle(
-                    MemoryV2DreamDisposition::Busy,
-                    0,
-                    0,
-                    started_at,
-                    Some(MemoryV2FailureClass::Lease),
-                );
                 return self
                     .finish_v2_dream(MemoryDreamDisposition::Busy, 0, 0, false)
                     .await;
             }
             Ok(Err(error)) => {
-                emit_v2_dream_lifecycle(
-                    MemoryV2DreamDisposition::Failed,
-                    0,
-                    0,
-                    started_at,
-                    Some(classify_consolidation_error(&error)),
-                );
                 tracing::warn!(error = %error, "memory-v2 Dream claim failed");
                 return self
                     .finish_v2_dream(MemoryDreamDisposition::Failed, 0, 0, false)
                     .await;
             }
             Err(error) => {
-                emit_v2_dream_lifecycle(
-                    MemoryV2DreamDisposition::Failed,
-                    0,
-                    0,
-                    started_at,
-                    Some(MemoryV2FailureClass::Convergence),
-                );
                 tracing::warn!(error = %error, "memory-v2 Dream claim task panicked");
                 return self
                     .finish_v2_dream(MemoryDreamDisposition::Failed, 0, 0, false)
@@ -832,20 +682,12 @@ impl SessionActor {
         };
         let (guard, input) = match outcome {
             V2DreamClaimOutcome::NoWork => {
-                emit_v2_dream_lifecycle(MemoryV2DreamDisposition::Noop, 0, 0, started_at, None);
                 self.memory.record_dream_neutral();
                 return self
                     .finish_v2_dream(MemoryDreamDisposition::NoWork, 0, 0, false)
                     .await;
             }
             V2DreamClaimOutcome::Resumed(result) => {
-                emit_v2_dream_lifecycle(
-                    MemoryV2DreamDisposition::Reconciled,
-                    0,
-                    result.affected_topics.len(),
-                    started_at,
-                    None,
-                );
                 self.memory.record_dream_result(true);
                 return self
                     .finish_v2_dream(
@@ -885,7 +727,6 @@ impl SessionActor {
             parse_v2_dream_plan(&text)
                 .map(|operations| (operations, usage.clone()))
                 .map_err(|detail| V2DreamModelFailure {
-                    class: MemoryV2FailureClass::MalformedOutput,
                     detail,
                     usage,
                 })
@@ -893,15 +734,7 @@ impl SessionActor {
             Ok(result) => result,
             Err(error) => {
                 let observation_count = guard.lease().observations.len();
-                emit_v2_dream_lifecycle_with_usage(
-                    self,
-                    MemoryV2DreamDisposition::Retry,
-                    observation_count,
-                    0,
-                    started_at,
-                    Some(error.class),
-                    error.usage,
-                );
+self.memory.record_dream_usage(&error.usage);
                 let detail = error.detail;
                 guard.fail_retryable(detail.clone()).await;
                 self.memory.record_dream_result(false);
@@ -946,15 +779,7 @@ impl SessionActor {
             return match shadow_result {
                 Ok((Ok(_), coalesced)) => {
                     self.memory.record_dream_result(true);
-                    emit_v2_dream_lifecycle_with_usage(
-                        self,
-                        MemoryV2DreamDisposition::Shadow,
-                        observation_count,
-                        0,
-                        started_at,
-                        None,
-                        usage.clone(),
-                    );
+self.memory.record_dream_usage(&usage.clone());
                     self.finish_v2_dream(
                         MemoryDreamDisposition::Shadow,
                         observation_count,
@@ -965,15 +790,7 @@ impl SessionActor {
                 }
                 Ok((Err(error), _)) => {
                     self.memory.record_dream_result(false);
-                    emit_v2_dream_lifecycle_with_usage(
-                        self,
-                        MemoryV2DreamDisposition::Retry,
-                        observation_count,
-                        0,
-                        started_at,
-                        Some(classify_consolidation_error(&error)),
-                        usage.clone(),
-                    );
+self.memory.record_dream_usage(&usage.clone());
                     tracing::warn!(error = %error, "memory-v2 shadow completion failed");
                     self.finish_v2_dream(
                         MemoryDreamDisposition::RetryRequired,
@@ -985,15 +802,7 @@ impl SessionActor {
                 }
                 Err(error) => {
                     self.memory.record_dream_result(false);
-                    emit_v2_dream_lifecycle_with_usage(
-                        self,
-                        MemoryV2DreamDisposition::Failed,
-                        observation_count,
-                        0,
-                        started_at,
-                        Some(MemoryV2FailureClass::Convergence),
-                        usage.clone(),
-                    );
+self.memory.record_dream_usage(&usage.clone());
                     tracing::warn!(error = %error, "memory-v2 shadow completion task panicked");
                     self.finish_v2_dream(
                         MemoryDreamDisposition::Failed,
@@ -1020,15 +829,7 @@ impl SessionActor {
         .await;
         match committed {
             Ok((Ok(result), coalesced)) => {
-                emit_v2_dream_lifecycle_with_usage(
-                    self,
-                    MemoryV2DreamDisposition::Committed,
-                    observation_count,
-                    result.affected_topics.len(),
-                    started_at,
-                    None,
-                    usage.clone(),
-                );
+self.memory.record_dream_usage(&usage.clone());
                 self.memory.record_dream_result(true);
                 self.finish_v2_dream(
                     MemoryDreamDisposition::Completed,
@@ -1039,15 +840,7 @@ impl SessionActor {
                 .await
             }
             Ok((Err(error), _)) => {
-                emit_v2_dream_lifecycle_with_usage(
-                    self,
-                    MemoryV2DreamDisposition::Retry,
-                    observation_count,
-                    0,
-                    started_at,
-                    Some(classify_consolidation_error(&error)),
-                    usage.clone(),
-                );
+self.memory.record_dream_usage(&usage.clone());
                 self.memory.record_dream_result(false);
                 tracing::warn!(error = %error, "memory-v2 Dream commit failed");
                 self.finish_v2_dream(
@@ -1059,15 +852,7 @@ impl SessionActor {
                 .await
             }
             Err(error) => {
-                emit_v2_dream_lifecycle_with_usage(
-                    self,
-                    MemoryV2DreamDisposition::Failed,
-                    observation_count,
-                    0,
-                    started_at,
-                    Some(MemoryV2FailureClass::Convergence),
-                    usage,
-                );
+self.memory.record_dream_usage(&usage);
                 self.memory.record_dream_result(false);
                 tracing::warn!(error = %error, "memory-v2 Dream commit task panicked");
                 self.finish_v2_dream(MemoryDreamDisposition::Failed, observation_count, 0, false)
@@ -1082,11 +867,10 @@ impl SessionActor {
     ) -> Result<
         (
             String,
-            xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
+            crate::session::memory_observation::V2ModelUsage,
         ),
         V2DreamModelFailure,
     > {
-        use xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass;
         const V2_DREAM_SYSTEM_PROMPT: &str = "Consolidate only the supplied claimed observations \
             into the supplied curated topics. Topics are reference notes for a future agent that has \
             not seen any conversation and will read them before starting related work. A topic covers \
@@ -1120,9 +904,8 @@ impl SessionActor {
             self.prepare_chat_completion(false)
                 .await
                 .map_err(|error| V2DreamModelFailure {
-                    class: MemoryV2FailureClass::Model,
                     detail: error.to_string(),
-                    usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+                    usage: crate::session::memory_observation::V2ModelUsage::default(),
                 })?;
         let model = self
             .chat_state_handle
@@ -1144,7 +927,6 @@ impl SessionActor {
             x_grok_conv_id: Some(format!("dream-v2-{}", uuid::Uuid::new_v4())),
             x_grok_req_id: Some(format!("xai-dream-v2-{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(self.session_info.id.to_string()),
-            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
             ..Default::default()
         };
         tokio::time::timeout(
@@ -1154,9 +936,8 @@ impl SessionActor {
         )
         .await
         .map_err(|_| V2DreamModelFailure {
-            class: MemoryV2FailureClass::Timeout,
             detail: "v2 Dream model call timed out".to_owned(),
-            usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+            usage: crate::session::memory_observation::V2ModelUsage::default(),
         })?
         .map(|response| {
             let usage =
@@ -1164,9 +945,8 @@ impl SessionActor {
             (response.assistant_text(), usage)
         })
         .map_err(|error| V2DreamModelFailure {
-            class: MemoryV2FailureClass::Model,
             detail: format!("v2 Dream model call failed: {error}"),
-            usage: xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage::default(),
+            usage: crate::session::memory_observation::V2ModelUsage::default(),
         })
     }
 }

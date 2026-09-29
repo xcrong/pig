@@ -2,7 +2,7 @@
 //!
 //! One implementation compiles, so the trait is a checklist: a backend that forgets a decision fails to build.
 use crate::flow::StderrCallback;
-use crate::refresh::{DiagnosticUploader, TokenRefresher};
+use crate::refresh::TokenRefresher;
 use crate::{AuthManager, AuthUrlInfo, GrokAuth, GrokComConfig, LoginTransportOverride};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -46,7 +46,6 @@ pub trait AuthBackend {
         &self,
         manager: Arc<AuthManager>,
         auth_provider_command: Option<String>,
-        diagnostic_uploader: Option<DiagnosticUploader>,
     ) -> Arc<dyn TokenRefresher>;
 }
 pub type ActiveAuthBackend = grok::GrokAuthBackend;

@@ -20,7 +20,6 @@ pub(crate) mod command_catalog;
 pub mod consent;
 pub(crate) mod deferred_subagent_finishes;
 pub use crate::link_opener;
-use xai_grok_telemetry::region;
 use xai_grok_telemetry::region::Parent;
 /// Off-thread full-file syntax highlight upgrade for edit diffs.
 pub mod edit_highlight_worker;
@@ -743,7 +742,6 @@ pub async fn run(
             warmed_auth.as_ref(),
             &grok_com_config,
         );
-        xai_grok_telemetry::startup::record_prefetch_wait(prefetch_wait_started.elapsed());
         settings
     } else {
         None
@@ -1019,8 +1017,9 @@ pub async fn run(
         xai_grok_shell::managed_config::startup_profile(),
     );
     if let Some(ref raw) = connect_ui_timeout_env {
-        crate::unified_log::write_direct_info(
+        crate::unified_log::info(
             "startup connect budget from env",
+            None,
             Some(serde_json::json!({
                 "raw": raw,
                 "timeout_secs": connect_ui_timeout.as_secs(),
@@ -1043,8 +1042,8 @@ pub async fn run(
         ),
     );
     let tracing_handle = crate::tracing::init_tracing();
-    let pending_startup = xai_grok_telemetry::startup::PendingStartup::new();
-    let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
+    let pending_startup = crate::acp::startup::PendingStartup::new();
+    let timer = crate::acp::startup::begin(crate::acp::Owner::Client);
     let primary_started = std::time::Instant::now();
     let connect_result = bounded_connect(
         &cancel,
@@ -1070,7 +1069,7 @@ pub async fn run(
             tracing::warn!(error = %f.error, "leader connect failed; falling back to embedded agent");
             timer.emit_telemetry(primary_target, f.outcome, f.timeout_secs, false);
             let flags = fallback_flags.expect("set on the use_leader path");
-            let timer = xai_grok_telemetry::startup::begin(crate::acp::Owner::Client);
+            let timer = crate::acp::startup::begin(crate::acp::Owner::Client);
             let target = crate::acp::AgentKind::Embedded;
             let fallback = bounded_connect(
                 &cancel,
@@ -1121,7 +1120,6 @@ pub async fn run(
                 ReaderThread::detached(),
                 screen_mode,
             );
-            crate::unified_log::flush_blocking().await;
             cancel.cancel();
             return Err(f.error);
         }
@@ -1177,7 +1175,6 @@ pub async fn run(
         reader_thread,
         current_screen_mode(),
     );
-    crate::unified_log::flush_blocking().await;
     drop(agent_guard);
     xai_grok_telemetry::session_ctx::drain_at_process_exit().await;
     xai_tty_utils::global_process_scope().kill_all();

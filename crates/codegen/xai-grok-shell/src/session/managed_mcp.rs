@@ -284,18 +284,12 @@ pub(crate) struct McpServerWithPolicy {
     pub disabled_reason: Option<McpBlockReason>,
 }
 
-/// The documented admin signal for a policy-dropped server — written to the always-on
-/// unified.jsonl as well as tracing, which alone reaches no file in a default run.
+/// The documented admin signal for a policy-dropped server.
 fn log_policy_block(name: &str, reason: &McpBlockReason) {
     tracing::warn!(
         name,
         reason = %reason,
         "MCP server blocked by managed settings policy"
-    );
-    xai_grok_telemetry::unified_log::warn(
-        "MCP server blocked by managed settings policy",
-        None,
-        Some(serde_json::json!({ "server": name, "reason": reason.to_string() })),
     );
 }
 
@@ -427,7 +421,6 @@ pub(crate) fn merge_managed_mcp_servers_sourced(
     acp::McpServer,
     xai_grok_tools::types::config_source::ConfigSource,
 )> {
-    let _mcp_merge_timer = crate::instrumentation::timer("mcp_merge_managed");
     use xai_grok_tools::types::config_source::ConfigSource;
 
     let toml_claimed_names = crate::util::config::all_toml_mcp_server_names(cwd);
@@ -1799,9 +1792,9 @@ headers = { "X-A" = "1", "X-B" = "2", "X-C" = "3" }
         );
     }
 
-    /// The documented admin signal must land in the always-on unified.jsonl, not just tracing.
+    /// A denied server is tagged with its reason; the block is also logged for admins.
     #[test]
-    fn policy_block_writes_unified_log_warn() {
+    fn policy_block_tags_denied_server() {
         use xai_grok_workspace::permission::resolution::{
             AllowedMcpServer, McpServerAllowlist, McpServerPolicy,
         };
@@ -1824,16 +1817,6 @@ headers = { "X-A" = "1", "X-B" = "2", "X-C" = "3" }
         assert!(
             at(&tagged, 0).disabled_reason.is_some(),
             "server must be tagged"
-        );
-
-        let log = xai_grok_telemetry::unified_log::snapshot_log().unwrap_or_default();
-        let log = String::from_utf8_lossy(&log);
-        assert!(
-            log.lines().any(
-                |l| l.contains("MCP server blocked by managed settings policy")
-                    && l.contains("corp-denied-unified-log")
-            ),
-            "block signal missing from unified log"
         );
     }
 

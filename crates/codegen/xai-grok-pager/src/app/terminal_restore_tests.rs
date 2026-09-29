@@ -41,7 +41,6 @@ fn test_terminal_and_writer_thread() -> (PagerTerminal, WriterThread) {
 /// The fence runs after teardown: the pop must be on the wire before the DA1 query.
 #[test]
 fn restore_runs_teardown_even_when_writer_failed() {
-    xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
     let (terminal, writer_thread) = test_terminal_and_writer_thread();
     let teardown_called = std::sync::Arc::new(AtomicBool::new(false));
     let observed = std::sync::Arc::clone(&teardown_called);
@@ -73,7 +72,6 @@ fn restore_runs_teardown_even_when_writer_failed() {
 /// so the teardown that follows must be bounded: `/quit` returns even if teardown wedges.
 #[test]
 fn restore_bounds_teardown_after_a_timed_out_writer_join() {
-    xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
     let (terminal, writer_thread) = test_terminal_and_writer_thread();
     let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 

@@ -6,7 +6,7 @@ mod response;
 mod store;
 mod supervisor;
 
-pub use policy::ManagedPolicyRefusal;
+pub use policy::{AuthMode, ManagedPolicyRefusal};
 pub use response::ManagedConfigError;
 // Test seams: pub only so the integration suites can link them.
 #[doc(hidden)]

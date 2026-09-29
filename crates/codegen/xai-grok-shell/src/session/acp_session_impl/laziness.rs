@@ -429,7 +429,6 @@ impl SessionActor {
             x_grok_conv_id: Some(format!("trace-classifier-{}", uuid::Uuid::new_v4())),
             x_grok_req_id: Some(format!("{LAZINESS_REQ_ID_PREFIX}{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(session_id_str),
-            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
             ..ConversationRequest::default()
         };
 

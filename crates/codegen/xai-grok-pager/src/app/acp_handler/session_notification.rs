@@ -1808,17 +1808,6 @@ pub(super) fn apply_retry_state(
             session.set_retry_activity(None);
             session.rate_limited = *rate_limited;
             if *rate_limited {
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::events::RateLimitHit {
-                        model_id: session
-                            .models
-                            .current
-                            .as_ref()
-                            .map(|m| m.0.to_string())
-                            .unwrap_or_default(),
-                        attempts: *attempts,
-                    },
-                );
             }
             is_credit_limit = super::super::dispatch::is_credit_limit_error(None, reason);
             let is_free_usage = *rate_limited
@@ -1885,14 +1874,6 @@ pub(super) fn apply_retry_state(
         }
     }
     if is_credit_limit {
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::CreditLimitHit {
-            model_id: session
-                .models
-                .current
-                .as_ref()
-                .map(|m| m.0.to_string())
-                .unwrap_or_default(),
-        });
     } else if !is_reauth {
         session.in_flight_prompt = None;
     }

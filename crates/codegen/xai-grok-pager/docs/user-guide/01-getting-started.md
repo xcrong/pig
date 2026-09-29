@@ -43,17 +43,21 @@ grok --version
 Update to the latest version at any time:
 
 ```bash
-grok update
+pig update
 ```
 
+Direct-binary installs download the release tarball from the pig GitHub
+Releases page (`https://github.com/xcrong/pig/releases`); npm installs update
+via npm. Check without installing with `pig update --check`.
+
 If you installed Pig Agent with WinGet, update it with WinGet instead. Quit
-Grok first, then run:
+Pig Agent first, then run:
 
 ```powershell
 winget upgrade --id xAI.GrokBuild -e
 ```
 
-On a WinGet install, `grok update` prints this command and changes nothing.
+On a WinGet install, `pig update` prints this command and changes nothing.
 The WinGet package tracks the stable channel, and new releases can take a few
 days to reach it.
 

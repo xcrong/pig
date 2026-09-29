@@ -860,24 +860,6 @@ fn startup_hints_from_meta_session_object_wins_whole_not_merged() {
     assert!(!hints.non_interactive);
 }
 #[test]
-fn startup_hints_from_meta_adopts_session_traceparent_only() {
-    let tp = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
-    let meta = serde_json::json!({ "traceparent": tp });
-    assert_eq!(
-        startup_hints_from_meta(meta.as_object(), None)
-            .startup_traceparent
-            .borrow()
-            .as_deref(),
-        Some(tp)
-    );
-    assert!(
-        startup_hints_from_meta(None, meta.as_object())
-            .startup_traceparent
-            .borrow()
-            .is_none()
-    );
-}
-#[test]
 fn startup_hints_from_meta_unparseable_falls_through_then_defaults() {
     let bad = serde_json::json!({ "startupHints": "yes" });
     let init = serde_json::json!({ "startupHints": { "nonInteractive": true } });

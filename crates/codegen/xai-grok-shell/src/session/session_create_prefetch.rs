@@ -171,7 +171,6 @@ impl SessionCreatePrefetch {
     pub(crate) async fn join_plugin_registry(
         &mut self,
     ) -> Option<Arc<xai_grok_agent::plugins::PluginRegistry>> {
-        let _timer = crate::instrumentation_timer!("session.spawn_and_register.plugin_refresh");
         if !self.plugins.is_started() {
             let verdict = self.reconciled.unwrap_or_else(|| {
                 folder_trust::resolve_and_record_from_scan(&self.cwd, None, false, self.scan)

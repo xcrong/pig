@@ -128,14 +128,6 @@ impl SessionActor {
             if state.running_task.is_some() || state.finalization_gate.is_active() {
                 let queue_depth = state.pending_inputs.len();
                 if queue_depth > 0 {
-                    xai_grok_telemetry::unified_log::debug(
-                        "shell.prompt.start_blocked",
-                        Some(self.session_info.id.0.as_ref()),
-                        Some(serde_json::json!({
-                            "reason": "task_already_running",
-                            "queue_depth": queue_depth,
-                        })),
-                    );
                     tracing::debug!(
                         target: "qtrace",
                         pid = std::process::id(),
@@ -195,7 +187,7 @@ impl SessionActor {
                 == super::memory_control::MemoryPromptSync::RenderFailed
         {
             tracing::warn!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 session_id = %self.session_info.id.0,
                 "memory prompt sync failed again at turn promotion; this turn samples with the \
                  previous memory section"
@@ -212,14 +204,6 @@ impl SessionActor {
         }
 
         if state.hook_block_held() {
-            xai_grok_telemetry::unified_log::debug(
-                "shell.prompt.start_blocked",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "reason": "hook_block_hold",
-                    "queue_depth": state.pending_inputs.len(),
-                })),
-            );
             tracing::debug!(
                 target: "qtrace",
                 pid = std::process::id(),
@@ -298,15 +282,6 @@ impl SessionActor {
         {
             let front_prompt_id = front.prompt_id.as_str();
             let queue_depth = state.pending_inputs.len();
-            xai_grok_telemetry::unified_log::debug(
-                "shell.prompt.start_blocked",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "reason": "front_edit_hold",
-                    "queue_depth": queue_depth,
-                    "front_prompt_id": front_prompt_id,
-                })),
-            );
             tracing::debug!(
                 target: "qtrace",
                 pid = std::process::id(),
@@ -345,7 +320,6 @@ impl SessionActor {
             input_origin,
             running_display,
             tool_overrides_update,
-            traceparent,
         ) = {
             let Some(front) = state.pending_inputs.front_mut() else {
                 return;
@@ -368,7 +342,6 @@ impl SessionActor {
                 front.input_origin.clone(),
                 running_display,
                 front.tool_overrides_update.take(),
-                front.traceparent.clone(),
             )
         };
         self.apply_tool_overrides_update(tool_overrides_update);
@@ -377,11 +350,6 @@ impl SessionActor {
                 gate.set(false);
             }
             state.notifications_suppressed = false;
-            xai_grok_telemetry::unified_log::info(
-                "shell.task_wake.gate_cleared",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({ "reason": "queued_user_promotion" })),
-            );
         }
         {
             let mut current_prompt_id = self
@@ -444,7 +412,6 @@ impl SessionActor {
                 json_schema,
                 persist_ack,
                 parsed_prompt_tx,
-                traceparent,
                 start_gate,
             },
             epoch,
@@ -776,7 +743,6 @@ impl SessionActor {
             queue_meta: None,
             queue_mutation_policy: QueueMutationPolicy::hidden(),
             send_now: false,
-            traceparent: None,
         });
 
         tracing::info!(

@@ -45,7 +45,6 @@ use enrichment::apply_user_info_enrichment;
 use lock::{LockAcquire, try_lock_auth_file_async};
 use sleep_gate::SleepGate;
 use xai_grok_shell_base::util::dual_clock::DualClock;
-use xai_grok_telemetry::events::ManualAuthSurface;
 /// Why a token refresh is being requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefreshReason {
@@ -126,7 +125,7 @@ impl std::fmt::Debug for AuthManager {
         f.debug_struct("AuthManager").finish_non_exhaustive()
     }
 }
-/// Single source of truth for `auth.json` and the in-memory bearer. Lock order: `refresh_lock` (async), then the sync locks (`inner` / `refresher` / `permanent_failure` / `manual_auth`), never co-held.
+/// Single source of truth for `auth.json` and the in-memory bearer. Lock order: `refresh_lock` (async), then the sync locks (`inner` / `refresher` / `permanent_failure`), never co-held.
 /// `permanent_failure()` reads `permanent_failure` first, then `inner` (via `attempted_verdict_key`, when a verdict is stored), never co-held. Never hold a `parking_lot` guard across `.await`.
 /// Refreshers return [`RefreshOutcome`] for `refresh_chain` to apply.
 pub struct AuthManager {
@@ -182,9 +181,6 @@ pub struct AuthManager {
     /// Keeps the OS power listener alive for this manager's lifetime; dropping it stops the listener.
     /// `None` until started (or if unavailable).
     power_listener: parking_lot::Mutex<Option<xai_system_power::SystemPowerListener>>,
-    /// Per-process `manual_auth` KPI debounce, shared by all recoveries on this manager.
-    /// Repeated 401s on the most-recent dead credential emit once.
-    manual_auth: crate::recovery::ManualAuthTracker,
     /// First-party env key may advertise after initialize probe (default true).
     /// Lives here (not on `MvpAgent`) so the probe verdict is auth-owned.
     first_party_env_api_key_ok: std::sync::atomic::AtomicBool,
@@ -269,18 +265,6 @@ impl AuthManager {
         proxy_base_url: String,
     ) -> Self {
         let scope = ActiveAuthBackend::default().scope_key(&grok_com_config);
-        xai_grok_telemetry::unified_log::info(
-            "AuthManager::new",
-            None,
-            Some(serde_json::json!({
-                "scope": &scope,
-                "grok_home": grok_home.display().to_string(),
-                "HOME": std::env::var("HOME").unwrap_or_else(|_| "(unset)".into()),
-                "GROK_HOME": std::env::var("GROK_HOME").unwrap_or_else(|_| "(unset)".into()),
-                "GROK_AUTH_PATH": std::env::var("GROK_AUTH_PATH").unwrap_or_else(|_| "(unset)".into()),
-                "GROK_AUTH": std::env::var("GROK_AUTH").map(|_| "(set)".to_string()).unwrap_or_else(|_| "(unset)".into()),
-            })),
-        );
         let path = auth_json_path(grok_home);
         if let Ok(inline_json) = std::env::var("GROK_AUTH") {
             if let Ok(auth) = serde_json::from_str::<GrokAuth>(&inline_json) {
@@ -331,11 +315,6 @@ impl AuthManager {
                 (None, detail, state)
             }
         };
-        xai_grok_telemetry::unified_log::info(
-            "AuthManager::new auth.json load result",
-            None,
-            Some(auth_read_detail),
-        );
         let manager = Self::assemble(
             auth,
             path,
@@ -411,7 +390,6 @@ impl AuthManager {
             refresh_drain_cv: parking_lot::Condvar::new(),
             power_listener_started: std::sync::atomic::AtomicBool::new(false),
             power_listener: parking_lot::Mutex::new(None),
-            manual_auth: Default::default(),
             first_party_env_api_key_ok: std::sync::atomic::AtomicBool::new(true),
             dark_wake_defer_since: parking_lot::RwLock::new(None),
             #[cfg(test)]
@@ -460,16 +438,6 @@ impl AuthManager {
         } else {
             ScopeRemoval::SkippedLockUnavailable
         };
-        xai_grok_telemetry::unified_log::warn(
-            "auth: scope removed from auth.json",
-            None,
-            Some(serde_json::json!({
-                "scope": scope,
-                "is_current_scope": scope == self.scope,
-                "disk_mutation": disk_mutation.label(),
-                "path": self.path.display().to_string(),
-            })),
-        );
         if scope == self.scope {
             self.clear_inner();
             *self.permanent_failure.write() = None;
@@ -534,15 +502,6 @@ impl AuthManager {
         );
         let retain = in_mem.as_ref().is_some_and(|a| a.refresh_token.is_some()) && !sticky_verdict;
         if let Some(a) = in_mem.filter(|_| retain) {
-            xai_grok_telemetry::unified_log::warn(
-                "auth: disk anomaly, retaining in-memory credentials",
-                None,
-                Some(serde_json::json!({
-                    "disk_state": format!("{last_state:?}"),
-                    "retained_key_prefix": bearer_suffix(&a.key),
-                    "was_expired": is_expired(&a),
-                })),
-            );
         } else {
             self.drop_in_memory_credentials(
                 "disk anomaly; no live refresh token to retain (missing RT or permanent failure)",
@@ -555,17 +514,6 @@ impl AuthManager {
     /// Permanent discard after a live IdP rejection uses [`clear_inner`] alone so the sticky short-circuit survives until login.
     fn drop_in_memory_credentials(&self, reason: &str) {
         if let Some(d) = self.current_or_expired() {
-            xai_grok_telemetry::unified_log::warn(
-                "auth: in-memory credentials dropped (disk reload found none)",
-                None,
-                Some(serde_json::json!({
-                    "reason": reason,
-                    "dropped_key_prefix": bearer_suffix(&d.key),
-                    "had_refresh_token": d.refresh_token.is_some(),
-                    "was_expired": is_expired(&d),
-                    "disk_state": (*self.disk_state.read()).map(|s| format!("{s:?}")),
-                })),
-            );
         }
         self.clear_inner();
         *self.permanent_failure.write() = None;
@@ -597,11 +545,6 @@ impl AuthManager {
             AuthError::ApiKeyAuthDisabled => "api_key_disabled",
             _ => "login_policy",
         };
-        xai_grok_telemetry::unified_log::warn(
-            "auth: cached session rejected by login policy; clearing",
-            None,
-            Some(serde_json::json!({ "policy": policy, "reason": error.to_string() })),
-        );
         if let Err(e) = self.clear() {
             tracing::warn!(error = %e, "auth: failed to clear policy-violating session");
         }
@@ -756,11 +699,6 @@ impl AuthManager {
             Ok(map) => map,
             Err(e) => {
                 tracing::warn!(error = %e, "auth: read failed, updating in-memory only");
-                xai_grok_telemetry::unified_log::warn(
-                    "auth update skipped disk write (read failed)",
-                    None,
-                    Some(serde_json::json!({ "error": e.to_string() })),
-                );
                 self.with_inner_write(|inner| *inner = Some(auth.clone()));
                 self.spawn_user_info_enrichment(auth.clone());
                 return Ok(auth);
@@ -772,22 +710,16 @@ impl AuthManager {
         let write_result = write_auth_json(&self.path, &map);
         let elapsed_ms = update_started.elapsed().as_millis() as u64;
         match &write_result {
-            Ok(()) => xai_grok_telemetry::unified_log::info(
-                "auth update disk written",
-                None,
-                Some(serde_json::json!({
-                    "rt_prefix": auth.refresh_token.as_deref().map(bearer_suffix),
-                    "key_prefix": bearer_suffix(&auth.key),
-                    "elapsed_ms": elapsed_ms,
-                })),
+            Ok(()) => tracing::info!(
+                rt_prefix = auth.refresh_token.as_deref().map(bearer_suffix),
+                key_prefix = %bearer_suffix(&auth.key),
+                elapsed_ms,
+                "auth update disk written"
             ),
-            Err(e) => xai_grok_telemetry::unified_log::error(
-                "auth update disk write failed",
-                None,
-                Some(serde_json::json!({
-                    "error": e.to_string(),
-                    "elapsed_ms": elapsed_ms,
-                })),
+            Err(e) => tracing::error!(
+                error = %e,
+                elapsed_ms,
+                "auth update disk write failed"
             ),
         }
         *self.permanent_failure.write() = None;
@@ -803,11 +735,6 @@ impl AuthManager {
             Ok(map) => map,
             Err(e) => {
                 tracing::warn!(error = %e, "auth: read failed, updating in-memory only (no enrichment)");
-                xai_grok_telemetry::unified_log::warn(
-                    "auth update skipped disk write (read failed, no enrichment)",
-                    None,
-                    Some(serde_json::json!({ "error": e.to_string() })),
-                );
                 self.with_inner_write(|inner| *inner = Some(auth.clone()));
                 return Ok(auth);
             }
@@ -818,22 +745,16 @@ impl AuthManager {
         let write_result = write_auth_json(&self.path, &map);
         let elapsed_ms = started.elapsed().as_millis() as u64;
         match &write_result {
-            Ok(()) => xai_grok_telemetry::unified_log::info(
-                "auth update disk written (no enrichment)",
-                None,
-                Some(serde_json::json!({
-                    "rt_prefix": auth.refresh_token.as_deref().map(bearer_suffix),
-                    "key_prefix": bearer_suffix(&auth.key),
-                    "elapsed_ms": elapsed_ms,
-                })),
+            Ok(()) => tracing::info!(
+                rt_prefix = auth.refresh_token.as_deref().map(bearer_suffix),
+                key_prefix = %bearer_suffix(&auth.key),
+                elapsed_ms,
+                "auth update disk written (no enrichment)"
             ),
-            Err(e) => xai_grok_telemetry::unified_log::error(
-                "auth update disk write failed (no enrichment)",
-                None,
-                Some(serde_json::json!({
-                    "error": e.to_string(),
-                    "elapsed_ms": elapsed_ms,
-                })),
+            Err(e) => tracing::error!(
+                error = %e,
+                elapsed_ms,
+                "auth update disk write failed (no enrichment)"
             ),
         }
         *self.permanent_failure.write() = None;
@@ -970,30 +891,11 @@ impl AuthManager {
                 decline @ (DiskTokenDecline::LaggingMemoryMint
                 | DiskTokenDecline::SameKeyAsRejected),
             ) => {
-                xai_grok_telemetry::unified_log::info(
-                    "auth: disk token declined",
-                    None,
-                    Some(serde_json::json!({
-                        "decline": decline.as_ref(),
-                        "refresh_reason": format!("{reason:?}"),
-                        "prev_key_prefix": prev,
-                        "disk_key_prefix": disk_auth.as_ref().map(|a| bearer_suffix(&a.key)),
-                    })),
-                );
                 return None;
             }
             Err(_) => return None,
         };
         let adopted = bearer_suffix(&refreshed.key);
-        xai_grok_telemetry::unified_log::info(
-            msg,
-            None,
-            Some(serde_json::json!({
-                "adopted_key_prefix": adopted,
-                "prev_key_prefix": prev,
-                "key_changed": prev.as_deref() != Some(adopted),
-            })),
-        );
         Some(refreshed)
     }
     /// Current auth or an `External`-defaulted placeholder.
@@ -1122,20 +1024,10 @@ impl AuthManager {
         });
         match new_state {
             DiskAuthState::Ok => {
-                xai_grok_telemetry::unified_log::info(
-                    "auth disk state: entry present",
-                    None,
-                    Some(ctx),
-                );
             }
             DiskAuthState::FileMissing
             | DiskAuthState::EntryMissing
             | DiskAuthState::Unreadable => {
-                xai_grok_telemetry::unified_log::warn(
-                    "auth disk state: entry lost",
-                    None,
-                    Some(ctx),
-                );
             }
         }
     }
@@ -1149,11 +1041,9 @@ impl AuthManager {
     }
     /// Set up refresh capability. Call once per `Arc<AuthManager>` at startup.
     /// Subsequent calls are no-op via an atomic guard.
-    /// Per-session call sites therefore don't reset refresher-internal state like `OidcRefresher::upload_in_flight`.
     pub fn configure_refresher(
         self: &Arc<Self>,
         auth_provider_command: Option<String>,
-        diagnostic_uploader: Option<super::refresh::DiagnosticUploader>,
     ) -> bool {
         use std::sync::atomic::Ordering;
         if self
@@ -1164,11 +1054,7 @@ impl AuthManager {
             tracing::debug!("auth: configure_refresher already wired; ignoring");
             return false;
         }
-        let refresher = super::refresh::build_refresher(
-            Arc::clone(self),
-            auth_provider_command,
-            diagnostic_uploader,
-        );
+        let refresher = super::refresh::build_refresher(Arc::clone(self), auth_provider_command);
         *self.refresher.write() = Some(refresher);
         true
     }
@@ -1298,27 +1184,12 @@ impl AuthManager {
             RefreshOutcome::Success(new_auth) => match self.update(*new_auth).await {
                 Ok(auth) => {
                     let new_suffix = bearer_suffix(&auth.key);
-                    xai_grok_telemetry::unified_log::info(
-                        "auth.refresh.success",
-                        None,
-                        Some(serde_json::json!({
-                            "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            "old_key_prefix": pre_key_suffix,
-                            "new_key_prefix": new_suffix,
-                            "key_changed": pre_key_suffix != Some(new_suffix),
-                        })),
-                    );
                     tracing::info!(expires_at = ?auth.expires_at, "auth.refresh.success");
                     self.refresh_notify.notify_waiters();
                     Ok(auth)
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "auth: failed to persist refreshed token");
-                    xai_grok_telemetry::unified_log::warn(
-                        "auth.refresh.persist_failed",
-                        None,
-                        Some(serde_json::json!({ "error": format!("{e}") })),
-                    );
                     Err(AuthError::transient_source(e))
                 }
             },
@@ -1328,13 +1199,6 @@ impl AuthManager {
                 tried_refresh_token,
             } => {
                 tracing::warn!(reason = ?error.reason, "auth.refresh.permanent_failure");
-                xai_grok_telemetry::unified_log::warn(
-                    "auth.refresh.permanent_failure",
-                    None,
-                    Some(serde_json::json!({
-                        "reason": format!("{:?}", error.reason),
-                    })),
-                );
                 if let Some(refreshed) = self.try_adopt_disk_token(
                     reason,
                     "auth: adopted sibling token after PermanentFailure",
@@ -1356,17 +1220,6 @@ impl AuthManager {
                     };
                     if sibling_rotated {
                         tracing::info!("auth: sibling-rotation detected; demoting to transient");
-                        xai_grok_telemetry::unified_log::info(
-                            "auth.refresh.sibling_rotation_demoted",
-                            None,
-                            Some(serde_json::json!({
-                                "reason": format!("{failed_reason:?}"),
-                                "tried_rt_prefix": tried_refresh_token
-                                    .as_deref()
-                                    .map(bearer_suffix),
-                                "disk_rt_prefix": disk_rt.map(bearer_suffix),
-                            })),
-                        );
                         return Err(AuthError::transient(format!(
                             "sibling-rotation: {failed_reason:?}"
                         )));
@@ -1402,16 +1255,6 @@ impl AuthManager {
                     if clear_mem {
                         self.clear_inner();
                     }
-                    xai_grok_telemetry::unified_log::warn(
-                        "auth: cleared credentials after permanent refresh failure",
-                        None,
-                        Some(serde_json::json!({
-                            "reason": format!("{failed_reason:?}"),
-                            "disk_mutation": disk_mutation,
-                            "cleared_mem": clear_mem,
-                            "cleared_disk": clear_disk,
-                        })),
-                    );
                 } else if let Some(key) = tried_key.or(attempted_key) {
                     self.record_permanent_failure(key, error);
                 }
@@ -1419,11 +1262,6 @@ impl AuthManager {
             }
             RefreshOutcome::TransientFailure { message } => {
                 tracing::warn!(%message, "auth.refresh.transient_failure");
-                xai_grok_telemetry::unified_log::warn(
-                    "auth.refresh.transient_failure",
-                    None,
-                    Some(serde_json::json!({ "message": &message })),
-                );
                 Err(AuthError::transient(message))
             }
         }
@@ -1441,15 +1279,6 @@ impl AuthManager {
         };
         match self.try_use_disk_token(Some(&auth), RefreshReason::PreRequest) {
             Ok(adopted) => {
-                xai_grok_telemetry::unified_log::info(
-                    "auth: pick_up_sibling_token adopted",
-                    None,
-                    Some(serde_json::json!({
-                        "adopted_key_prefix": bearer_suffix(&adopted.key),
-                        "expires_at": adopted.expires_at.map(|e| e.to_rfc3339()),
-                        "rt_prefix": adopted.refresh_token.as_deref().map(bearer_suffix),
-                    })),
-                );
                 true
             }
             Err(decline) => {
@@ -1473,15 +1302,6 @@ impl AuthManager {
         error: crate::error::RefreshTokenFailedError,
     ) {
         let ttl_seconds = (!error.reason.is_sticky()).then(|| PERMANENT_FAILURE_TTL.as_secs());
-        xai_grok_telemetry::unified_log::warn(
-            "auth.permanent_failure.set",
-            None,
-            Some(serde_json::json!({
-                "reason": format!("{:?}", error.reason),
-                "message": error.reason.user_message(),
-                "ttl_seconds": ttl_seconds,
-            })),
-        );
         *self.permanent_failure.write() = Some(ScopedRefreshFailure {
             token_key,
             error,
@@ -1523,7 +1343,6 @@ impl AuthManager {
     }
     /// Whether the only way back is a manual `/login`. That means a sticky IdP rejection of the refresh token, or no refresh authority or refreshable credential at all.
     /// `false` for anything that self-heals (transient failures, recoverable verdicts). A *live state* query ("can a future refresh succeed?").
-    /// Deliberately separate from `recovery::manual_auth_reason`, which buckets a terminal error *value* for the KPI. Drives the "`/login` banner vs self-healing" decision.
     pub fn requires_manual_reauth(&self) -> bool {
         use crate::error::RefreshTokenError;
         if let Some(AuthError::Refresh(RefreshTokenError::Permanent(e))) = self.permanent_failure()
@@ -1579,16 +1398,12 @@ impl AuthManager {
     pub fn unauthorized_recovery(
         self: &Arc<Self>,
         rejected: Option<GrokAuth>,
-        source: crate::recovery::RecoverySource,
     ) -> crate::recovery::UnauthorizedRecovery {
-        crate::recovery::UnauthorizedRecovery::new(self.clone(), rejected, source)
+        crate::recovery::UnauthorizedRecovery::new(self.clone(), rejected)
     }
     /// 401 recovery off the live bearer. Snapshots the rejected credential once for KPI attribution. On **transient** refresh failure (network, 5xx, sleep/dark-wake defer, lock timeout) retries with backoff before giving up.
     /// Permanent failures and NotLoggedIn stop immediately. After a successful recovery the **caller** retries the original request. (Turn-level may resubmit more than once; API resubmit is separate from refresh retries.)
-    pub async fn try_recover_unauthorized(
-        self: &Arc<Self>,
-        source: crate::recovery::RecoverySource,
-    ) -> bool {
+    pub async fn try_recover_unauthorized(self: &Arc<Self>) -> bool {
         /// Bounded refresh attempts for non-permanent failures.
         /// Kept strictly below OidcRefresher's consecutive-transient escalation threshold.
         /// One 401 recovery then cannot alone escalate a network blip to permanent `Other`.
@@ -1597,22 +1412,12 @@ impl AuthManager {
         let mut delay = StdDuration::from_millis(500);
         for attempt in 0..MAX_TRANSIENT_ATTEMPTS {
             match self
-                .unauthorized_recovery(cached.clone(), source)
+                .unauthorized_recovery(cached.clone())
                 .next()
                 .await
             {
                 Ok(_) => return true,
                 Err(e) if e.is_transient() && attempt + 1 < MAX_TRANSIENT_ATTEMPTS => {
-                    xai_grok_telemetry::unified_log::warn(
-                        "auth recovery: transient failure, retrying",
-                        None,
-                        Some(serde_json::json!({
-                            "attempt": attempt + 1,
-                            "max_attempts": MAX_TRANSIENT_ATTEMPTS,
-                            "delay_ms": delay.as_millis() as u64,
-                            "error": format!("{e}"),
-                        })),
-                    );
                     tokio::time::sleep(delay).await;
                     delay = (delay.saturating_mul(2)).min(StdDuration::from_secs(4));
                 }
@@ -1620,22 +1425,6 @@ impl AuthManager {
             }
         }
         false
-    }
-    pub(crate) fn record_manual_auth(
-        &self,
-        snapshot: &crate::recovery::RejectedAuth,
-        err: &AuthError,
-        trigger: ManualAuthSurface,
-    ) {
-        self.manual_auth.record(snapshot, err, trigger);
-    }
-    #[cfg(test)]
-    pub fn manual_auth_last_token(&self) -> Option<String> {
-        self.manual_auth.last_token_for_test()
-    }
-    #[cfg(test)]
-    pub fn manual_auth_last_emit(&self) -> Option<xai_grok_telemetry::events::ManualAuth> {
-        self.manual_auth.last_emit_for_test()
     }
     /// Spawn a background task that proactively refreshes the token ahead of expiry. Cancelled via `cancel`. Idempotent: a second call on the same `Arc` is a no-op (debug log, then return).
     /// Sleep duration and back-off conditions are computed by [`compute_proactive_sleep`]; see its body for the six non-busy-loop guards.
@@ -1714,15 +1503,6 @@ impl AuthManager {
                             "auth: proactive refresh skipped, in-memory token still valid"
                         );
                     }
-                    xai_grok_telemetry::unified_log::info(
-                        "auth: proactive refresh skipped",
-                        None,
-                        Some(serde_json::json!({
-                            "adopted_from_sibling": adopted_from_sibling,
-                            "key_prefix": adopted,
-                            "expires_at": expires_at,
-                        })),
-                    );
                     consecutive_failures = 0;
                     continue;
                 }
@@ -1738,46 +1518,14 @@ impl AuthManager {
                             consecutive_failures,
                             "auth: proactive refresh did not renew; cached token still wire-valid"
                         );
-                        xai_grok_telemetry::unified_log::warn(
-                            "auth: proactive refresh completed",
-                            None,
-                            Some(serde_json::json!({
-                                "result": "not_renewed",
-                                "consecutive_failures": consecutive_failures,
-                                "backoff_ms": proactive_failure_backoff(consecutive_failures)
-                                    .as_millis() as u64,
-                                "key_prefix": bearer_suffix(&auth.key),
-                                "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            })),
-                        );
                     }
                     Ok(auth) => {
                         consecutive_failures = 0;
                         tracing::info!("auth: proactive refresh succeeded");
-                        xai_grok_telemetry::unified_log::info(
-                            "auth: proactive refresh completed",
-                            None,
-                            Some(serde_json::json!({
-                                "result": "success",
-                                "key_prefix": bearer_suffix(&auth.key),
-                                "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                            })),
-                        );
                     }
                     Err(e) => {
                         consecutive_failures = consecutive_failures.saturating_add(1);
                         tracing::warn!(error = %e, "auth: proactive refresh failed");
-                        xai_grok_telemetry::unified_log::warn(
-                            "auth: proactive refresh completed",
-                            None,
-                            Some(serde_json::json!({
-                                "result": "failed",
-                                "consecutive_failures": consecutive_failures,
-                                "backoff_ms": proactive_failure_backoff(consecutive_failures)
-                                    .as_millis() as u64,
-                                "error": format!("{e}"),
-                            })),
-                        );
                     }
                 }
             }

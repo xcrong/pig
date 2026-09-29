@@ -13,23 +13,15 @@ use super::start_artifact_publication::{
 };
 use super::*;
 use crate::agent::remote_config::task_model_policy::{
-    TaskModelSelection, selection_telemetry_kind,
+    TaskModelSelection,
 };
 use crate::upload::trace::PromptMetadataParams;
 use xai_grok_sampling_types::ReasoningEffort;
-use xai_grok_telemetry::events::{SubagentModelOverrideRejected, SubagentModelRejectionReason};
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent;
-use xai_grok_telemetry::subagent_spawn::{SubagentSpawnPhase, phase_region};
 use xai_grok_tools::implementations::grok_build::task::model_policy;
 use xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageSource;
 use xai_grok_tools::implementations::grok_build::task::types::SubagentCapabilityModeExt;
 use xai_grok_tools::implementations::{grok_build, opencode};
 use xai_grok_tools::types::tool::ToolKind;
-static SUBAGENTS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
-    xai_grok_telemetry::activity::ActivityGauge::work(
-        xai_grok_telemetry::activity::SUBAGENTS_ACTIVE_KEY,
-    );
 /// Bounds each parent-side await in the child completion path. The parent's biased select polls its event channels ahead of `cmd_rx`, so a busy turn can starve `cmd_rx` and park a completed child (leaking its session thread, fs watchers, and fds) forever.
 pub(super) const PARENT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// `PARENT_ACK_TIMEOUT`-bounded acks in the completion path: usage fold,
@@ -361,9 +353,6 @@ pub(crate) async fn run_shell_child(
     gateway: GatewaySender,
     mut spawn_root: Option<tracing::Span>,
 ) -> ChildRunOutput<ShellCompletionData> {
-    if let Some(tp) = run.request.spawn_root.traceparent() {
-        xai_grok_otel::link_current_span_to_meta(&serde_json::json!({ "traceparent": tp }));
-    }
     let grok_build::task::coordinator::ChildRunRequest {
         mut request,
         cancellation: cancel_token,
@@ -372,10 +361,10 @@ pub(crate) async fn run_shell_child(
         generation: target_generation,
         mut agent_message_sender,
         wake_origin,
-        queued_for,
-        session_running,
         agent_address,
         spawner_session_id: _,
+        queued_for: _,
+        session_running: _,
     } = run;
     let is_wake = wake_origin.is_some();
     let (wake_message_source, wake_message_id) = match wake_origin {
@@ -397,11 +386,7 @@ pub(crate) async fn run_shell_child(
     };
     request.id = agent_id.to_string();
     let start = std::time::Instant::now();
-    let spawn_timer = xai_grok_telemetry::subagent_spawn::SubagentSpawnTimer::new_shared();
-    if let Some(queued) = queued_for {
-        spawn_timer.record(SubagentSpawnPhase::QueueWait, queued);
-    }
-    let spawn_prepare_span = phase_region(SubagentSpawnPhase::SpawnPrepare);
+    let spawn_prepare_span = tracing::info_span!("subagent.spawn_prepare");
     crate::waterfall::mark(&request.id, crate::waterfall::stage::CHILD_ENTER);
     let attempt_id = Some(attempt_identity.to_string());
     if request.owner.is_workflow() && cancel_token.is_cancelled() {
@@ -580,11 +565,6 @@ pub(crate) async fn run_shell_child(
     {
         let message = match error {
             TaskModelAdmissionError::HiddenSelection => {
-                xai_grok_telemetry::session_ctx::log_event(SubagentModelOverrideRejected {
-                    parent_session_id: request.parent_session_id.clone(),
-                    owner: telemetry_owner_kind(&request),
-                    reason: SubagentModelRejectionReason::HiddenSelection,
-                });
                 model_policy::hidden_selection_message(model_policy::MODEL_PARAM)
             }
             TaskModelAdmissionError::Unavailable(message) => message,
@@ -667,11 +647,9 @@ pub(crate) async fn run_shell_child(
         let btrfs_delegate = crate::session::worktree::btrfs_delegate_from_env();
         let (grove_enabled, grove_gate_source) =
             crate::util::config::grove_worktree_gate(ctx.remote_settings.as_ref());
-        let worktree_create_span = region!(
-            "subagent_spawn.worktree_create",
-            Parent::Explicit(spawn_prepare_span.span())
-        );
-        let create_span = worktree_create_span.span().clone();
+        let worktree_create_span =
+            tracing::info_span!(parent: &spawn_prepare_span, "subagent_spawn.worktree_create");
+        let create_span = worktree_create_span.clone();
         let created = match tokio::task::spawn_blocking(move || {
             create_span.in_scope(|| {
                 let mut builder = xai_fast_worktree::WorktreeBuilder::new(&source_clone, &dest)
@@ -730,7 +708,7 @@ pub(crate) async fn run_shell_child(
                 None
             }
         };
-        worktree_create_span.close();
+        drop(worktree_create_span);
         created
     } else {
         None
@@ -938,9 +916,9 @@ pub(crate) async fn run_shell_child(
         .unwrap_or_else(|| parent_session_dir.join("subagents").join(&subagent_id));
     #[cfg(not(test))]
     let subagent_meta_dir = parent_session_dir.join("subagents").join(&subagent_id);
-    let context_bootstrap_span = region!(
-        "subagent_spawn.context_bootstrap",
-        Parent::Explicit(spawn_prepare_span.span())
+    let context_bootstrap_span = tracing::info_span!(
+        parent: &spawn_prepare_span,
+        "subagent_spawn.context_bootstrap"
     );
     let InitialContext {
         source: context_source,
@@ -973,7 +951,7 @@ pub(crate) async fn run_shell_child(
             return child_run_output(failure_result(&request, &msg), completion_data, None);
         }
     };
-    context_bootstrap_span.close();
+    drop(context_bootstrap_span);
     let verbatim_mirror_fork =
         context_source == InitialContextSource::Forked && context_verbatim_fork;
     let task_prompt_text = prompt.clone();
@@ -1069,10 +1047,8 @@ pub(crate) async fn run_shell_child(
     } else {
         PublicationBoundary::Prepared
     };
-    let metadata_parent = (!is_wake).then(|| spawn_prepare_span.span().clone());
     let mut start_artifacts = StartArtifactPublication::new(
         publication_boundary,
-        metadata_parent,
         PreparedStartArtifacts {
             meta_dir: subagent_meta_dir.clone(),
             meta: subagent_meta,
@@ -1236,7 +1212,6 @@ pub(crate) async fn run_shell_child(
     tool_ctx.subagent_depth = child_depth;
     tool_ctx.lsp = ctx.lsp.clone();
     tool_ctx.process_scope = ctx.process_scope.clone();
-    let parent_traceparent = xai_grok_otel::current_traceparent();
     let tracker_child_cwd = child_session_info.cwd.clone();
     let tracker_model_id = effective_model_id.0.to_string();
     let initial_child_tokens = xai_chat_state::estimate_conversation_tokens(&forked_conversation);
@@ -1252,23 +1227,20 @@ pub(crate) async fn run_shell_child(
         alpha_test_key: ctx.alpha_test_key.clone(),
         client_version: effective_sampling_config.client_version.clone(),
     };
-    xai_grok_telemetry::unified_log::info(
+    tracing::info!(
+        subagent_id = &request.id,
+        subagent_type = &request.subagent_type,
+        effective_model = effective_model_id.0.as_ref(),
+        effective_model_raw = &effective_sampling_config.model,
+        base_url = &effective_sampling_config.base_url,
+        key_prefix = key_prefix(&effective_sampling_config.api_key),
+        auth_type = format!("{:?}", inherited_auth_type),
+        model_has_own_creds,
+        auth_method_id = ctx.auth_method_id.0.as_ref(),
+        parent_model = ctx.model_id.0.as_ref(),
+        parent_key_prefix = key_prefix(&ctx.sampling_config.api_key),
+        context_window = effective_sampling_config.context_window,
         "subagent spawn credentials",
-        None,
-        Some(serde_json::json!({
-            "subagent_id": &request.id,
-            "subagent_type": &request.subagent_type,
-            "effective_model": effective_model_id.0.as_ref(),
-            "effective_model_raw": &effective_sampling_config.model,
-            "base_url": &effective_sampling_config.base_url,
-            "key_prefix": key_prefix(&effective_sampling_config.api_key),
-            "auth_type": format!("{:?}", inherited_auth_type),
-            "model_has_own_creds": model_has_own_creds,
-            "auth_method_id": ctx.auth_method_id.0.as_ref(),
-            "parent_model": ctx.model_id.0.as_ref(),
-            "parent_key_prefix": key_prefix(&ctx.sampling_config.api_key),
-            "context_window": effective_sampling_config.context_window,
-        })),
     );
     let attribution_callback: Option<xai_grok_sampler::SharedAttributionCallback> =
         effective_sampling_config.attribution_callback.clone();
@@ -1429,33 +1401,6 @@ pub(crate) async fn run_shell_child(
         );
     }
     let mcp_owned_count = agent_mcp_servers.len() as u32;
-    let _active = SUBAGENTS_ACTIVE.enter();
-    debug_assert!(
-        SUBAGENTS_ACTIVE.get() >= 1,
-        "SubagentLaunched must stamp a self-inclusive count"
-    );
-    xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SubagentLaunched {
-        subagent_id: request.id.clone(),
-        parent_session_id: request.parent_session_id.clone(),
-        subagent_type: request.subagent_type.clone(),
-        owner: telemetry_owner_kind(&request),
-        model_selection: match request.runtime_overrides.model_override_provenance {
-            ModelOverrideProvenance::Tool { selection } => {
-                Some(selection_telemetry_kind(selection))
-            }
-            ModelOverrideProvenance::Harness => None,
-        },
-        workflow_run_id: request.owner.workflow_run_id().map(str::to_string),
-        queued_ms: queued_for.map(|queued| u64::try_from(queued.as_millis()).unwrap_or(u64::MAX)),
-        session_running: u32::try_from(session_running).unwrap_or(u32::MAX),
-        persona: request.runtime_overrides.persona.clone(),
-        fork_context: matches!(context_source, InitialContextSource::Forked),
-        resume_from: request.resume_from.clone(),
-        isolated_worktree: worktree_path.is_some(),
-        mcp_inherited_count,
-        mcp_owned_count,
-        skills_inherited_count,
-    });
     let wake_model_id = effective_model_id.clone();
     let wake_agent_name = definition.name.clone();
     let wake_reasoning_effort = effective_sampling_config.reasoning_effort;
@@ -1471,10 +1416,9 @@ pub(crate) async fn run_shell_child(
             });
     }
     crate::waterfall::mark(&request.id, crate::waterfall::stage::SESSION_SPAWN);
-    spawn_timer.record(SubagentSpawnPhase::SpawnPrepare, start.elapsed());
-    spawn_prepare_span.close();
-    let session_bootstrap_span = phase_region(SubagentSpawnPhase::SessionBootstrap);
-    let spawn_phase_parent = session_bootstrap_span.span().clone();
+    drop(spawn_prepare_span);
+    let session_bootstrap_span = tracing::info_span!("subagent.session_bootstrap");
+    let spawn_phase_parent = session_bootstrap_span.clone();
     let bootstrap_started_at = std::time::Instant::now();
     let pins = ctx.compaction_pins_for_child(&definition.user_message_template);
     let spawn_result = session::spawn_session_on_thread(
@@ -1492,7 +1436,6 @@ pub(crate) async fn run_shell_child(
         parent_mcp_pool,
         Vec::new(),
         true,
-        false,
         None,
         persistence,
         forked_conversation,
@@ -1610,7 +1553,6 @@ pub(crate) async fn run_shell_child(
         ),
         None,
         ctx.models_manager.clone(),
-        parent_traceparent,
         ctx.permission_handle.clone(),
         ctx.api_key_provider.clone(),
         ctx.image_description_model.clone(),
@@ -1634,20 +1576,11 @@ pub(crate) async fn run_shell_child(
         },
         ctx.feature(crate::agent::config::Feature::SubagentModelInheritance),
         false,
-        Some(xai_grok_telemetry::subagent_spawn::SpawnPhaseContext {
-            timer: spawn_timer.clone(),
-            parent: spawn_phase_parent,
-        }),
         Some(ctx.subagent_sampling_semaphore.clone()),
-        None,
     )
     .await;
     crate::waterfall::mark(&request.id, crate::waterfall::stage::SESSION_UP);
-    spawn_timer.record(
-        SubagentSpawnPhase::SessionBootstrap,
-        bootstrap_started_at.elapsed(),
-    );
-    session_bootstrap_span.close();
+    drop(session_bootstrap_span);
     let session_ready_at = std::time::Instant::now();
     let (child_init, child_thread) = match spawn_result {
         Ok(r) => r,
@@ -1681,7 +1614,7 @@ pub(crate) async fn run_shell_child(
         &child_handle.hunk_tracker_handle,
         &child_toolset,
     );
-    let ready_to_first_turn_span = phase_region(SubagentSpawnPhase::ReadyToFirstTurn);
+    let ready_to_first_turn_span = tracing::info_span!("subagent.ready_to_first_turn");
     let (receipt_sink, receipt_stream) = mpsc::channel(ACTIVE_MESSAGE_RECEIPT_CAPACITY);
     let receipt_drain = PromptTurnReceiptDrain::start(
         receipt_stream,
@@ -1883,7 +1816,7 @@ pub(crate) async fn run_shell_child(
         }
     };
     if !promoted && completed_before_ack.is_none() {
-        ready_to_first_turn_span.close();
+        drop(ready_to_first_turn_span);
         drop(spawn_root.take());
         let result = cancel_pending_shell_child(
             &child_handle.cmd_tx,
@@ -1922,11 +1855,7 @@ pub(crate) async fn run_shell_child(
         cancel_token.clone(),
         goal_tick_cmd_tx(ctx.goal_enabled, ctx.parent_cmd_tx.as_ref()),
     );
-    spawn_timer.record(
-        SubagentSpawnPhase::ReadyToFirstTurn,
-        session_ready_at.elapsed(),
-    );
-    ready_to_first_turn_span.close();
+    drop(ready_to_first_turn_span);
     drop(spawn_root.take());
     let attempt_outcome = match completed_before_ack {
         Some(outcome) => outcome,
@@ -1956,15 +1885,12 @@ pub(crate) async fn run_shell_child(
     let mut final_prompt_id = child_prompt_id;
     let mut final_turn_tokens = turn_token_totals;
     let mut final_receipt = None;
-    let mut final_receipt_telemetry = None;
     if let Some(FinalPromptTurnReceipt {
         prompt_id,
         outcome,
-        telemetry,
     }) = receipt_settlement.final_receipt
     {
         final_prompt_id = prompt_id;
-        final_receipt_telemetry = Some(telemetry);
         if let PromptTurnReceiptOutcome::Settled(receipt) = outcome {
             final_receipt = Some(*receipt);
         }
@@ -2007,11 +1933,6 @@ pub(crate) async fn run_shell_child(
     });
     result = folded_settlement.result;
     cancellation_may_hide_usage |= folded_settlement.cancellation_may_hide_usage;
-    crate::session::telemetry::record_settlement(
-        final_receipt_telemetry,
-        folded_settlement.settlement_status,
-    )
-    .await;
     let trace_token_totals = child_actor_query(
         "session_usage",
         child_handle.chat_state_handle.try_get_session_usage(),
@@ -2242,35 +2163,6 @@ pub(crate) async fn run_shell_child(
         )
         .await;
     }
-    let outcome = if result.success {
-        xai_grok_telemetry::events::Outcome::Completed
-    } else if result.cancelled {
-        xai_grok_telemetry::events::Outcome::Cancelled
-    } else {
-        xai_grok_telemetry::events::Outcome::Error
-    };
-    let mut completed = xai_grok_telemetry::events::SubagentCompleted {
-        subagent_id: request.id.clone(),
-        parent_session_id: request.parent_session_id.clone(),
-        owner: telemetry_owner_kind(&request),
-        workflow_run_id: request.owner.workflow_run_id().map(str::to_string),
-        outcome,
-        duration_ms: result.duration_ms,
-        tool_calls: result.tool_calls,
-        tokens_used: if telemetry_tokens > 0 {
-            Some(telemetry_tokens)
-        } else {
-            None
-        },
-        queue_wait_ms: None,
-        spawn_prepare_ms: None,
-        session_bootstrap_ms: None,
-        agent_build_ms: None,
-        tool_setup_ms: None,
-        ready_to_first_turn_ms: None,
-    };
-    spawn_timer.write_event_phases(&mut completed);
-    xai_grok_telemetry::session_ctx::log_event(completed);
     match (
         &ctx.parent_terminal_backend,
         &ctx.parent_notification_handle,
@@ -2370,31 +2262,35 @@ pub(crate) async fn run_shell_child(
     }
     let success = result.success && !result.cancelled;
     let preview = crate::util::truncate(&result.output, 200);
-    let level_fn = if success {
-        xai_grok_telemetry::unified_log::info
+    if success {
+        tracing::info!(
+            subagent_id = &request.id,
+            subagent_type = &request.subagent_type,
+            effective_model = tracker_model_id,
+            success,
+            cancelled = result.cancelled,
+            duration_ms = result.duration_ms,
+            turns = result.turns,
+            tool_calls = result.tool_calls,
+            output_preview = preview,
+            error = &result.error,
+            "subagent completed",
+        );
     } else {
-        xai_grok_telemetry::unified_log::error
-    };
-    level_fn(
-        if success {
-            "subagent completed"
-        } else {
-            "subagent failed"
-        },
-        None,
-        Some(serde_json::json!({
-            "subagent_id": &request.id,
-            "subagent_type": &request.subagent_type,
-            "effective_model": tracker_model_id,
-            "success": success,
-            "cancelled": result.cancelled,
-            "duration_ms": result.duration_ms,
-            "turns": result.turns,
-            "tool_calls": result.tool_calls,
-            "output_preview": preview,
-            "error": &result.error,
-        })),
-    );
+        tracing::error!(
+            subagent_id = &request.id,
+            subagent_type = &request.subagent_type,
+            effective_model = tracker_model_id,
+            success,
+            cancelled = result.cancelled,
+            duration_ms = result.duration_ms,
+            turns = result.turns,
+            tool_calls = result.tool_calls,
+            output_preview = preview,
+            error = &result.error,
+            "subagent failed",
+        );
+    }
     crate::waterfall::mark(&request.id, crate::waterfall::stage::CHILD_DONE);
     child_run_output(result, completion_data, disposed_snapshot_ref)
 }
@@ -2452,7 +2348,7 @@ pub(crate) async fn dispose_worktree_after_completion(
     let checked_path = worktree.to_path_buf();
     let checked_source_repo = source_repo.to_path_buf();
     let checked_snapshot = snapshot_ref.clone();
-    let reclaim_span = region!("worktree.reclaim_check", Parent::Inherit);
+    let reclaim_span = tracing::info_span!("worktree.reclaim_check");
     let reclaim = tokio::task::spawn_blocking(move || {
         xai_fast_worktree::reclaimable_after_snapshot(
             &checked_path,
@@ -2461,7 +2357,7 @@ pub(crate) async fn dispose_worktree_after_completion(
         )
     })
     .await;
-    reclaim_span.close();
+    drop(reclaim_span);
     match reclaim {
         Ok(xai_fast_worktree::Reclaim::Now { .. }) => {}
         Ok(xai_fast_worktree::Reclaim::Keep(reason)) => {

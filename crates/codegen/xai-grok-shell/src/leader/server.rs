@@ -1136,7 +1136,7 @@ async fn handle_workspace_start(
     let alpha_test_key = None;
     let auth = wait_for_leader_auth(ws, &cancel).await?;
     let server_id = workspace_server_id();
-    let device_id = xai_grok_telemetry::id::agent_id_async().await;
+    let device_id = crate::remote::client::ephemeral_agent_id();
     let metadata = serde_json::json!({
         "source": "grok-workspace",
         "hostname": gethostname::gethostname().to_string_lossy(),
@@ -1600,14 +1600,6 @@ pub async fn run_leader_server(
                         client.registered = true;
                         client_count.fetch_add(1, Ordering::Relaxed);
                         debug!(client_id = id.0, ?mode, yolo_mode = client.capabilities.yolo_mode, client_type = %client.client_type, "Client registered");
-                        xai_grok_telemetry::unified_log::info(
-                            "leader.client.registered",
-                            None,
-                            Some(serde_json::json!({
-                                "client_id": id.0,
-                                "client_type": client.client_type,
-                            })),
-                        );
                         if mode == ClientMode::Headless {
                             let newly_demanded = relay_demand_tx.send_if_modified(|demanded| {
                                 let changed = !*demanded;
@@ -1644,11 +1636,6 @@ pub async fn run_leader_server(
                     clients.remove(&id);
                     if was_registered {
                         client_count.fetch_sub(1, Ordering::Relaxed);
-                        xai_grok_telemetry::unified_log::info(
-                            "leader.client.disconnected",
-                            None,
-                            Some(serde_json::json!({ "client_id": id.0 })),
-                        );
                     }
                     pending_load_by_req.retain(|_, (c, _)| *c != id);
                     load_live_buffer.retain(|(c, _), _| *c != id);
@@ -1929,14 +1916,6 @@ pub async fn run_leader_server(
                         request_id = orphan_req_id.as_str(),
                         "Dropping RPC response: requesting client disconnected (response orphaned)"
                     );
-                    xai_grok_telemetry::unified_log::warn(
-                        "leader.response.orphaned",
-                        None,
-                        Some(serde_json::json!({
-                            "client_id": orphan_client.0,
-                            "request_id": orphan_req_id,
-                        })),
-                    );
                 }
                 if let Some((client_id, ref raw_response_id)) = parsed_response
                     && let Some(client) = clients.get_mut(&client_id)
@@ -1982,25 +1961,9 @@ pub async fn run_leader_server(
                                 client_id = client_id.0,
                                 "Failed to send response to client (channel full)"
                             );
-                            xai_grok_telemetry::unified_log::warn(
-                                "leader.response.send_failed",
-                                None,
-                                Some(serde_json::json!({
-                                    "client_id": client_id.0,
-                                    "reason": "channel_full",
-                                })),
-                            );
                         }
                         Err(e) => {
                             warn!(client_id = client_id.0, error = %e, "Failed to send response to client (channel closed)");
-                            xai_grok_telemetry::unified_log::warn(
-                                "leader.response.send_failed",
-                                None,
-                                Some(serde_json::json!({
-                                    "client_id": client_id.0,
-                                    "reason": "channel_closed",
-                                })),
-                            );
                         }
                     }
                     if let Some((buf_client, buf_sid)) = pending_load_by_req.remove(raw_response_id)

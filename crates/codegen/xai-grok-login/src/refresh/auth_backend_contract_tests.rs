@@ -1,14 +1,12 @@
 //! Auth-backend contract tests against a mock IdP whose `/token` response is forced per case.
-//! They assert the refresh outcome, the storm cap, and the `manual_auth` event emitted on the live recovery path.
+//! They assert the refresh outcome and the storm cap on the live recovery path.
 
 use super::*;
 use crate::error::RefreshTokenFailedReason;
-use crate::recovery::RecoverySource;
 use crate::{GrokAuth, GrokComConfig};
 use chrono::{Duration, Utc};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use xai_grok_telemetry::events::{AuthTokenKind, ManualAuthReason};
 
 /// Mock IdP: OIDC discovery, a `/token` endpoint returning a fixed `(status, body)` and counting every hit, and a `/user` endpoint.
 /// `AuthManager::update` calls `/user` after a successful refresh.
@@ -208,62 +206,34 @@ async fn auth_backend_contract_concurrent_401s_hit_idp_once() {
     server.abort();
 }
 
-/// A dead refresh token on each user-facing source (`Turn`, `Relay`) emits one `manual_auth` event.
-/// The event carries the typed reason, the matching surface, and the rejected principal.
-/// A refreshable token auto-refreshes and emits nothing.
+/// A dead refresh token fails recovery with a forced-relogin error.
+/// A refreshable token auto-refreshes.
 #[tokio::test]
-async fn auth_backend_contract_dead_token_emits_typed_manual_auth_event() {
-    use xai_grok_telemetry::events::ManualAuthSurface;
+async fn auth_backend_contract_dead_token_fails_recovery() {
+    // A dead refresh token fails recovery with the rejection surfaced.
+    let hits = Arc::new(AtomicU32::new(0));
+    let (url, server) =
+        start_idp(400, r#"{"error":"invalid_grant"}"#.to_string(), hits, 0).await;
+    let dir = tempfile::tempdir().unwrap();
+    let auth_manager = Arc::new(
+        AuthManager::new(dir.path(), GrokComConfig::default()).with_proxy_base_url(&url),
+    );
+    auth_manager.hot_swap(expired_oidc(&url));
+    auth_manager.set_refresher(Arc::new(OidcRefresher::new(auth_manager.clone())));
 
-    // A dead refresh token on each user-facing source emits the typed event with the surface that produced it
-    for (source, want_surface) in [
-        (RecoverySource::Turn, ManualAuthSurface::Turn),
-        (RecoverySource::Relay, ManualAuthSurface::Relay),
-    ] {
-        let hits = Arc::new(AtomicU32::new(0));
-        let (url, server) =
-            start_idp(400, r#"{"error":"invalid_grant"}"#.to_string(), hits, 0).await;
-        let dir = tempfile::tempdir().unwrap();
-        let auth_manager = Arc::new(
-            AuthManager::new(dir.path(), GrokComConfig::default()).with_proxy_base_url(&url),
-        );
-        auth_manager.hot_swap(expired_oidc(&url));
-        auth_manager.set_refresher(Arc::new(OidcRefresher::new(auth_manager.clone())));
-
-        let err = auth_manager
-            .unauthorized_recovery(auth_manager.current_or_expired(), source)
-            .next()
-            .await
-            .expect_err("a dead refresh token must fail recovery");
-        assert!(
-            crate::recovery::manual_auth_reason(&err).is_some(),
-            "a dead refresh token must be a forced-relogin error, got {err:?}",
-        );
-
-        let event = auth_manager
-            .manual_auth_last_emit()
-            .expect("a user-facing dead-token recovery must emit a manual_auth event");
-        assert_eq!(
-            event.reason,
-            ManualAuthReason::RefreshTokenRejected,
-            "the emitted event must say *why*: the refresh token was rejected",
-        );
-        assert_eq!(
-            event.trigger, want_surface,
-            "emitted surface must match the source"
-        );
-        assert_eq!(
-            event.principal.as_deref(),
-            Some("user-42"),
-            "the event must attribute the rejected principal",
-        );
-        assert_eq!(
-            event.token_kind,
-            AuthTokenKind::OidcSession,
-            "an OIDC session must be reported as OidcSession",
-        );
-        server.abort();
-    }
+    let err = auth_manager
+        .unauthorized_recovery(auth_manager.current_or_expired())
+        .next()
+        .await
+        .expect_err("a dead refresh token must fail recovery");
+    assert!(
+        matches!(
+            err,
+            crate::error::AuthError::Refresh(crate::error::RefreshTokenError::Permanent(_))
+        ),
+        "a dead refresh token must be a forced-relogin error, got {err:?}",
+    );
+    server.abort();
 
     // Refreshable token: recovery auto-refreshes and emits nothing.
     let ok_hits = Arc::new(AtomicU32::new(0));
@@ -282,17 +252,13 @@ async fn auth_backend_contract_dead_token_emits_typed_manual_auth_event() {
     ok_manager.set_refresher(Arc::new(OidcRefresher::new(ok_manager.clone())));
 
     let refreshed = ok_manager
-        .unauthorized_recovery(ok_manager.current_or_expired(), RecoverySource::Turn)
+        .unauthorized_recovery(ok_manager.current_or_expired())
         .next()
         .await
         .expect("a refreshable token must auto-refresh");
     assert_eq!(
         refreshed.key, "fresh",
         "recovery must return the fresh token"
-    );
-    assert!(
-        ok_manager.manual_auth_last_emit().is_none(),
-        "a successful auto-refresh must NOT emit a manual_auth event",
     );
     ok_server.abort();
 }

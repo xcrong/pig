@@ -58,6 +58,7 @@ const WORKFLOW_CHILD_DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const WORKFLOW_MAX_SCRATCH_NAME_BYTES: usize = 255;
 const SCRATCH_ARTIFACT_ROOT: &str = "scratch";
 
+/// Local sink for workflow script events, wired to session logs by the spawn site.
 pub(crate) type TelemetryHook = Arc<dyn Fn(&str, &serde_json::Value, bool) + Send + Sync>;
 
 /// Per-episode agent counters, reported on `WorkflowRunEnded`.
@@ -391,18 +392,11 @@ impl HostService {
                 if self.params.cancel.is_cancelled() {
                     return Err(HostError::Cancelled);
                 }
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::events::SubagentLimitHit::workflow_run_concurrent(
-                        self.params.parent_session_id.clone(),
-                        self.params.run_id.clone(),
-                        self.params.max_concurrent_agents as u64,
-                        // Slots in use; the active_agents counter lags spawn setup and is racy here
-                        (self
-                            .params
-                            .max_concurrent_agents
-                            .saturating_sub(self.agent_slots.available_permits()))
-                            as u32,
-                    ),
+                tracing::info!(
+                    run_id = %self.params.run_id,
+                    parent_session_id = %self.params.parent_session_id,
+                    max_concurrent_agents = self.params.max_concurrent_agents,
+                    "workflow run hit the agent concurrency limit; waiting for a slot",
                 );
                 let wait_started_at = std::time::Instant::now();
                 let permit = tokio::select! {

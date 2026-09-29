@@ -6,7 +6,6 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use xai_grok_telemetry::startup::{AgentKind, PhaseSnapshot, StartupOutcome, StartupPhase};
 
 #[derive(Debug)]
 pub struct StartupFailure {

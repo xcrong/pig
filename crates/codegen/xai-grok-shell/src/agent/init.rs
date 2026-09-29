@@ -113,14 +113,10 @@ pub fn bootstrap_with_cancel(
         Some(b) => (b.settings_wait, Some(b.models)),
         None => (None, None),
     };
-    xai_grok_telemetry::id::prefetch_agent_id();
-    xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::Bootstrap);
     let mut cfg = cfg.clone();
     let profile = crate::managed_config::startup_profile();
     let warmed_auth = auth_manager.current();
     let pre_gate_prefetch = {
-        let mut timer = crate::instrumentation_timer!("startup.bootstrap.remote_settings");
-        timer.with_subphase(xai_grok_telemetry::startup::Subphase::RemoteSettings);
         ensure_remote_settings_side_effects(
             &mut cfg,
             profile,
@@ -131,17 +127,13 @@ pub fn bootstrap_with_cancel(
     };
     ensure_bootstrap_not_cancelled(cancel)?;
     {
-        let _timer = crate::instrumentation_timer!("startup.bootstrap.policy_gate");
         crate::managed_config::managed_policy_gate()?;
     }
     ensure_bootstrap_not_cancelled(cancel)?;
     if !cfg!(test) {
-        let _timer = crate::instrumentation_timer!("startup.bootstrap.refresh_supervisor");
         crate::managed_config::start_refresh_supervisor(auth_manager);
     }
     let cfg = {
-        let mut timer = crate::instrumentation_timer!("startup.bootstrap.resolve_config");
-        timer.with_subphase(xai_grok_telemetry::startup::Subphase::ResolveConfig);
         let cfg = resolve_config(
             &cfg,
             auth_manager,
@@ -155,15 +147,10 @@ pub fn bootstrap_with_cancel(
     };
     ensure_bootstrap_not_cancelled(cancel)?;
     {
-        let mut timer = crate::instrumentation_timer!("startup.bootstrap.init_process");
-        timer.with_subphase(xai_grok_telemetry::startup::Subphase::InitProcess);
         init_process(&cfg, auth_manager);
     }
     ensure_bootstrap_not_cancelled(cancel)?;
-    xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::ModelCatalog);
     let models_manager = {
-        let mut timer = crate::instrumentation_timer!("startup.model_catalog.models_manager");
-        timer.with_subphase(xai_grok_telemetry::startup::Subphase::ModelsManager);
         let prefetched = match prefetched {
             Some(models) => Some(models),
             None => match boot_models {
@@ -429,14 +416,11 @@ fn resolve_config(
     }
     cfg
 }
-/// Initialize process-level singletons (deployment sync, built-in metadata,
-/// telemetry). `Once`-guarded: only the first call takes effect.
-/// Telemetry user ID is updated separately via [`update_telemetry_config`].
-fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
+/// Initialize process-level singletons (deployment sync, built-in metadata). `Once`-guarded: only the first call takes effect.
+fn init_process(cfg: &AgentConfig, _auth_manager: &AuthManager) {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
-        xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
         let limits = crate::util::limits::ProcessLimits::read();
         limits.log();
         let grok_home = crate::util::grok_home::grok_home();
@@ -448,64 +432,15 @@ fn init_process(cfg: &AgentConfig, auth_manager: &AuthManager) {
         if cfg.resolve_official_marketplace_auto_register().value {
             crate::extensions::marketplace::ensure_official_marketplace_source(&grok_home);
         }
-        let telemetry_mode = cfg.resolve_telemetry_mode();
         let feedback = cfg.feature(config::Feature::Feedback);
         let feedback_url = cfg.endpoints.resolve_feedback_base_url();
         tracing::info!(
-            telemetry = %telemetry_mode,
-            trace_upload = false,
             feedback = %feedback,
             feedback_url = %feedback_url,
             feedback_url_custom = cfg.endpoints.feedback_base_url.is_some(),
             "data capture config resolved (no first-party trace pipeline)",
         );
-        update_telemetry_config(cfg, auth_manager);
-        xai_grok_telemetry::session_ctx::log_event(limits.into_event());
     });
-}
-/// Apply current telemetry config. No first-party sinks remain: only the
-/// legacy mode client is (re-)initialized, and auth identity is intentionally
-/// not forwarded anywhere. Safe to call repeatedly.
-pub fn update_telemetry_config(config: &AgentConfig, _auth_manager: &AuthManager) {
-    let user_agent = crate::http::process_user_agent_string();
-    if reqwest::header::HeaderValue::from_str(&user_agent).is_err() {
-        tracing::warn!("telemetry init skipped: GROK_CLIENT_NAME yields an invalid user agent");
-        return;
-    }
-    xai_grok_telemetry::client::init(
-        config.telemetry.clone(),
-        config.resolve_telemetry_mode().value,
-        None,
-        None,
-        None,
-        None,
-        xai_grok_version::VERSION.to_owned(),
-        None,
-        crate::http::shared_client(),
-    );
-}
-/// Assemble the default OTel layer config both `xai-grok-pager` and `xai-grok-tui` need at tracing init time.
-///
-/// Pig Agent ships no first-party span pipeline: the internal exporter stays
-/// disabled and only in-process instrumentation remains. User-owned external
-/// OTEL is configured separately via `resolve_external_otel_config`.
-pub fn build_default_otel_layer_config() -> xai_grok_telemetry::otel_layer::OtelLayerConfig {
-    let endpoints = crate::agent::config::EndpointsConfig::default();
-    let (credentials, token_header_value) =
-        crate::credential_factory::build_bootstrap_otel_credentials();
-    let exporter = xai_grok_telemetry::otel_layer::OtelExporterConfig {
-        traces_url: endpoints.resolve_otlp_traces_endpoint(),
-        extra_headers: endpoints.resolve_otlp_headers(),
-        export_interval: endpoints.resolve_otlp_export_interval(),
-        timeout: endpoints.resolve_otlp_timeout(),
-        enabled: false,
-    };
-    xai_grok_telemetry::otel_layer::OtelLayerConfig {
-        credentials,
-        token_header_value,
-        alpha_test_key: None,
-        exporter,
-    }
 }
 /// Sync this principal's config now rather than waiting for the background tick.
 /// Stay quiet about absence or failure during login; confirm only when config was actually applied.

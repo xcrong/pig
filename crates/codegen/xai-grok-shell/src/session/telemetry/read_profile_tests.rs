@@ -1,5 +1,5 @@
 use super::{direct_origin, read_projection};
-use xai_grok_telemetry::events::{ReadLimitKind, ReadSkillMatch};
+use super::{ReadLimitKind, ReadSkillMatch};
 use xai_grok_tools::implementations::grok_build::ReadFileTool;
 use xai_grok_tools::types::source_summary::{
     CapApplicability, CapDisposition, ReadDetail, ReadLimitSlot, ReadRole, ToolSourceDetail,

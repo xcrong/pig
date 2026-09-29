@@ -46,15 +46,6 @@ impl SessionActor {
             .set(sampling_config.compactions_remaining);
         self.compaction_at_tokens
             .set(sampling_config.compaction_at_tokens);
-        xai_grok_telemetry::unified_log::info(
-            "backend_search: model switch",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "new_model": &sampling_config.model,
-                "api_backend": format!("{:?}", sampling_config.api_backend),
-                "supports_backend_search": sampling_config.supports_backend_search,
-            })),
-        );
         self.chat_state_handle
             .update_sampling_config(xai_grok_sampling_types::SamplingConfig {
                 base_url: sampling_config.base_url.clone(),

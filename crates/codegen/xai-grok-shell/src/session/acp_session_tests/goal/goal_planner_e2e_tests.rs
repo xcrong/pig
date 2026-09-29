@@ -1382,7 +1382,6 @@ async fn stop_then_slash_goal_resume_reopens_spawn_admission_before_planner_retr
                     json_schema: None,
                     persist_ack: None,
                     parsed_prompt_tx: None,
-                    traceparent: None,
                     start_gate: None,
                 }),
             )

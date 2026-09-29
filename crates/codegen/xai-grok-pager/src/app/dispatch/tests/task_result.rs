@@ -1702,7 +1702,6 @@ fn no_deferred_switch_means_no_extra_effect() {
 
 #[test]
 fn session_success_arms_finish_startup_obligation() {
-    xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
     let id = AgentId(0);
     let results = [
         TaskResult::SessionCreated {
@@ -1746,7 +1745,7 @@ fn session_success_arms_finish_startup_obligation() {
     for result in results {
         let mut app = test_app_with_agent();
         app.agents.get_mut(&id).unwrap().session.session_id = None;
-        app.pending_startup = Some(xai_grok_telemetry::startup::PendingStartup::new());
+        app.pending_startup = Some(crate::acp::startup::PendingStartup::new());
         let label = format!("{result:?}");
 
         dispatch(Action::TaskComplete(result), &mut app);

@@ -176,18 +176,6 @@ async fn probe_xai_api_key_at_url(key: &str, url: &str, timeout: Duration) -> Ap
     }
 
     let elapsed_ms = started.elapsed().as_millis() as u64;
-    xai_grok_telemetry::unified_log::info(
-        "auth: first-party API key probe",
-        None,
-        Some(serde_json::json!({
-            "verdict": format!("{last_verdict:?}"),
-            "allows_advertise": last_verdict.allows_advertise(),
-            "elapsed_ms": elapsed_ms,
-            "timeout_ms": timeout.as_millis() as u64,
-            "attempts": attempts,
-            "key_suffix": key_suffix(key),
-        })),
-    );
 
     last_verdict
 }

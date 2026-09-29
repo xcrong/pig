@@ -490,7 +490,6 @@ fn absent_claim_is_skipped() {
 
 #[test]
 fn auth_mode_classification() {
-    use xai_grok_telemetry::startup::AuthMode;
     let err = || std::io::Error::other("unreadable");
     assert_eq!(auth_mode(true, &Ok(true)), AuthMode::Deployment);
     assert_eq!(auth_mode(true, &Err(err())), AuthMode::Deployment);

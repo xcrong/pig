@@ -59,7 +59,6 @@ fn runtime_request(text: &str) -> TurnInputRequest {
         json_schema: None,
         persist_ack: None,
         parsed_prompt_tx: None,
-        traceparent: None,
         start_gate: None,
     }
 }
@@ -79,7 +78,6 @@ fn human_request(text: &str) -> TurnInputRequest {
         json_schema: None,
         persist_ack: None,
         parsed_prompt_tx: None,
-        traceparent: None,
         start_gate: None,
     }
 }
@@ -107,7 +105,6 @@ fn parent_request(text: &str, prompt_blocks: Vec<acp::ContentBlock>) -> TurnInpu
         json_schema: None,
         persist_ack: None,
         parsed_prompt_tx: None,
-        traceparent: None,
         start_gate: None,
     }
 }

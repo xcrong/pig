@@ -368,7 +368,7 @@ fn turn_phase_prompt_latency_invariants() {
             );
             pump_local_tasks().await;
 
-            let phases = actor.turn_phases.complete();
+            let phases = actor.turn_generation.complete();
 
             assert_eq!(phases.sampling_request_count, 2);
             assert_eq!(phases.sampling_retry_count, 1);

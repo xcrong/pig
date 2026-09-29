@@ -5,7 +5,6 @@ use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::app_view::AppView;
 use agent_client_protocol as acp;
-use xai_grok_telemetry::session_ctx::log_event;
 
 /// Max times the MCP list is re-read after an install while waiting for the just-installed plugin's MCP servers to reach a terminal state.
 /// Probes are ~1s apart (`Effect::RetryPluginCtaMcps`), so the budget bounds the wait at ~15s before a final no-auth verdict is forced.
@@ -191,11 +190,6 @@ pub(super) fn handle_cta_plugin_install_done(
     let name = name.clone();
     let session_id = agent.session.session_id.clone();
     let error_category = cta_install_error_category(&result);
-    log_event(xai_grok_telemetry::events::PluginCtaInstalled {
-        plugin_name: name.clone(),
-        success: error_category.is_none(),
-        error_category,
-    });
     // Ok(requires_reload) on success; Err(message) otherwise.
     let install_result = match result {
         Ok(outcome) if outcome.status == xai_hooks_plugins_types::OutcomeStatus::Success => {
@@ -356,10 +350,6 @@ pub(super) fn handle_plugin_cta_mcps_loaded(
                 modal.mcps_data = TabDataState::Loaded(servers);
                 agent.agents_modal = None;
                 agent.extensions_modal = Some(modal);
-                log_event(xai_grok_telemetry::events::ExtensionsModalOpened {
-                    trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::AuthHandoff,
-                    tab: ExtensionsTab::McpServers.telemetry_tab(),
-                });
                 agent.plugin_cta.phase = CtaPhase::Hidden;
                 if let Some(session_id) = session_id.clone() {
                     if let Some(modal) = agent.extensions_modal.as_mut() {
@@ -453,9 +443,6 @@ pub(super) fn handle_plugin_cta_catalog_loaded(
                     if let Some(plugin_name) =
                         cta_impression_plugin_name(&agent.plugin_cta.phase, &new_phase)
                     {
-                        log_event(xai_grok_telemetry::events::PluginCtaImpression {
-                            plugin_name: plugin_name.to_string(),
-                        });
                     }
                     if matches!(new_phase, CtaPhase::Hidden) {
                         agent.plugin_cta.hit_connect.clear();
@@ -507,9 +494,6 @@ pub(super) fn handle_plugin_cta_debounce_expired(
         |name| agent.plugin_cta.dismissed.contains(name),
     );
     if let Some(plugin_name) = cta_impression_plugin_name(&agent.plugin_cta.phase, &new_phase) {
-        log_event(xai_grok_telemetry::events::PluginCtaImpression {
-            plugin_name: plugin_name.to_string(),
-        });
     }
     agent.plugin_cta.phase = new_phase;
     vec![]

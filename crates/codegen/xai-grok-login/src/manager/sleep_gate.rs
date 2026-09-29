@@ -51,7 +51,6 @@ pub(super) struct SleepGate {
 impl SleepGate {
     pub(super) fn raise(&self) {
         *self.raised_at.write() = Some(DualClock::now());
-        xai_grok_telemetry::unified_log::warn("auth.sleep.gate_set", None, None);
     }
 
     pub(super) fn lower(&self, reason: &str) {
@@ -62,16 +61,6 @@ impl SleepGate {
                 (mono.as_millis() as u64, wall.as_millis() as u64)
             })
             .unwrap_or((0, 0));
-        xai_grok_telemetry::unified_log::info(
-            "auth.sleep.gate_cleared",
-            None,
-            Some(serde_json::json!({
-                "reason": reason,
-                "was_raised": prev.is_some(),
-                "mono_elapsed_ms": mono_ms,
-                "wall_elapsed_ms": wall_ms,
-            })),
-        );
     }
 
     /// A stale gate (a missed or late wake event) is lazily lowered here so it can never permanently block refresh. This read can therefore have a side effect.
@@ -100,16 +89,6 @@ impl SleepGate {
                 None => return false,
             }
         }
-        xai_grok_telemetry::unified_log::info(
-            "auth.sleep.gate_cleared",
-            None,
-            Some(serde_json::json!({
-                "reason": "auto_expiry",
-                "sleep_straddle": sleep_straddle,
-                "mono_elapsed_ms": mono.as_millis() as u64,
-                "wall_elapsed_ms": wall.as_millis() as u64,
-            })),
-        );
         false
     }
 }
@@ -175,11 +154,6 @@ impl AuthManager {
         if in_flight == 0 {
             return;
         }
-        xai_grok_telemetry::unified_log::warn(
-            "auth.sleep.refresh_in_flight_at_suspend",
-            None,
-            Some(serde_json::json!({ "in_flight": in_flight })),
-        );
         let started = Instant::now();
         {
             let mut drain = self.refresh_drain_lock.lock();
@@ -197,17 +171,6 @@ impl AuthManager {
             }
         }
         let remaining = self.refresh_in_flight.load(Ordering::SeqCst);
-        xai_grok_telemetry::unified_log::info(
-            "auth.sleep.refresh_drain",
-            None,
-            Some(serde_json::json!({
-                "in_flight_at_start": in_flight,
-                "in_flight_remaining": remaining,
-                "drained": remaining == 0,
-                "waited_ms": started.elapsed().as_millis() as u64,
-                "max_wait_ms": max.as_millis() as u64,
-            })),
-        );
     }
 
     pub fn is_sleep_gated(&self) -> bool {
@@ -268,14 +231,6 @@ impl AuthManager {
         // A still-continuous dark wake then defers afresh, up to DARK_WAKE_DEFER_MAX, before the next forced refresh
         *run = None;
         drop(run);
-        xai_grok_telemetry::unified_log::warn(
-            "auth.dark_wake.defer_budget_exhausted",
-            None,
-            Some(serde_json::json!({
-                "mono_elapsed_ms": mono.as_millis() as u64,
-                "wall_elapsed_ms": wall.as_millis() as u64,
-            })),
-        );
         false
     }
 
@@ -330,10 +285,5 @@ impl AuthManager {
             // Unavailable (unsupported OS, no logind, or a registration failure): release the guard so a later call can retry
             self.power_listener_started.store(false, Ordering::Release);
         }
-        xai_grok_telemetry::unified_log::info(
-            "auth.sleep.power_listener_init",
-            None,
-            Some(serde_json::json!({ "available": available })),
-        );
     }
 }

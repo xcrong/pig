@@ -9,12 +9,8 @@ use crate::agent::remote_config::task_model_policy::{
 };
 use crate::remote::DEFAULT_CONTEXT_WINDOW;
 use tracing::Instrument;
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent as SpanParent;
-use xai_grok_telemetry::subagent_spawn::phase_region_under;
 struct SpawnStep {
     span: tracing::span::EnteredSpan,
-    _timer: xai_grok_telemetry::instrumentation::InstrumentationTimer,
 }
 impl SpawnStep {
     fn record<V: tracing::field::Value>(&self, field: &'static str, value: V) {
@@ -22,28 +18,22 @@ impl SpawnStep {
     }
 }
 /// Sync-only: the returned guard enters its span for the whole scope, so never hold a `SpawnStep` across an `.await`.
-/// Reads `is_active()` once (via [`spawn_await_step!`]) so the timer and span cannot pick opposite prefixes.
 /// An awaiting step uses [`spawn_await_step!`] instead.
 macro_rules! spawn_step {
     ($step:literal $(, $field:ident = $value:expr)* $(,)?) => {{
-        let (timer, span) = spawn_await_step!($step $(, $field = $value)*);
+        let (_timer, span) = spawn_await_step!($step $(, $field = $value)*);
         SpawnStep {
-            _timer: timer,
             span: span.entered(),
         }
     }};
 }
-/// Awaiting counterpart of [`spawn_step!`]: the step's timer and span from one literal, so the two names
-/// cannot drift. `.instrument(span)` the future, then drop the timer once it resolves.
+/// Awaiting counterpart of [`spawn_step!`]: `.instrument(span)` the future.
+/// The span is local logging only.
 macro_rules! spawn_await_step {
     ($step:literal $(, $field:ident = $value:expr)* $(,)?) => {
-        xai_grok_telemetry::startup_step_grouped!("spawn_actor", $step $(, $field = $value)*)
+        ((), tracing::info_span!($step $(, $field = $value)*))
     };
 }
-static SESSIONS_ACTIVE: xai_grok_telemetry::activity::ActivityGauge =
-    xai_grok_telemetry::activity::ActivityGauge::residency(
-        xai_grok_telemetry::activity::SESSIONS_ACTIVE_KEY,
-    );
 /// Drop catch-all `--allow` rules (the `--yolo` substitute, see `resolution::is_catchall_allow`) when `policy_block` is set.
 fn drop_cli_catchall_allows(
     rules: Vec<xai_grok_workspace::permission::types::PermissionRule>,
@@ -72,24 +62,6 @@ pub(crate) fn build_session_runtime() -> std::io::Result<tokio::runtime::Runtime
     let mut builder = tokio::runtime::Builder::new_current_thread();
     xai_tty_utils::runtime::apply_blocking_pool(builder.enable_all()).build()
 }
-fn configured_memory_retrieval_mode(
-    config: Option<&crate::config::MemoryConfig>,
-) -> xai_grok_telemetry::events::MemoryRetrievalMode {
-    use xai_grok_telemetry::events::MemoryRetrievalMode::*;
-    match config.filter(|config| config.enabled && config.mode.is_legacy()) {
-        None => Disabled,
-        Some(config)
-            if config
-                .embedding
-                .model
-                .as_ref()
-                .is_some_and(|model| !model.is_empty()) =>
-        {
-            Hybrid
-        }
-        Some(_) => FtsOnly,
-    }
-}
 /// One 429 layer per role, never stacked, never zero: an active subagent pacer disables the sampler retry, and a
 /// disabled pacer falls back to it (a true rollback). A per-model sampler threshold overrides this policy elsewhere.
 fn subagent_sampler_rate_limit_threshold(is_subagent: bool, pacer_max_attempts: u32) -> u32 {
@@ -111,32 +83,13 @@ fn session_max_retries_source(
 mod runtime_containment_tests;
 #[cfg(test)]
 mod cli_catchall_drop_tests {
-    use super::{configured_memory_retrieval_mode, drop_cli_catchall_allows};
+    use super::drop_cli_catchall_allows;
     use xai_grok_workspace::permission::resolution::YoloPinReason;
     const PIN: &str = YoloPinReason::DisableBypassPermissionsMode.message();
     use xai_grok_workspace::permission::rules::parse_permission_rule;
     use xai_grok_workspace::permission::types::{PermissionRule, RuleAction, ToolFilter};
     fn allow(rule: &str) -> PermissionRule {
         parse_permission_rule(rule, RuleAction::Allow).expect("rule parses")
-    }
-    #[test]
-    fn disabled_memory_config_has_disabled_retrieval_mode() {
-        assert_eq!(
-            configured_memory_retrieval_mode(Some(&Default::default())),
-            xai_grok_telemetry::events::MemoryRetrievalMode::Disabled
-        );
-    }
-    #[test]
-    fn v2_memory_config_has_disabled_retrieval_mode() {
-        let config = crate::config::MemoryConfig {
-            enabled: true,
-            mode: crate::config::MemoryMode::V2,
-            ..Default::default()
-        };
-        assert_eq!(
-            configured_memory_retrieval_mode(Some(&config)),
-            xai_grok_telemetry::events::MemoryRetrievalMode::Disabled
-        );
     }
     /// Under the pin, CLI catch-all `--allow` rules (`*`, `**`) are dropped while a scoped rule (`Bash(touch *)`) survives.
     #[test]
@@ -229,7 +182,6 @@ pub(crate) async fn spawn_session_actor(
     parent_mcp_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
     acp_mcp_servers: Vec<crate::session::mcp_servers::AcpServerEntry>,
     support_permission: bool,
-    telemetry_enabled: bool,
     auto_update: Option<bool>,
     persistence: PersistenceHandle,
     mut conversation: Vec<ConversationItem>,
@@ -332,7 +284,6 @@ pub(crate) async fn spawn_session_actor(
     forked_tool_override: Option<crate::session::commands::ForkedToolSnapshot>,
     subagent_model_inheritance: crate::agent::config::Resolved<bool>,
     is_chat_kind: bool,
-    spawn_ctx: Option<xai_grok_telemetry::subagent_spawn::SpawnPhaseContext>,
     sampling_gate: Option<Arc<tokio::sync::Semaphore>>,
 ) -> Result<(SessionInitResult, tokio::sync::oneshot::Receiver<()>), xai_grok_agent::AgentBuildError>
 {
@@ -886,7 +837,6 @@ pub(crate) async fn spawn_session_actor(
         MemoryStorageSelection::DisabledByConfig => {}
         MemoryStorageSelection::UnavailableForEphemeralWorkspace => {
             tracing::info!(
-                target: xai_grok_telemetry::memory_log::TARGET,
                 cwd = %tool_context.cwd.as_path().display(),
                 "MEMORY_INIT: memory-v2 is disabled for ephemeral (temp-dir) workspaces"
             );
@@ -919,8 +869,7 @@ pub(crate) async fn spawn_session_actor(
                 Ok(access) => memory_v2_access = Some(access),
                 Err(failure) => {
                     tracing::warn!(
-                        target: xai_grok_telemetry::memory_log::TARGET,
-                        stage = failure.stage,
+                                stage = failure.stage,
                         error = %failure.error,
                         "MEMORY_INIT: memory-v2 {} failed; memory is disabled for this session. \
                          Restart to retry, or start with `--no-memory` / `GROK_MEMORY=0` to skip memory.",
@@ -936,7 +885,6 @@ pub(crate) async fn spawn_session_actor(
                 .await
         {
             tracing::warn!(
-                target: xai_grok_telemetry::memory_log::TARGET,
                 error = %error,
                 mode = ?storage.mode(),
                 "MEMORY_INIT: storage initialization failed"
@@ -952,21 +900,17 @@ pub(crate) async fn spawn_session_actor(
         {
             let gc_storage = storage.clone();
             let gc_max_age = memory_config.as_ref().map_or(30, |mc| mc.gc.max_age_days);
-            let gc_span = region!(debug, "memory.gc", SpanParent::Root);
             tokio::task::spawn_blocking(move || {
-                let _gc_span = gc_span;
                 match gc_storage.gc(gc_max_age) {
                     Ok(removed) if removed > 0 => {
                         tracing::info!(
-                            target: xai_grok_telemetry::memory_log::TARGET,
-                            removed,
+                                        removed,
                             "MEMORY_GC: cleaned orphaned workspace directories"
                         );
                     }
                     Err(e) => {
                         tracing::debug!(
-                            target: xai_grok_telemetry::memory_log::TARGET,
-                            error = %e,
+                                        error = %e,
                             "MEMORY_GC: failed"
                         );
                     }
@@ -1002,7 +946,7 @@ pub(crate) async fn spawn_session_actor(
             stale_claim_secs: watcher_config.stale_claim_secs,
             search_source: crate::session::memory::MemorySearchSource::Tool,
             observation_sink: std::sync::Arc::new(
-                crate::session::memory_observation::TelemetryMemoryObservationSink {
+                crate::session::memory_observation::LoggingMemoryObservationSink {
                     session_id: session_info.id.to_string(),
                 },
             ),
@@ -1019,13 +963,11 @@ pub(crate) async fn spawn_session_actor(
         memory_backend_params_for_session = Some(params);
         if watcher_config.enabled && !watcher_started {
             tracing::warn!(
-                target: xai_grok_telemetry::memory_log::TARGET,
                 "MEMORY_INIT: watcher was configured but failed to start \
                  (directory may not exist or OS watcher unavailable)"
             );
         }
         tracing::info!(
-            target: xai_grok_telemetry::memory_log::TARGET,
             workspace = %storage.workspace_dir().display(),
             global = %storage.global_dir().display(),
             watcher_config_enabled = watcher_config.enabled,
@@ -1037,74 +979,16 @@ pub(crate) async fn spawn_session_actor(
         let total_files = storage.list_memory_files().map_or(0, |f| f.len());
         memory_init_span.record("memory_chunks", total_chunks as i64);
         memory_init_span.record("memory_files", total_files as i64);
-        xai_grok_telemetry::session_ctx::log_event(
-            xai_grok_telemetry::memory_telemetry::MemorySessionInit {
-                session_id: session_info.id.to_string(),
-                memory_enabled: true,
-                memory_mode: xai_grok_telemetry::memory_telemetry::MemoryMode::Legacy,
-                watcher_config_enabled: watcher_config.enabled,
-                watcher_started,
-                temporal_decay_enabled: mc.is_none_or(|c| c.search.temporal_decay.enabled),
-                mmr_enabled: mc.is_some_and(|c| c.search.mmr.enabled),
-                mmr_lambda: mc.map_or(0.7, |c| c.search.mmr.lambda),
-                half_life_days: mc.map_or(30.0, |c| c.search.temporal_decay.half_life_days),
-                embedding_dimensions: mc.map_or(1024, |c| c.embedding.dimensions),
-                total_chunks,
-                total_files,
-                has_global_memory_md: storage.global_memory_file().exists(),
-                has_workspace_memory_md: storage.workspace_memory_file().exists(),
-            },
-        );
         Some(backend)
     } else {
         if let Some(storage) = memory_storage_for_session.as_ref() {
             tracing::info!(
-                target: xai_grok_telemetry::memory_log::TARGET,
                 workspace = %storage.workspace_dir().display(),
                 global = %storage.global_dir().display(),
                 "MEMORY_INIT: isolated v2 storage created"
             );
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::memory_telemetry::MemorySessionInit {
-                    session_id: session_info.id.to_string(),
-                    memory_enabled: true,
-                    memory_mode: xai_grok_telemetry::memory_telemetry::MemoryMode::V2,
-                    total_chunks: storage.total_chunk_count(),
-                    total_files: storage.list_memory_files().map_or(0, |files| files.len()),
-                    has_global_memory_md: storage.global_memory_file().exists(),
-                    has_workspace_memory_md: storage.workspace_memory_file().exists(),
-                    ..Default::default()
-                },
-            );
-            let controls = memory_config
-                .as_ref()
-                .map_or_else(crate::config::MemoryV2Config::default, |config| config.v2);
-            let rollout = match controls.rollout {
-                crate::config::MemoryV2Rollout::Off => {
-                    xai_grok_telemetry::memory_telemetry::MemoryV2Rollout::Off
-                }
-                crate::config::MemoryV2Rollout::RecordOnly => {
-                    xai_grok_telemetry::memory_telemetry::MemoryV2Rollout::RecordOnly
-                }
-                crate::config::MemoryV2Rollout::Shadow => {
-                    xai_grok_telemetry::memory_telemetry::MemoryV2Rollout::Shadow
-                }
-                crate::config::MemoryV2Rollout::Active => {
-                    xai_grok_telemetry::memory_telemetry::MemoryV2Rollout::Active
-                }
-            };
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::memory_telemetry::MemoryV2ControlsPinned {
-                    rollout,
-                    capture_enabled: controls.can_capture(),
-                    automatic_dream_enabled: controls.can_run_automatic_dream(),
-                    manual_dream_enabled: controls.can_run_manual_dream(),
-                    file_writes_enabled: controls.file_writes_enabled,
-                },
-            );
         } else {
             tracing::debug!(
-                target: xai_grok_telemetry::memory_log::TARGET,
                 "MEMORY_INIT: memory disabled, no storage created"
             );
         }
@@ -1244,13 +1128,8 @@ pub(crate) async fn spawn_session_actor(
             None
         },
     });
-    use xai_grok_telemetry::subagent_spawn::SubagentSpawnPhase;
-    let builder_started_at = std::time::Instant::now();
     let (agent_build_timer, agent_build_step_span) = spawn_await_step!("agent_build");
-    let agent_build_span = spawn_ctx
-        .as_ref()
-        .map(|ctx| phase_region_under(SubagentSpawnPhase::AgentBuild, &ctx.parent));
-    let (agent, agent_build_elapsed) = rebuild_spec
+    let (agent, _) = rebuild_spec
         .build_agent_with_initial_overrides(
             agent_definition,
             system_prompt_label,
@@ -1271,12 +1150,9 @@ pub(crate) async fn spawn_session_actor(
             e
         })?;
     drop(agent_build_timer);
-    drop(agent_build_span);
-    let tool_setup_span = spawn_ctx
-        .as_ref()
-        .map(|ctx| phase_region_under(SubagentSpawnPhase::ToolSetup, &ctx.parent));
+    let tool_setup_span = tracing::info_span!("tool_setup");
     let (tool_setup_timer, tool_setup_step_span) = spawn_await_step!("tool_setup");
-    let (harness_metrics, scheduler_handle_for_handle, toolset) = async {
+    let (scheduler_handle_for_handle, toolset) = async {
         let reservations_for_bridge = task_completion_reservations.clone();
         agent
             .tool_bridge()
@@ -1285,51 +1161,6 @@ pub(crate) async fn spawn_session_actor(
                 resources.insert(task_wake_suppressed);
             })
             .await;
-        let memory_retrieval_mode = configured_memory_retrieval_mode(memory_config.as_ref());
-        let harness_metrics = if !startup_hints.is_subagent
-            && (telemetry_enabled || xai_grok_telemetry::external::is_active())
-        {
-            let plugin_names = plugin_registry
-                .as_ref()
-                .map(|reg| {
-                    reg.active_plugins()
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect()
-                })
-                .unwrap_or_default();
-            Some(super::telemetry::SessionHarnessMetrics {
-                session_id: session_info.id.0.to_string(),
-                client_identifier: session_client_identifier.clone(),
-                model_id: session_model_id.0.to_string(),
-                agent_name: initial_agent_name,
-                permission_mode: if session_yolo_mode {
-                    xai_grok_telemetry::enums::PermissionMode::AlwaysApprove
-                } else if session_auto_mode
-                    && crate::util::config::auto_permission_mode_enabled_from_disk()
-                {
-                    xai_grok_telemetry::enums::PermissionMode::Auto
-                } else {
-                    xai_grok_telemetry::enums::PermissionMode::Ask
-                },
-                mcp_server_names: mcp_servers
-                    .iter()
-                    .map(|s| mcp_server_name(s).to_owned())
-                    .collect(),
-                lsp_server_names: tool_context.lsp_server_names.clone(),
-                memory_enabled: memory_config.as_ref().is_some_and(|config| config.enabled),
-                memory_retrieval_mode,
-                auto_update,
-                cwd: tool_context.cwd.as_str().to_owned(),
-                skill_names: agent.tool_bridge().skill_discovery_snapshot_names().await,
-                compat,
-                paths_config,
-                plugin_registry: plugin_registry.clone(),
-                plugin_names,
-            })
-        } else {
-            None
-        };
         let resolved_task_output =
             xai_grok_tools::reminders::task_completion::resolve_task_output_tool_name(
                 agent.tool_bridge(),
@@ -1364,21 +1195,11 @@ pub(crate) async fn spawn_session_actor(
                 .cloned()
         };
         let toolset = agent.tool_bridge().toolset();
-        (harness_metrics, scheduler_handle_for_handle, toolset)
+        (scheduler_handle_for_handle, toolset)
     }
     .instrument(tool_setup_step_span)
     .await;
     drop(tool_setup_timer);
-    if let Some(ctx) = &spawn_ctx {
-        ctx.timer
-            .record(SubagentSpawnPhase::AgentBuild, agent_build_elapsed);
-        ctx.timer.record(
-            SubagentSpawnPhase::ToolSetup,
-            builder_started_at
-                .elapsed()
-                .saturating_sub(agent_build_elapsed),
-        );
-    }
     drop(tool_setup_span);
     crate::waterfall::mark(&wf_sid, crate::waterfall::stage::SB_AGENT_BUILT);
     let prefix_build = spawn_step!("prefix_build");
@@ -1397,7 +1218,6 @@ pub(crate) async fn spawn_session_actor(
     );
     if !is_subagent_spawn && reconcile_resumed_memory_section(&mut conversation, &system_prompt) {
         tracing::info!(
-            target: xai_grok_telemetry::memory_log::TARGET,
             memory_enabled = memory_storage_for_session.is_some(),
             "MEMORY_INIT: resumed system prompt's memory section did not match this session's \
              memory state; replaced with the fresh prompt"
@@ -1476,7 +1296,6 @@ pub(crate) async fn spawn_session_actor(
     let user_cfg = feedback_flags.user;
     let feedback_config = FeedbackManagerConfig {
         feedback_enabled: feedback_flags.enabled,
-        telemetry_enabled,
         client_type: feedback_client_type,
         loc_tracking_enabled,
         user: user_cfg.clone(),
@@ -1799,7 +1618,6 @@ pub(crate) async fn spawn_session_actor(
         current_prompt_id: current_prompt_id.clone(),
         active_work: active_work.clone(),
         pending_interactions: pending_interactions.clone(),
-        telemetry_enabled,
         supports_backend_search: std::cell::Cell::new(sampling_config.supports_backend_search),
         tool_overrides: std::cell::RefCell::new(None),
         resolved_tool_overrides: resolved_tool_overrides.clone(),
@@ -2033,7 +1851,7 @@ pub(crate) async fn spawn_session_actor(
         ),
         observability_bridge: obs_bridge,
         current_turn_number: std::cell::Cell::new(0),
-        turn_phases: std::sync::Arc::default(),
+        turn_generation: std::sync::Arc::default(),
         last_recap_main_turn: std::cell::Cell::new(initial_last_recap_main_turn),
         recap_in_flight: std::cell::Cell::new(false),
         recap_epoch: std::cell::Cell::new(0),
@@ -2211,8 +2029,11 @@ pub(crate) async fn spawn_session_actor(
                     }
                 }
                 tracing::info!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
-                    files = files.len(),
+                        files = files.len(),
+                        added = total_added,
+                        updated = total_updated,
+                        removed = total_removed,
+                        elapsed_ms = reindex_start.elapsed().as_millis() as u64,
                     "MEMORY_REINDEX: background reindex complete"
                 );
                 let embedded_count = if let Some(api_key) = sampling_api_key {
@@ -2230,32 +2051,20 @@ pub(crate) async fn spawn_session_actor(
                 } else {
                     0
                 };
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::memory_telemetry::MemoryReindex {
-                        session_id: session_id_for_reindex.clone(),
-                        source: "init".to_owned(),
-                        added: total_added,
-                        updated: total_updated,
-                        removed: total_removed,
-                        embedded: embedded_count,
-                        duration_ms: reindex_start.elapsed().as_millis() as u64,
-                        trigger: "init".to_owned(),
-                    },
-                );
                 chunks_added_counter
                     .fetch_add(total_added as u64, std::sync::atomic::Ordering::Relaxed);
             }
         });
         *session.memory.init_reindex_handle.borrow_mut() = Some(reindex_handle);
     }
-    if let Some(cancel) = sync_loop_cancel {
+    if let Some(_cancel) = sync_loop_cancel {
         tracing::info!(
             session_id = %session_info.id.0,
-            "Spawning feedback sync loop"
+            "Loading feedback heuristics"
         );
         let fm = feedback_manager.clone();
         tokio::spawn(async move {
-            fm.run_sync_loop(cancel).await;
+            fm.load_config().await;
         });
     } else {
         tracing::debug!(
@@ -2355,43 +2164,16 @@ pub(crate) async fn spawn_session_actor(
         memory_mode: session.memory.mode(),
     };
     let tool_context_for_handle = session.tool_context.clone();
-    let telemetry_ctx = xai_grok_telemetry::session_ctx::TelemetryCtx::new(
-        session.session_info.id.0.to_string(),
-        session.tool_context.prompt_index.clone(),
-    );
-    if let Some(metrics) = harness_metrics {
-        let hooks: Vec<super::telemetry::HookRegInfo> = session
-            .hook_registry
-            .borrow()
-            .as_ref()
-            .map(|reg| {
-                reg.all_hooks()
-                    .iter()
-                    .map(|s| super::telemetry::HookRegInfo::from_spec(s))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let telemetry_enabled = session.telemetry_enabled;
-        tokio::spawn(async move {
-            let ev = metrics.into_event(hooks).await;
-            xai_grok_telemetry::session_ctx::log_event_dual(telemetry_enabled, ev);
-        });
-    }
-    let hosting = SESSIONS_ACTIVE.enter();
     tokio::task::spawn_local(async move {
-        let _hosting = hosting;
-        xai_grok_telemetry::session_ctx::with_session_ctx(
-            telemetry_ctx,
-            run_session(
-                session,
-                cmd_rx,
-                chat_state_event_rx,
-                event_rx,
-                fs_notify_config,
-                codebase_indexes,
-                index_root_for_session,
-                fs_watch_caps,
-            ),
+        run_session(
+            session,
+            cmd_rx,
+            chat_state_event_rx,
+            event_rx,
+            fs_notify_config,
+            codebase_indexes,
+            index_root_for_session,
+            fs_watch_caps,
         )
         .await;
         let _ = session_done_tx.send(());
@@ -2522,7 +2304,6 @@ pub(crate) async fn spawn_session_on_thread(
     parent_mcp_pool: Option<crate::session::mcp_servers::SharedMcpPool>,
     acp_mcp_servers: Vec<crate::session::mcp_servers::AcpServerEntry>,
     support_permission: bool,
-    telemetry_enabled: bool,
     auto_update: Option<bool>,
     persistence: PersistenceHandle,
     conversation: Vec<ConversationItem>,
@@ -2604,7 +2385,6 @@ pub(crate) async fn spawn_session_on_thread(
     prefetch: crate::session::session_create_prefetch::SessionCreatePrefetch,
     plugin_registry_handle: Option<xai_grok_agent::plugins::SharedPluginRegistryHandle>,
     models_manager: crate::agent::remote_config::ModelsManager,
-    parent_traceparent: Option<String>,
     inherited_permission_handle: Option<xai_grok_workspace::permission::PermissionHandle>,
     api_key_provider: Option<xai_grok_tools::types::SharedApiKeyProvider>,
     image_description_model: String,
@@ -2624,9 +2404,7 @@ pub(crate) async fn spawn_session_on_thread(
     forked_tool_override: Option<crate::session::commands::ForkedToolSnapshot>,
     subagent_model_inheritance: crate::agent::config::Resolved<bool>,
     is_chat_kind: bool,
-    spawn_ctx: Option<xai_grok_telemetry::subagent_spawn::SpawnPhaseContext>,
     sampling_gate: Option<Arc<tokio::sync::Semaphore>>,
-    spawn_trace: Option<xai_grok_telemetry::startup::SpawnTraceContext>,
 ) -> Result<(SessionInitResult, SessionThread), acp::Error> {
     let (init_tx, init_rx) = tokio::sync::oneshot::channel::<
         Result<SessionInitResult, xai_grok_agent::AgentBuildError>,
@@ -2638,10 +2416,7 @@ pub(crate) async fn spawn_session_on_thread(
     };
     let thread_name = format!("ses-{sid_prefix}");
     const SESSION_THREAD_STACK_SIZE: usize = 8 * 1024 * 1024;
-    let history_load_span = match spawn_trace.as_ref() {
-        Some(ctx) => tracing::info_span!(parent: &ctx.parent, "spawn.history_load"),
-        None => tracing::info_span!("spawn.history_load"),
-    };
+    let history_load_span = tracing::info_span!("spawn.history_load");
     let join_handle = std::thread::Builder::new()
         .name(thread_name)
         .stack_size(SESSION_THREAD_STACK_SIZE)
@@ -2653,10 +2428,6 @@ pub(crate) async fn spawn_session_on_thread(
                 );
                 let updates_path = session_dir.join("updates.jsonl");
                 let initial_last_compaction = {
-                    let _timer = xai_grok_telemetry::startup_step_timer_grouped!(
-                        "spawn_actor",
-                        "find_compaction_checkpoint"
-                    );
                     crate::session::helpers::replay::find_latest_compaction_checkpoint(
                             &updates_path,
                         )
@@ -2665,10 +2436,6 @@ pub(crate) async fn spawn_session_on_thread(
                         .map(|cp| cp.prompt_index_at_compaction)
                 };
                 let initial_prompt_texts = {
-                    let _timer = xai_grok_telemetry::startup_step_timer_grouped!(
-                        "spawn_actor",
-                        "load_user_prompts"
-                    );
                     SessionActor::load_user_prompts_from_updates(&updates_path)
                         .unwrap_or_default()
                 };
@@ -2688,35 +2455,12 @@ pub(crate) async fn spawn_session_on_thread(
             };
             let local = tokio::task::LocalSet::new();
             let actor_main = async move {
-                let _trace_span = parent_traceparent
-                    .as_ref()
-                    .map(|tp| {
-                        let meta = serde_json::json!({ "traceparent": tp })
-                            .as_object()
-                            .cloned()
-                            .unwrap_or_default();
-                        let span = xai_grok_otel::span_from_meta_traceparent(&meta);
-                        span.entered()
-                    });
-                let session_spawn_span = match spawn_trace {
-                    Some(ctx) => {
-                        tracing::info_span!(
-                        parent: &ctx.parent,
-                        "session.spawn",
-                        session_id = %session_info.id.0,
-                        client_type = ?client_type,
-                        start_type = if initial_prompt_texts.is_empty() { "new" } else { "resumed" },
-                    )
-                    }
-                    None => {
-                        tracing::info_span!(
-                        "session.spawn",
-                        session_id = %session_info.id.0,
-                        client_type = ?client_type,
-                        start_type = if initial_prompt_texts.is_empty() { "new" } else { "resumed" },
-                    )
-                    }
-                };
+                let session_spawn_span = tracing::info_span!(
+                    "session.spawn",
+                    session_id = %session_info.id.0,
+                    client_type = ?client_type,
+                    start_type = if initial_prompt_texts.is_empty() { "new" } else { "resumed" },
+                );
                 let actor_fut = spawn_session_actor(
                     session_info,
                     gateway,
@@ -2732,7 +2476,6 @@ pub(crate) async fn spawn_session_on_thread(
                     parent_mcp_pool,
                     acp_mcp_servers,
                     support_permission,
-                    telemetry_enabled,
                     auto_update,
                     persistence,
                     conversation,
@@ -2829,7 +2572,6 @@ pub(crate) async fn spawn_session_on_thread(
                     forked_tool_override,
                     subagent_model_inheritance,
                     is_chat_kind,
-                    spawn_ctx,
                     sampling_gate,
                 );
                 let actor_result = actor_fut.instrument(session_spawn_span).await;
@@ -2844,7 +2586,6 @@ pub(crate) async fn spawn_session_on_thread(
                 let _ = session_done_rx.await;
             };
             local.block_on(&rt, actor_main);
-            rt.block_on(xai_grok_telemetry::session_ctx::drain_at_session_exit());
         });
     let join_handle = match join_handle {
         Ok(h) => h,

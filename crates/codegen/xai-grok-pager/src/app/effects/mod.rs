@@ -30,7 +30,6 @@ use std::path::Path;
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
 use xai_acp_lib::{AcpAgentTx, acp_send};
-use xai_grok_telemetry::startup::{self, StartupPhase};
 use actions::{
     ClipboardPasteTarget, Effect, SubagentKillOutcome, SwitchModelError, TaskResult,
     WorkspaceMutation, WorkspaceMutationFailure, WorkspaceWriteCompletion,

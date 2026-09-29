@@ -18,7 +18,6 @@ use xai_grok_compaction::{
 };
 use xai_grok_sampler::SamplerConfig as SamplingConfig;
 use xai_grok_sampling_types::{ConversationItem, HostedTool, ToolSpec};
-use xai_grok_telemetry::events::{CompactionRetryDegraded, CompactionTrigger};
 
 use xai_chat_state::compaction_utils::{
     CompactionAttempt, MAX_CAPTURED_SUMMARY_CHARS, bound_captured_output,
@@ -204,11 +203,9 @@ struct ObserverState {
 }
 
 /// [`FullReplaceObserver`] that reproduces grok-build's per-attempt telemetry without the shared engine depending on a telemetry backend.
-/// It records `CompactionAttempt` rows, rejection counters, the `CompactionRetryDegraded` event, and the warn/error tracing.
+/// It records `CompactionAttempt` rows, rejection counters, and the warn/error tracing.
 pub(crate) struct ShellFullReplaceObserver {
-    trigger: CompactionTrigger,
     context_window: u64,
-    compaction_id: String,
     session_id: String,
     estimated_input_tokens: u64,
     retry_delay_secs: u64,
@@ -217,28 +214,18 @@ pub(crate) struct ShellFullReplaceObserver {
 
 impl ShellFullReplaceObserver {
     pub(crate) fn new(
-        trigger: CompactionTrigger,
         context_window: u64,
-        compaction_id: String,
         session_id: String,
         estimated_input_tokens: u64,
         retry_delay_secs: u64,
     ) -> Self {
         Self {
-            trigger,
             context_window,
-            compaction_id,
             session_id,
             estimated_input_tokens,
             retry_delay_secs,
             state: Mutex::new(ObserverState::default()),
         }
-    }
-
-    /// Cumulative number of attempts so far (across all input-ladder stages).
-    /// Read mid-loop to label the `input_overflow` retry event.
-    pub(crate) fn attempt_count(&self) -> u32 {
-        self.state.lock().unwrap().attempts
     }
 
     /// Lets the L5 loop tell retries exhausted on degenerate summaries apart from retries exhausted on empty output.
@@ -302,16 +289,6 @@ impl FullReplaceObserver for ShellFullReplaceObserver {
                     self.estimated_input_tokens
                 ));
                 if *will_retry {
-                    xai_grok_telemetry::session_ctx::log_event(CompactionRetryDegraded {
-                        trigger: self.trigger,
-                        reason: "degenerate_summary",
-                        from_stage: None,
-                        to_stage: None,
-                        summary_chars: Some(summary_chars as u64),
-                        attempt,
-                        context_window: self.context_window,
-                        compaction_id: self.compaction_id.clone(),
-                    });
                     tracing::warn!(
                         session_id = %self.session_id,
                         attempt,

@@ -5,7 +5,6 @@
 use std::path::PathBuf;
 
 use xai_acp_lib::AcpAgentGatewaySender as GatewaySender;
-use xai_grok_telemetry::instrument_task;
 
 use super::{
     ShellChildRuntime, SpawnerAddressTarget, SubagentMeta, SubagentSpawnContext,
@@ -43,7 +42,6 @@ pub(super) struct StartArtifactPublication {
     spawner_address_target: Option<SpawnerAddressTarget>,
     bucket_url: Option<String>,
     upload_method: Option<crate::session::repo_changes::UploadMethod>,
-    metadata_parent: Option<tracing::Span>,
     auth_manager: std::sync::Arc<crate::auth::AuthManager>,
     #[cfg(test)]
     fail_metadata_write: bool,
@@ -52,7 +50,6 @@ pub(super) struct StartArtifactPublication {
 impl StartArtifactPublication {
     pub(super) fn new(
         boundary: PublicationBoundary,
-        metadata_parent: Option<tracing::Span>,
         prepared: PreparedStartArtifacts,
         gateway: GatewaySender,
         reporter: xai_grok_tools::implementations::grok_build::task::coordinator::ChildReporter<
@@ -71,7 +68,6 @@ impl StartArtifactPublication {
             spawner_address_target: ctx.spawner_address_target.clone(),
             bucket_url: ctx.gcs_bucket_url.clone(),
             upload_method: ctx.gcs_upload_method.clone(),
-            metadata_parent,
             auth_manager: ctx.auth_manager.clone(),
             #[cfg(test)]
             fail_metadata_write: ctx.fail_start_metadata_write,
@@ -99,23 +95,12 @@ impl StartArtifactPublication {
     }
 
     fn publish(&mut self) {
-        let metadata_persist_span = match self.metadata_parent.as_ref() {
-            Some(parent) => xai_grok_telemetry::region!(
-                "subagent_spawn.metadata_persist",
-                xai_grok_telemetry::region::Parent::Explicit(parent)
-            ),
-            None => xai_grok_telemetry::region!(
-                "subagent_spawn.metadata_persist",
-                xai_grok_telemetry::region::Parent::Inherit
-            ),
-        };
         #[cfg(test)]
         let metadata_written = !self.fail_metadata_write
             && write_subagent_meta(&self.prepared.meta_dir, &self.prepared.meta);
         #[cfg(not(test))]
         let metadata_written = write_subagent_meta(&self.prepared.meta_dir, &self.prepared.meta);
         self.durable_publication = metadata_written;
-        metadata_persist_span.close();
         if self.durable_publication
             && let (Some(bucket_url), Some(upload_method)) = (&self.bucket_url, &self.upload_method)
         {
@@ -134,10 +119,7 @@ impl StartArtifactPublication {
             let bucket = bucket_url.clone();
             let method = upload_method.clone();
             let auth_manager = self.auth_manager.clone();
-            tokio::spawn(instrument_task!(
-                debug,
-                "subagent.metadata_upload",
-                xai_grok_telemetry::region::Parent::Root,
+            tokio::spawn(
                 async move {
                     crate::upload::trace::upload_subagent_metadata(
                         &gcs_meta,
@@ -147,7 +129,7 @@ impl StartArtifactPublication {
                     )
                     .await;
                 }
-            ));
+            );
         }
         emit_subagent_notification(
             &self.gateway,

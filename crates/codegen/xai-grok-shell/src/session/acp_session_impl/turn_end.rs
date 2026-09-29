@@ -195,14 +195,6 @@ impl SessionActor {
         else {
             let state = self.state.lock().await;
             tracing::warn!("Received stale completion for prompt: {prompt_id}");
-            xai_grok_telemetry::unified_log::warn(
-                "shell.turn.stale_completion_dropped",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "prompt_id": prompt_id,
-                    "running_prompt_id": state.running_prompt_id(),
-                })),
-            );
             return false;
         };
 
@@ -247,14 +239,6 @@ impl SessionActor {
             broadcast_queue = input.queue_meta.is_some();
         } else {
             tracing::warn!("Received completion for unknown prompt: {prompt_id}");
-            xai_grok_telemetry::unified_log::warn(
-                "shell.turn.stale_completion_dropped",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "prompt_id": prompt_id,
-                    "running_prompt_id": state.running_prompt_id(),
-                })),
-            );
         }
         let binding = xai_message_delivery_core::TurnBinding::new(prompt_id.clone(), epoch);
         let (message_completions, had_message_fallbacks) = self.transition_parent_messages(
@@ -457,7 +441,7 @@ impl SessionActor {
         self.emit_status_snapshot_detached();
     }
 
-    /// Telemetry error category; delegates to `stop_failure_error_type` so the two classifications cannot drift.
+    /// Local error category; delegates to `stop_failure_error_type` so the two classifications cannot drift.
     pub(super) fn classify_turn_error(err: &acp::Error) -> String {
         use xai_grok_hooks::event::StopFailureKind as K;
         match Self::stop_failure_error_type(err) {
@@ -483,9 +467,73 @@ impl SessionActor {
                 let named = crate::sampling::error::rewrite_service_names(
                     &crate::sampling::error::acp_error_message(err),
                 );
-                xai_grok_telemetry::redact_error_detail(&named)
+                Self::redact_error_detail(&named)
             });
         (category, code, detail)
+    }
+
+    /// Scrub an error detail for hook payloads and logs: reduce URLs to
+    /// origins, scrub secrets and user paths, then cap. Redaction precedes
+    /// the cap so truncation cannot split a secret.
+    fn redact_error_detail(input: &str) -> String {
+        const ERROR_DETAIL_MAX_LEN: usize = 256;
+        let scrubbed = Self::redact_urls_in_text(input);
+        let secrets = xai_grok_secrets::redact_secrets(&scrubbed);
+        let paths = xai_grok_secrets::redact_user_paths(secrets.as_ref());
+        paths.chars().take(ERROR_DETAIL_MAX_LEN).collect()
+    }
+
+    /// Reduce `http(s)://` URLs in text to scheme + host (+ port).
+    fn redact_urls_in_text(input: &str) -> String {
+        fn url_origin(value: &str) -> std::borrow::Cow<'_, str> {
+            if let Ok(url) = url::Url::parse(value)
+                && let Some(host) = url.host_str()
+            {
+                let origin = match url.port() {
+                    Some(port) => format!("{}://{}:{}", url.scheme(), host, port),
+                    None => format!("{}://{}", url.scheme(), host),
+                };
+                return std::borrow::Cow::Owned(origin);
+            }
+            std::borrow::Cow::Borrowed(value)
+        }
+
+        let mut out = String::with_capacity(input.len());
+        let mut rest = input;
+        while !rest.is_empty() {
+            let https = rest.find("https://");
+            let http = rest.find("http://");
+            let start = match (https, http) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+            let Some(start) = start else {
+                out.push_str(rest);
+                break;
+            };
+            let Some(prefix) = rest.get(..start) else {
+                break;
+            };
+            out.push_str(prefix);
+            let Some(url_rest) = rest.get(start..) else {
+                break;
+            };
+            let end = url_rest
+                .char_indices()
+                .find(|&(_, c)| {
+                    c.is_whitespace() || matches!(c, ')' | ']' | '"' | '\'' | ',' | ';' | '>')
+                })
+                .map(|(i, _)| i)
+                .unwrap_or(url_rest.len());
+            let Some(url) = url_rest.get(..end) else {
+                break;
+            };
+            out.push_str(url_origin(url).as_ref());
+            rest = url_rest.get(end..).unwrap_or("");
+        }
+        out
     }
 
     /// The `StopFailure` hook input's classified `error`.

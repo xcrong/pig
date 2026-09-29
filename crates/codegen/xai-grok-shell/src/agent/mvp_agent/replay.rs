@@ -191,32 +191,6 @@ impl MvpAgent {
         cursor: Option<&str>,
         skip_local_background_tasks: bool,
     ) -> Result<(u64, u64, Vec<UnfinishedSubagent>), acp::Error> {
-        let mut replay_timer = crate::instrumentation_timer!("session.load_session_replay");
-        replay_timer.with_field("session_id", session_id.0.as_ref());
-        replay_timer.with_field("cwd", cwd.as_str());
-        replay_timer.with_subphase(xai_grok_telemetry::startup::Subphase::SessionReplay);
-        let subphase = replay_timer.subphase_span();
-        let active = subphase.is_some();
-        let replay_parent = subphase.unwrap_or_else(tracing::Span::current);
-        macro_rules! replay_step_timer {
-            ($startup:literal, $neutral:literal) => {
-                if active {
-                    crate::instrumentation_timer!($startup)
-                } else {
-                    crate::instrumentation_timer!($neutral)
-                }
-            };
-        }
-        macro_rules! replay_step_span {
-            ($startup:literal, $neutral:literal $(, $field:ident = $value:expr)?) => {
-                if active {
-                    tracing::info_span!(parent: &replay_parent, $startup $(, $field = $value)?)
-                } else {
-                    tracing::info_span!(parent: &replay_parent, $neutral $(, $field = $value)?)
-                }
-            };
-        }
-
         let Some(updates_path) = updates_file_path.as_ref() else {
             tracing::warn!(session_id = %session_id.0, "replay: no updates file path");
             return Ok((0, 0, Vec::new()));
@@ -228,15 +202,8 @@ impl MvpAgent {
 
         // Inline blocking I/O: spawn_blocking has multi-second latency on LocalSet.
         let file_contents = {
-            let _timer = replay_step_timer!(
-                "startup.session_replay.read_file",
-                "session.replay.read_file"
-            );
-            let _span = replay_step_span!(
-                "startup.session_replay.read_file",
-                "session.replay.read_file",
-                bytes = file_size
-            )
+            let _span = tracing::info_span!("session.replay.read_file",
+                bytes = file_size)
             .entered();
             match std::fs::read_to_string(updates_path) {
                 Ok(s) if !s.is_empty() => s,
@@ -246,15 +213,8 @@ impl MvpAgent {
         let end_offset = file_contents.len() as u64;
 
         let mut prepared = {
-            let _timer = replay_step_timer!(
-                "startup.session_replay.read_and_filter",
-                "session.replay.read_and_filter"
-            );
-            let _span = replay_step_span!(
-                "startup.session_replay.read_and_filter",
-                "session.replay.read_and_filter",
-                bytes = end_offset
-            )
+            let _span = tracing::info_span!("session.replay.read_and_filter",
+                bytes = end_offset)
             .entered();
             crate::session::storage::prepare_replay_lines(&file_contents, cursor)
         };
@@ -289,15 +249,8 @@ impl MvpAgent {
         let mut drain = ReplayCompletionDrain::new();
 
         {
-            let _timer = replay_step_timer!(
-                "startup.session_replay.forward_updates",
-                "session.replay.forward_updates"
-            );
-            let forward_span = replay_step_span!(
-                "startup.session_replay.forward_updates",
-                "session.replay.forward_updates",
-                updates = updates_count
-            );
+            let forward_span = tracing::info_span!("session.replay.forward_updates",
+                updates = updates_count);
             async {
                 let mut collapser = ReplayToolCollapser::new();
                 for line in &lines_to_send {
@@ -328,14 +281,7 @@ impl MvpAgent {
             );
         }
         {
-            let _timer = replay_step_timer!(
-                "startup.session_replay.drain_completions",
-                "session.replay.drain_completions"
-            );
-            let drain_span = replay_step_span!(
-                "startup.session_replay.drain_completions",
-                "session.replay.drain_completions"
-            );
+            let drain_span = tracing::info_span!("session.replay.drain_completions");
             drain.drain_all().instrument(drain_span).await;
         }
 
@@ -347,7 +293,6 @@ impl MvpAgent {
             "replay: completed"
         );
 
-        replay_timer.with_field("updates_count", updates_count);
 
         Ok((last_tokens, end_offset, unfinished_subagents))
     }

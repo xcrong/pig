@@ -1416,10 +1416,6 @@ async fn proactive_refresh_backs_off_on_permanent_failure() {
         mgr.current_or_expired().is_none(),
         "permanent refresh failure must clear credentials",
     );
-    assert!(
-        mgr.manual_auth_last_emit().is_none(),
-        "the proactive background loop must not emit a manual_auth event",
-    );
     cancel.cancel();
 }
 struct TransientRefresher {
@@ -1630,7 +1626,7 @@ async fn reactive_401_recovery_produces_fresh_token_end_to_end() {
         delay: StdDuration::from_millis(0),
     }));
     assert!(
-        mgr.try_recover_unauthorized(crate::recovery::RecoverySource::Background)
+        mgr.try_recover_unauthorized()
             .await
     );
     assert_eq!(call_count.load(Ordering::SeqCst), 1);
@@ -4102,11 +4098,11 @@ async fn sleep_gate_defers_refresh_without_calling_idp() {
         "the IdP refresher must NOT be called while the sleep gate is raised"
     );
 }
-/// A sleep-deferred refresh must not poison auth state. It maps to no `manual_auth` reason: a lid close must never count as a forced re-login in the KPI.
+/// A sleep-deferred refresh must not poison auth state.
 /// It records no permanent-failure verdict, even after more deferred attempts than the refresher-level escalation budget tolerates. The transient-blip budget lives in the refresher, which a deferral never reaches.
 /// Coverage depth: the gate is raised before the chain starts, so this drives the `DeferForPowerState` deferral. The second gate check just before the IdP call returns the identical transient error and touches the same state.
 #[tokio::test]
-async fn sleep_deferred_refresh_is_transient_no_kpi_no_verdict() {
+async fn sleep_deferred_refresh_is_transient_no_verdict() {
     let dir = tempfile::tempdir().unwrap();
     let mgr = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
     mgr.hot_swap(expired_oidc());
@@ -4122,11 +4118,6 @@ async fn sleep_deferred_refresh_is_transient_no_kpi_no_verdict() {
             matches!(err, AuthError::Refresh(RefreshTokenError::Transient(_))),
             "a sleep-deferred refresh must be transient, got {err:?}"
         );
-        assert_eq!(
-            crate::recovery::manual_auth_reason(&err),
-            None,
-            "a lid-close deferral must never map to a manual_auth KPI reason",
-        );
     }
     assert!(
         mgr.permanent_failure().is_none(),
@@ -4137,18 +4128,11 @@ async fn sleep_deferred_refresh_is_transient_no_kpi_no_verdict() {
         0,
         "the refresher must never run while the gate is raised",
     );
-    let mut rec = mgr.unauthorized_recovery(
-        mgr.current_or_expired(),
-        crate::recovery::RecoverySource::Turn,
-    );
+    let mut rec = mgr.unauthorized_recovery(mgr.current_or_expired());
     let err = rec.next().await.unwrap_err();
     assert!(
         matches!(err, AuthError::Refresh(RefreshTokenError::Transient(_))),
         "deferred recovery must surface the transient deferral, got {err:?}"
-    );
-    assert!(
-        mgr.manual_auth_last_emit().is_none(),
-        "a sleep-deferred recovery must not emit the manual_auth event",
     );
 }
 /// Dark wake defers a refresh only while a *wire-valid* token can still be served; then the deferral costs nothing but latency.
@@ -4518,45 +4502,7 @@ fn sleep_ack_hold_times_out_when_refresh_never_drains() {
         "the refresh is left running, not aborted, when the hold times out"
     );
 }
-#[test]
-fn manual_auth_reason_maps_terminal_and_skips_non_forcing() {
-    use crate::error::RefreshTokenFailedReason as Reason;
-    use crate::recovery::manual_auth_reason;
-    use xai_grok_telemetry::events::ManualAuthReason as R;
-    let permanent = |reason: Reason| manual_auth_reason(&AuthError::permanent(reason));
-    assert_eq!(
-        permanent(Reason::RefreshTokenRejected),
-        Some(R::RefreshTokenRejected)
-    );
-    assert_eq!(
-        manual_auth_reason(&AuthError::ServerRejectedNoRecovery),
-        Some(R::NoRefreshAuthority)
-    );
-    assert_eq!(
-        manual_auth_reason(&AuthError::RecoveryExhausted),
-        Some(R::RecoveryExhausted)
-    );
-    assert_eq!(
-        manual_auth_reason(&AuthError::TokenExpiredNoRefresh),
-        Some(R::TokenExpiredNoRefresh)
-    );
-    assert_eq!(
-        manual_auth_reason(&AuthError::PinnedTeamMismatch {
-            message: String::new()
-        }),
-        Some(R::WrongTeam)
-    );
-    assert_eq!(
-        permanent(Reason::ProviderInteractiveRequired),
-        Some(R::ProviderInteractiveRequired)
-    );
-    assert_eq!(permanent(Reason::ClientRejected), None);
-    assert_eq!(permanent(Reason::Other), None);
-    assert_eq!(manual_auth_reason(&AuthError::transient("x")), None);
-    assert_eq!(manual_auth_reason(&AuthError::NotLoggedIn), None);
-    assert_eq!(manual_auth_reason(&AuthError::ApiKeyAuthDisabled), None);
-}
-/// Truth table for `relay_should_cancel`. The relay gives up on any terminal auth failure, including `ApiKeyAuthDisabled` (deliberately outside the `manual_auth` KPI's scope).
+/// Truth table for `relay_should_cancel`. The relay gives up on any terminal auth failure, including `ApiKeyAuthDisabled`.
 /// It keeps reconnecting through transient blips, absent credentials, and the self-healing permanent reasons. Those age out via the TTL, so cancelling on them would orphan a session that recovers minutes later.
 #[test]
 fn relay_should_cancel_gives_up_only_on_terminal_failures() {
@@ -4582,108 +4528,6 @@ fn relay_should_cancel_gives_up_only_on_terminal_failures() {
         Reason::ProviderInteractiveRequired
     )));
 }
-#[tokio::test]
-async fn manual_auth_capture_attributes_and_recorder_debounces() {
-    use crate::recovery::{ManualAuthTracker, RejectedAuth};
-    use xai_grok_telemetry::events::{AuthTokenKind, ManualAuthSurface};
-    let auth = GrokAuth {
-        key: "dead-token".into(),
-        user_id: "user-1".into(),
-        auth_mode: AuthMode::Oidc,
-        refresh_token: Some("rt".into()),
-        ..GrokAuth::test_default()
-    };
-    let snap = RejectedAuth::capture(Some(&auth));
-    assert_eq!(snap.principal_for_test(), Some("user-1"));
-    assert_eq!(snap.token_kind_for_test(), AuthTokenKind::OidcSession);
-    let rec = ManualAuthTracker::default();
-    let last = || rec.last_token_for_test();
-    rec.record(
-        &snap,
-        &AuthError::RecoveryExhausted,
-        ManualAuthSurface::Turn,
-    );
-    let id = last();
-    assert!(id.is_some());
-    rec.record(
-        &snap,
-        &AuthError::PinnedTeamMismatch {
-            message: String::new(),
-        },
-        ManualAuthSurface::Turn,
-    );
-    assert_eq!(last(), id);
-    let rearmed = GrokAuth {
-        key: "another-token".into(),
-        ..auth.clone()
-    };
-    let fresh = RejectedAuth::capture(Some(&rearmed));
-    rec.record(
-        &fresh,
-        &AuthError::RecoveryExhausted,
-        ManualAuthSurface::Turn,
-    );
-    assert!(last().is_some() && last() != id);
-    let healing = ManualAuthTracker::default();
-    healing.record(
-        &snap,
-        &AuthError::permanent(crate::error::RefreshTokenFailedReason::ClientRejected),
-        ManualAuthSurface::Turn,
-    );
-    assert!(healing.last_token_for_test().is_none());
-}
-/// End-to-end: `next()` emits only for a user-facing, in-scope terminal failure.
-/// A credential with no refresh authority terminates with `ServerRejectedNoRecovery` without a refresher.
-#[tokio::test]
-async fn manual_auth_emits_only_for_user_facing_source() {
-    use crate::recovery::RecoverySource;
-    fn mgr_with(dir: &std::path::Path, key: &str, mode: AuthMode) -> Arc<AuthManager> {
-        let mgr = Arc::new(AuthManager::new(dir, GrokComConfig::default()));
-        let mut auth = make_auth(Some(Utc::now() + Duration::hours(1)), Utc::now());
-        auth.user_id = "u1".into();
-        auth.key = key.into();
-        auth.auth_mode = mode;
-        auth.refresh_token = None;
-        mgr.hot_swap(auth);
-        mgr
-    }
-    let d1 = tempfile::tempdir().unwrap();
-    let turn = mgr_with(d1.path(), "sess-turn", AuthMode::Oidc);
-    let err = turn
-        .unauthorized_recovery(turn.current_or_expired(), RecoverySource::Turn)
-        .next()
-        .await
-        .unwrap_err();
-    assert!(matches!(err, AuthError::ServerRejectedNoRecovery));
-    use xai_grok_telemetry::events::{
-        AuthTokenKind, ManualAuth, ManualAuthReason, ManualAuthSurface,
-    };
-    assert_eq!(
-        turn.manual_auth_last_emit(),
-        Some(ManualAuth {
-            reason: ManualAuthReason::NoRefreshAuthority,
-            trigger: ManualAuthSurface::Turn,
-            token_kind: AuthTokenKind::LegacySession,
-            principal: Some("u1".to_string()),
-        }),
-    );
-    let d2 = tempfile::tempdir().unwrap();
-    let bg = mgr_with(d2.path(), "sess-bg", AuthMode::Oidc);
-    let _ = bg
-        .unauthorized_recovery(bg.current_or_expired(), RecoverySource::Background)
-        .next()
-        .await;
-    assert!(bg.manual_auth_last_token().is_none());
-    let d3 = tempfile::tempdir().unwrap();
-    let api = mgr_with(d3.path(), "api-key", AuthMode::ApiKey);
-    let _ = api
-        .unauthorized_recovery(api.current_or_expired(), RecoverySource::Turn)
-        .next()
-        .await;
-    assert!(api.manual_auth_last_token().is_none());
-}
-/// A refreshable credential with no sticky verdict must NOT demand a manual `/login`.
-/// This is the authority the sampler consults before painting the pager's re-auth banner, and the post-wake network gap must classify as self-healing.
 #[tokio::test]
 async fn requires_manual_reauth_false_for_refreshable_credential() {
     let dir = tempfile::tempdir().unwrap();

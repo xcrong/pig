@@ -1,6 +1,6 @@
 use toml::Value as TomlValue;
 
-pub use xai_grok_telemetry::enums::PermissionMode;
+pub use xai_grok_workspace::permission::types::PermissionMode;
 
 /// Unknown strings fall back to `Ask` (safe direction: no YOLO on garbage).
 /// The `"ask"` and `"default"` arms are explicit so a future `Default` variant is a one-line change without touching the catch-all.

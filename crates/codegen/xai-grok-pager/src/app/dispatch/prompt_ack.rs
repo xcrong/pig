@@ -95,7 +95,7 @@ fn poll_prompt_ack_for_agent(
     match watch.poll(now, deadlines) {
         PromptAckOutcome::Waiting => false,
         PromptAckOutcome::SoftNotice { waited } => {
-            crate::unified_log::write_direct_warn(
+            crate::unified_log::warn(
                 "prompt.ack_soft_notice",
                 session_id.as_ref().map(|s| s.0.as_ref()),
                 Some(serde_json::json!({
@@ -179,7 +179,7 @@ fn fire_fail_safe(
         PromptAckDisposition::NotRestorable => PROMPT_ACK_TIMEOUT_TOAST_STOPPED,
     });
 
-    crate::unified_log::write_direct_warn(
+    crate::unified_log::warn(
         "prompt.ack_timeout",
         session_id.as_ref().map(|s| s.0.as_ref()),
         Some(serde_json::json!({
@@ -193,13 +193,6 @@ fn fire_fail_safe(
             "shared_queue_len": agent.shared_queue.len(),
         })),
     );
-    xai_grok_telemetry::session_ctx::log_event(PromptAckTimeoutFired {
-        limit_ms: deadlines.hard.as_millis() as u64,
-        waited_ms: waited.as_millis() as u64,
-        surface: PromptAckSurface::Tui,
-        disposition,
-        prompt_kind,
-    });
 
     // Not a user cancel: no gesture, so no resend record; the shell trims the prompt if it lands late
     Some(emit_cancel_turn(

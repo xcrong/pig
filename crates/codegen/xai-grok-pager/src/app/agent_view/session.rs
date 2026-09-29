@@ -20,7 +20,6 @@ use crate::views::todo_pane::TodoPane;
 use ratatui::layout::Rect;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
-use xai_grok_telemetry::events::{CancellationCompleted, CancellationScope};
 /// Approve/build after EndTurn is only for backends that implement ExecutePlan.
 /// Default off; `AppView` / `test_agent_view` turn it on for those backends and tests.
 fn post_turn_plan_review_default() -> bool {
@@ -492,7 +491,6 @@ impl AgentView {
         self.last_active_at = Some(now);
         self.note_prompt_ack(AckSignal::TurnEnded, now);
         if let Some(event) = self.settle_cancel(end, now) {
-            xai_grok_telemetry::session_ctx::log_event(event);
         }
     }
     /// Start the acknowledgment watch for a prompt this client just drained and sent.

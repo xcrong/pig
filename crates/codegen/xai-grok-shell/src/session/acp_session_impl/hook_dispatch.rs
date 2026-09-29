@@ -293,8 +293,6 @@ impl SessionActor {
             xai_grok_hooks::dispatcher::dispatch_non_blocking(&registry, event, &envelope, &ctx)
                 .await;
         self.send_hook_execution(&batch, &results).await;
-        self.emit_hook_executed_telemetry(&batch.event_name, batch.tool_name.as_deref(), &results)
-            .await;
     }
 
     pub(super) async fn dispatch_post_tool_use_hook(
@@ -357,8 +355,6 @@ impl SessionActor {
             &mut results,
         );
 
-        self.emit_hook_executed_telemetry(&event, Some(&hook_tool_name), &results)
-            .await;
         let deferred = DeferredPostToolUseScrollback { batch, results };
         (delivery, Some(deferred))
     }
@@ -423,8 +419,6 @@ impl SessionActor {
             xai_grok_hooks::dispatcher::dispatch_post_tool_use_failure(&registry, &envelope, &ctx)
                 .await;
         self.send_hook_execution(&batch, &result.results).await;
-        self.emit_hook_executed_telemetry(&batch.event_name, Some(tool_name), &result.results)
-            .await;
         result.additional_context
     }
 
@@ -458,52 +452,9 @@ impl SessionActor {
         let gate =
             xai_grok_hooks::dispatcher::dispatch_prompt_gate(&registry, &envelope, &ctx).await;
         self.send_hook_execution(&batch, &gate.results).await;
-        self.emit_hook_executed_telemetry(&batch.event_name, None, &gate.results)
-            .await;
         gate.decision
     }
 
-    pub(super) async fn emit_hook_executed_telemetry(
-        &self,
-        event_name: &str,
-        tool_name: Option<&str>,
-        results: &[xai_grok_hooks::result::HookRunResult],
-    ) {
-        let tool = tool_name.map(|s| s.to_string());
-        for r in results {
-            let (hook_name, elapsed, outcome) = match r {
-                xai_grok_hooks::result::HookRunResult::Success {
-                    hook_name, elapsed, ..
-                } => (
-                    hook_name,
-                    elapsed,
-                    xai_grok_telemetry::events::HookOutcome::Success,
-                ),
-                xai_grok_hooks::result::HookRunResult::Blocked {
-                    hook_name, elapsed, ..
-                } => (
-                    hook_name,
-                    elapsed,
-                    xai_grok_telemetry::events::HookOutcome::Blocked,
-                ),
-                xai_grok_hooks::result::HookRunResult::Failed {
-                    hook_name, elapsed, ..
-                } => (
-                    hook_name,
-                    elapsed,
-                    xai_grok_telemetry::events::HookOutcome::Error,
-                ),
-                xai_grok_hooks::result::HookRunResult::Skipped { .. } => continue,
-            };
-            xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::HookExecuted {
-                hook_name: hook_name.clone(),
-                event: event_name.to_string(),
-                tool_name: tool.clone(),
-                duration_ms: elapsed.as_millis() as u64,
-                outcome,
-            });
-        }
-    }
 }
 
 #[cfg(test)]

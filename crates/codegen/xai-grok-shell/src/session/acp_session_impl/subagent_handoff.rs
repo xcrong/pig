@@ -53,17 +53,6 @@ impl SessionActor {
         let subagent_ids: Vec<&str> = handed_off.iter().map(|c| c.subagent_id.as_str()).collect();
         let tool_call_ids: Vec<&str> = handed_off.iter().map(|c| c.tool_call_id.as_str()).collect();
         let states: Vec<&str> = handed_off.iter().map(|c| c.state.as_str()).collect();
-        xai_grok_telemetry::unified_log::info(
-            "shell.cancel.subagents_handed_off",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "prompt_id": prompt_id,
-                "subagent_ids": subagent_ids,
-                "tool_call_ids": tool_call_ids,
-                "states": states,
-                "trigger": interrupt.as_str(),
-            })),
-        );
         handed_off
             .into_iter()
             .map(|child| {

@@ -3,9 +3,6 @@
 use std::time::Duration;
 
 use xai_grok_sampler::{SamplingErrorInfo, SamplingErrorKind};
-use xai_grok_telemetry::events::{
-    RateLimitWaitOutcome as ReportedOutcome, SubagentRateLimitWaited,
-};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RateLimitWaitConfig {
@@ -146,24 +143,6 @@ impl RateLimitWaitBudget {
             outcome: state.outcome,
         })
     }
-
-    /// The telemetry row for this turn's waiting, or `None` when it never waited.
-    fn telemetry_event(&self) -> Option<SubagentRateLimitWaited> {
-        let summary = self.summary()?;
-        let config = self.state.as_ref().map(|s| s.config)?;
-        Some(SubagentRateLimitWaited {
-            attempts: summary.attempts,
-            max_attempts: config.max_attempts,
-            // Sum of planned backoffs; on cancel (`Unresolved`) mid-wait this can overstate wall-clock by up to one backoff
-            waited_ms: summary.total_waited.as_millis() as u64,
-            budget_ms: config.max_total_wait.as_millis() as u64,
-            outcome: match summary.outcome {
-                WaitOutcome::Recovered => ReportedOutcome::Recovered,
-                WaitOutcome::BudgetSpent => ReportedOutcome::BudgetSpent,
-                WaitOutcome::Unresolved => ReportedOutcome::Unresolved,
-            },
-        })
-    }
 }
 
 impl super::SessionActor {
@@ -217,15 +196,6 @@ impl BudgetState {
         RateLimitWaitDecision::Wait {
             attempt,
             backoff: wait,
-        }
-    }
-}
-
-/// Reported from `Drop` so a cancel (task abort) still records its waits.
-impl Drop for RateLimitWaitBudget {
-    fn drop(&mut self) {
-        if let Some(event) = self.telemetry_event() {
-            xai_grok_telemetry::session_ctx::log_event(event);
         }
     }
 }

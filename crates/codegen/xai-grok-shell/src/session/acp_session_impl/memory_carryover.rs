@@ -10,10 +10,6 @@ use xai_grok_memory::{
     V2CarryoverOutcome, V2MemoryAccessPolicy, V2MemoryScope, carry_over_legacy_memory,
     legacy_memory_file,
 };
-use xai_grok_telemetry::memory_telemetry::{
-    MemoryV2CarryoverCompleted, MemoryV2CarryoverOutcome, MemoryV2Scope,
-};
-
 use crate::session::memory::MemoryStorage;
 
 pub(crate) async fn carry_over_legacy_memory_into_v2(
@@ -50,28 +46,16 @@ pub(crate) async fn carry_over_legacy_memory_into_v2(
         .await
         .map_err(|join_error| join_error.to_string())
         .and_then(|result| result.map_err(|error| error.to_string()));
-        let telemetry_scope = match scope {
-            V2MemoryScope::Global => MemoryV2Scope::Global,
-            V2MemoryScope::Workspace => MemoryV2Scope::Workspace,
-        };
         match result {
             Ok(V2CarryoverOutcome::Imported(report)) => {
                 tracing::info!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     scope = ?scope,
                     topics_created = report.topics_created,
                     topics_appended = report.topics_appended,
                     sections_skipped = report.sections_skipped,
                     "MEMORY_CARRYOVER: carried legacy notes into memory-v2"
                 );
-                xai_grok_telemetry::session_ctx::log_event(MemoryV2CarryoverCompleted {
-                    scope: telemetry_scope,
-                    outcome: MemoryV2CarryoverOutcome::Imported,
-                    topics_created: report.topics_created,
-                    topics_appended: report.topics_appended,
-                    sections_skipped: report.sections_skipped,
-                    bytes_written: report.bytes_written,
-                });
             }
             Ok(
                 V2CarryoverOutcome::MissingSource
@@ -80,16 +64,11 @@ pub(crate) async fn carry_over_legacy_memory_into_v2(
             ) => {}
             Err(error) => {
                 tracing::warn!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     scope = ?scope,
                     error = %error,
                     "MEMORY_CARRYOVER: legacy carry-over failed; memory stays enabled"
                 );
-                xai_grok_telemetry::session_ctx::log_event(MemoryV2CarryoverCompleted {
-                    scope: telemetry_scope,
-                    outcome: MemoryV2CarryoverOutcome::Failed,
-                    ..MemoryV2CarryoverCompleted::default()
-                });
             }
         }
     }

@@ -41,8 +41,8 @@ impl CaptureActivity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FlushResult {
     Success,
-    RetryableFailure(xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass),
-    TerminalFailure(xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass),
+    RetryableFailure(crate::session::memory_observation::V2FailureClass),
+    TerminalFailure(crate::session::memory_observation::V2FailureClass),
     Timeout,
 }
 

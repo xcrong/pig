@@ -466,14 +466,6 @@ pub(super) async fn refresh_tokens(
             return false;
         }
         if probe.straddled_past_grace() {
-            xai_grok_telemetry::unified_log::warn(
-                "auth.refresh.retry_suppressed_suspend",
-                None,
-                Some(serde_json::json!({
-                    "suspended_ms": probe.suspended_ms(),
-                    "error": err.to_string(),
-                })),
-            );
             return false;
         }
         true

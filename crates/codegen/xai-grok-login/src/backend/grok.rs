@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use super::{AuthBackend, LoginRequest};
 use crate::refresh::{
-    AuthSnapshot, DiagnosticUploader, ExternalBinaryRefresher, ExternalCommandRunner,
+    AuthSnapshot, ExternalBinaryRefresher, ExternalCommandRunner,
     OidcRefresher, TokenRefresher,
 };
 use crate::{AuthManager, GrokAuth, GrokComConfig};
@@ -62,7 +62,6 @@ impl AuthBackend for GrokAuthBackend {
         &self,
         manager: Arc<AuthManager>,
         auth_provider_command: Option<String>,
-        diagnostic_uploader: Option<DiagnosticUploader>,
     ) -> Arc<dyn TokenRefresher> {
         match auth_provider_command {
             Some(cmd) => {
@@ -72,11 +71,7 @@ impl AuthBackend for GrokAuthBackend {
             }
             None => {
                 let snapshot: Arc<dyn AuthSnapshot> = manager;
-                let refresher = OidcRefresher::new(snapshot);
-                match diagnostic_uploader {
-                    Some(uploader) => Arc::new(refresher.with_diagnostic_upload(uploader)),
-                    None => Arc::new(refresher),
-                }
+                Arc::new(OidcRefresher::new(snapshot))
             }
         }
     }

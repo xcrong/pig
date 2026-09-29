@@ -88,22 +88,9 @@ pub(crate) async fn single_check(
     {
         Ok(ui) => ui,
         Err(kind) => {
-            xai_grok_telemetry::unified_log::warn(
-                "paywall_check_error",
-                None,
-                Some(serde_json::json!({ "user_id": user_id, "kind": kind })),
-            );
             return None;
         }
     };
-    xai_grok_telemetry::unified_log::info(
-        "paywall_check_result",
-        None,
-        Some(serde_json::json!({
-            "user_id": user_id,
-            "subscription_tier": user_info.subscription_tier,
-        })),
-    );
     let new_tier = match &user_info.subscription_tier {
         Some(tier) if !tier.is_empty() => tier.clone(),
         _ => return None,
@@ -111,14 +98,6 @@ pub(crate) async fn single_check(
     if !is_qualifying_tier(&new_tier) {
         return None;
     }
-    xai_grok_telemetry::unified_log::info(
-        "paywall_check_subscription_detected",
-        None,
-        Some(serde_json::json!({
-            "user_id": user_id,
-            "new_tier": new_tier,
-        })),
-    );
     let refresh_deadline_hit = match auth_manager
         .refresh_chain_bounded_outcome(
             TokenType::OidcSession,
@@ -129,36 +108,13 @@ pub(crate) async fn single_check(
     {
         BoundedRefresh::Resolved(result) => {
             if let Err(e) = *result {
-                xai_grok_telemetry::unified_log::warn(
-                    "paywall_check_error",
-                    None,
-                    Some(serde_json::json!({
-                        "user_id": user_id,
-                        "kind": "refresh_failed",
-                        "detail": e.to_string(),
-                    })),
-                );
             }
             false
         }
         BoundedRefresh::DeadlineElapsed => {
-            xai_grok_telemetry::unified_log::warn(
-                "paywall_check_error",
-                None,
-                Some(serde_json::json!({
-                    "user_id": user_id,
-                    "kind": "refresh_deadline",
-                    "detail": "bounded refresh deadline elapsed; mint continues in background",
-                })),
-            );
             true
         }
     };
-    xai_grok_telemetry::unified_log::info(
-        "paywall_check_unblocked",
-        None,
-        Some(serde_json::json!({ "user_id": user_id, "new_tier": new_tier })),
-    );
     Some(UnblockResult {
         new_tier,
         canonical_user_id: user_info.user_id,

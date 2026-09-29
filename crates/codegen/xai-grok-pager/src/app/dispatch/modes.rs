@@ -6,7 +6,6 @@ use super::settings::ui::{refresh_open_settings_modals, save_success_toast};
 use crate::app::actions::Effect;
 use crate::app::app_view::{ActiveView, AppView};
 use agent_client_protocol as acp;
-use xai_grok_telemetry::session_ctx::log_event;
 use xai_grok_tools::types::SessionMode;
 
 /// Show the current plan: if a plan file exists, open it in the preview overlay popover.
@@ -343,12 +342,6 @@ pub(super) fn set_yolo_mode_inner(app: &mut AppView, new: bool) {
         } else {
             "default"
         };
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::YoloToggled {
-            enabled: new,
-            previous_state,
-            trigger: xai_grok_telemetry::events::YoloTrigger::Pager,
-            from_mode: Some(from_mode.to_owned()),
-        });
         tracing::info!(target: "settings", key = "permission_mode", value = new, "setting changed");
     }
 }
@@ -562,10 +555,6 @@ pub(super) fn dispatch_cycle_mode(app: &mut AppView) -> Vec<Effect> {
         && let Some(agent) = app.agents.get_mut(&id)
         && agent.plan_mode_pending.unwrap_or(agent.plan_mode_active)
     {
-        log_event(xai_grok_telemetry::events::ContextualTip {
-            tip: xai_grok_telemetry::events::ContextualTipKind::PlanMode,
-            action: xai_grok_telemetry::events::ContextualTipAction::Accepted,
-        });
         // Retire the now-stale nudge so one impression maps to at most one acceptance
         // A full mode loop back to Plan within the ~3s TTL would otherwise re-emit; the undo and image tips clear on accept the same way
         agent

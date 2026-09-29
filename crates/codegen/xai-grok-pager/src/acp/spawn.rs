@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
-use xai_grok_telemetry::startup::{self, StartupPhase};
 
 use xai_acp_lib::{
     AcpAgentChannel, AcpClientChannel, AcpClientTx, AcpGatewayReceiver, AcpGatewaySender,
@@ -84,15 +83,12 @@ where
 /// A timed-out blocking task is abandoned, not cancelled, safe only because
 /// the worker exits with the process, which reaps the leftover thread.
 pub(super) fn shutdown_worker_runtime(rt: tokio::runtime::Runtime) {
-    let shutdown_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
-        "teardown.worker_runtime_shutdown",
-        elapsed_ms = tracing::field::Empty,
-    ));
     let started = std::time::Instant::now();
     rt.shutdown_timeout(WORKER_RUNTIME_SHUTDOWN_GRACE);
-    shutdown_span
-        .span()
-        .record("elapsed_ms", started.elapsed().as_millis() as i64);
+    tracing::info!(
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "teardown: worker runtime shutdown",
+    );
 }
 
 /// How long the join stays silent before telling an interactive user why exit
@@ -180,7 +176,6 @@ enum JoinOutcome {
 fn join_agent_thread(handle: thread::JoinHandle<Result<()>>, timeout: Duration) -> JoinOutcome {
     use std::sync::mpsc::RecvTimeoutError;
 
-    let span = xai_grok_telemetry::session_end::join_span();
     let start = Instant::now();
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -207,9 +202,9 @@ fn join_agent_thread(handle: thread::JoinHandle<Result<()>>, timeout: Duration) 
 
     let outcome_label: &'static str = (&outcome).into();
     let elapsed_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    xai_grok_telemetry::session_end::record_join(&span, outcome_label, elapsed_ms, notice_shown);
-    crate::unified_log::write_direct_info(
+    crate::unified_log::info(
         "session_end.worker_join",
+        None,
         Some(serde_json::json!({
             "elapsed_ms": elapsed_ms,
             "outcome": outcome_label,
@@ -259,7 +254,6 @@ pub(crate) fn boot_auth_manager(
     ));
     auth_manager.configure_refresher(
         agent_config.grok_com_config.auth_provider_command.clone(),
-        None,
     );
     auth_manager
 }
@@ -286,8 +280,6 @@ pub async fn spawn_grok_shell(
     // Dropping a token does not cancel it: a `?` exit below creates no SpawnedAgent and no AgentShutdownGuard, so this
     // guard cancels the prewarm and the refresh loop instead.
     let cancel_auth_tasks_unless_spawned = agent_cancel.clone().drop_guard();
-
-    xai_grok_shell::agent::app::apply_otel_config(&auth_manager, &agent_config.grok_com_config);
 
     // Policy repair must finish before any authenticated settings load.
     xai_grok_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
@@ -333,7 +325,6 @@ pub async fn spawn_grok_shell(
         Box::new(move |client_tx| {
             let gateway = AcpGatewaySender::new(client_tx);
 
-            let _t = xai_grok_telemetry::instrumentation::timer("startup.worker_spawn.agent_build");
             let mut agent =
                 MvpAgent::with_models(gateway, &agent_config, auth_manager, models_manager);
             drop(_t);
@@ -345,7 +336,7 @@ pub async fn spawn_grok_shell(
     };
 
     // Spawn the agent thread with direct dispatch
-    startup::enter(StartupPhase::WorkerSpawn);
+    crate::acp::startup::enter(crate::acp::startup::StartupPhase::WorkerSpawn);
     let handle =
         spawn_agent_thread_direct(spawn_fn, acp_agent, agent_cancel.clone(), skills_paths).await?;
 
@@ -387,10 +378,7 @@ async fn spawn_agent_thread_direct(
 
             cancel.cancelled().await;
             agent_rc.flush_all_sessions(SESSION_FLUSH_GRACE).await;
-            tokio::join!(
-                xai_grok_shell::upload::drain_pending_uploads(UPLOAD_DRAIN_AT_CANCEL),
-                xai_grok_telemetry::session_ctx::drain_at_process_exit(),
-            );
+            xai_grok_shell::upload::drain_pending_uploads(UPLOAD_DRAIN_AT_CANCEL).await;
             anyhow::Result::Ok(())
         });
         // LocalSet before runtime, as an implicit scope-end drop would do; the agent last.

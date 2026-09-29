@@ -141,7 +141,7 @@ impl ConversationsClient {
         if let Some(email) = &auth.email {
             builder = builder.header("x-email", email);
         }
-        xai_grok_otel::inject_trace_context_into_request(builder)
+        builder
     }
 
     pub async fn list_conversations(

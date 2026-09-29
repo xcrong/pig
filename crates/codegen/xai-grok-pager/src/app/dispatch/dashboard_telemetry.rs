@@ -3,7 +3,6 @@ use crate::views::dashboard::DashboardRowId;
 use xai_grok_telemetry::events::{
     DashboardAgentAttached, DashboardAgentLaunched, DashboardClosed, DashboardOpened,
 };
-use xai_grok_telemetry::session_ctx::log_event;
 
 pub(super) fn log_dashboard_opened(app: &AppView) {
     let subagents: usize = app.agents.values().map(|a| a.subagent_sessions.len()).sum();

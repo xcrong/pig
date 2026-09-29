@@ -505,13 +505,8 @@ fn policy_repair_pending_from(
 pub async fn ensure_managed_policy_present(
     auth_manager: &std::sync::Arc<xai_grok_login::AuthManager>,
 ) {
-    xai_grok_telemetry::startup::enter(xai_grok_telemetry::startup::StartupPhase::ManagedPolicy);
     let has_deployment_key = store::resolve_deployment_key().is_some();
     let signed_in_team = store::team_principal_signed_in();
-    xai_grok_telemetry::startup::set_auth_mode(policy::auth_mode(
-        has_deployment_key,
-        &signed_in_team,
-    ));
     // A parked refresh applies here, pre-sandbox, before staleness is judged; it gates
     // itself (fetch-disabled or unverifiable discards, missing principal self-refuses).
     store::apply_staged_managed_config();
@@ -519,8 +514,6 @@ pub async fn ensure_managed_policy_present(
         return;
     }
     let team = {
-        let mut timer = crate::instrumentation_timer!("startup.managed_policy.auth_wait");
-        timer.with_subphase(xai_grok_telemetry::startup::Subphase::ManagedPolicyAuthWait);
         refreshed_team_principal(auth_manager).await
     };
     if !store::has_principal() {
@@ -529,8 +522,6 @@ pub async fn ensure_managed_policy_present(
     if !crate::config::is_managed_config_hard_stale_for(&store::current_serving_identity()) {
         return;
     }
-    let mut timer = crate::instrumentation_timer!("startup.managed_policy.config_sync");
-    timer.with_subphase(xai_grok_telemetry::startup::Subphase::ManagedPolicyConfigSync);
     match sync_bounded(SyncBudget::SessionStart, team).await {
         Some(Ok(_)) => {}
         Some(Err(e)) => tracing::warn!("session-start managed policy refresh failed: {e}"),

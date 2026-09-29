@@ -394,12 +394,6 @@ fn log_plugin_installed(
     success: bool,
     error_category: Option<String>,
 ) {
-    xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::PluginInstalled {
-        install_kind,
-        success,
-        trust: true,
-        error_category,
-    });
 }
 
 fn cmd_install(source: &str, trust: bool) -> Result<()> {
@@ -516,12 +510,6 @@ fn cmd_install_marketplace(
 fn cmd_uninstall(name: &str, confirm: bool, keep_data: bool) -> Result<()> {
     match plugin::uninstall_plugin(name, confirm, keep_data) {
         Ok(outcome) => {
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::PluginUninstalled {
-                    confirmed: true,
-                    success: true,
-                },
-            );
             let suffix = if keep_data { " (data preserved)" } else { "" };
             println!(
                 "Uninstalled {} plugin(s): {}{suffix}",

@@ -631,14 +631,12 @@ pub struct StartupHints {
     /// Unlike `yoloMode` / `autoMode`, a warm re-attach to an already-resident actor does NOT re-apply it.
     #[serde(default)]
     pub permission_mode: Option<String>,
-    #[serde(skip)]
-    pub startup_traceparent: std::cell::RefCell<Option<String>>,
 }
 
 impl StartupHints {
     /// Shared by the spawn path and the resident re-attach path so both resolve identically.
-    pub(crate) fn resolve_mcp_strategy(&self) -> xai_grok_telemetry::enums::McpInitStrategy {
-        use xai_grok_telemetry::enums::McpInitStrategy;
+    pub(crate) fn resolve_mcp_strategy(&self) -> xai_grok_mcp::servers::McpInitStrategy {
+        use xai_grok_mcp::servers::McpInitStrategy;
         match std::env::var("MCP_INIT_STRATEGY") {
             Ok(v) if !v.trim().is_empty() => McpInitStrategy::from(v),
             _ if self.non_interactive => McpInitStrategy::Blocking,
@@ -646,34 +644,12 @@ impl StartupHints {
         }
     }
 
-    pub(crate) fn take_mcp_reroot_traceparent(&self) -> Option<String> {
-        if self.is_subagent {
-            return None;
-        }
-        self.startup_traceparent.borrow_mut().take()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn take_mcp_reroot_traceparent_one_shot_and_skips_subagent() {
-        let hints = StartupHints {
-            startup_traceparent: std::cell::RefCell::new(Some("tp".to_owned())),
-            ..Default::default()
-        };
-        assert_eq!(hints.take_mcp_reroot_traceparent().as_deref(), Some("tp"));
-        assert_eq!(hints.take_mcp_reroot_traceparent(), None);
-
-        let subagent = StartupHints {
-            is_subagent: true,
-            startup_traceparent: std::cell::RefCell::new(Some("tp".to_owned())),
-            ..Default::default()
-        };
-        assert_eq!(subagent.take_mcp_reroot_traceparent(), None);
-    }
 
     #[test]
     fn unknown_feedback_outcome_deserializes_as_unknown() {

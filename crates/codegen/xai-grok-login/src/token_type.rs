@@ -35,18 +35,6 @@ impl TokenType {
     pub fn is_refreshable(self) -> bool {
         matches!(self, Self::OidcSession | Self::ExternalBinary)
     }
-
-    /// Converts to the telemetry enum for the `manual_auth` KPI; the mapping is stable.
-    pub fn telemetry_kind(self) -> xai_grok_telemetry::events::AuthTokenKind {
-        use xai_grok_telemetry::events::AuthTokenKind as K;
-        match self {
-            Self::OidcSession => K::OidcSession,
-            Self::ExternalBinary => K::ExternalBinary,
-            Self::LegacySession => K::LegacySession,
-            Self::ApiKey => K::ApiKey,
-            Self::None => K::None,
-        }
-    }
 }
 
 #[cfg(test)]

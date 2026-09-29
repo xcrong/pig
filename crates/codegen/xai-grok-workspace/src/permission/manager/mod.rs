@@ -585,11 +585,11 @@ pub fn spawn_permission_manager_with_pin(
                         .map(|context| context.real_cwd.as_path())
                         .unwrap_or_else(|| cwd.as_path());
                     let permission_mode = if yolo_mode {
-                        xai_grok_telemetry::enums::PermissionMode::AlwaysApprove
+                        crate::permission::PermissionMode::AlwaysApprove
                     } else if auto_mode {
-                        xai_grok_telemetry::enums::PermissionMode::Auto
+                        crate::permission::PermissionMode::Auto
                     } else {
-                        xai_grok_telemetry::enums::PermissionMode::Ask
+                        crate::permission::PermissionMode::Ask
                     };
                     let tool_id = tool_call_update.tool_call_id.to_string();
                     let tool_name = crate::permission::prompter::tool_name_for_access(&access);

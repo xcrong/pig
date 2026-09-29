@@ -391,16 +391,6 @@ impl PendingDump {
             "heap_profile: threshold_crossed"
         );
 
-        xai_grok_telemetry::session_ctx::log_event(
-            xai_grok_telemetry::events::HeapThresholdCrossed {
-                threshold_bytes: threshold,
-                resident_bytes: stats.resident,
-                allocated_bytes: stats.allocated,
-                // The sampler reports 0 when the platform has no cheap read.
-                rss_peak_bytes: (rss_peak > 0).then_some(rss_peak),
-            },
-        );
-
         let temp_dir = match PrivateTempDir::create() {
             Ok(d) => d,
             Err(e) => {

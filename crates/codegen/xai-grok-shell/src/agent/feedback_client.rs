@@ -188,7 +188,7 @@ impl FeedbackClient {
             return false;
         };
         manager
-            .try_recover_unauthorized(xai_grok_login::recovery::RecoverySource::Background)
+            .try_recover_unauthorized()
             .await
     }
 
@@ -240,7 +240,7 @@ impl FeedbackClient {
         request: RequestBuilder,
         context: &'static str,
     ) -> Result<T> {
-        let request = xai_grok_otel::inject_trace_context_into_request(request);
+        let request = request;
         let req = request.build().context(context)?;
         let (response, stamp) = xai_grok_auth::execute_with_stamp(&self.client, req)
             .await
@@ -274,7 +274,7 @@ impl FeedbackClient {
     }
 
     async fn send_empty(&self, request: RequestBuilder, context: &'static str) -> Result<()> {
-        let request = xai_grok_otel::inject_trace_context_into_request(request);
+        let request = request;
         let req = request.build().context(context)?;
         let (response, stamp) = xai_grok_auth::execute_with_stamp(&self.client, req)
             .await

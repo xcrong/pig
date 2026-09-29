@@ -1,7 +1,6 @@
 //! Memory concern for `SessionActor`: memory flush, the dream pipeline, memory tool registration, and note rewriting.
 
 use super::*;
-use xai_grok_telemetry::session_end::{self, Phase};
 
 const DREAM_MODEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// Stale-lock floor: the whole dream (model call plus post-call reindex) must finish inside this, so it must exceed the model timeout; doubling it leaves reindex headroom.
@@ -74,54 +73,42 @@ impl SessionActor {
         total_chunks_at_end: usize,
         session_end_result: &str,
     ) {
-        xai_grok_telemetry::session_ctx::log_event(
-            xai_grok_telemetry::memory_telemetry::MemorySessionSummary {
-                session_id: self.session_info.id.to_string(),
-                memory_enabled: self.memory.is_enabled(),
-                memory_mode: match self.memory.mode() {
-                    Some(crate::config::MemoryMode::V2) => {
-                        xai_grok_telemetry::memory_telemetry::MemoryMode::V2
-                    }
-                    Some(crate::config::MemoryMode::Legacy) | None => {
-                        xai_grok_telemetry::memory_telemetry::MemoryMode::Legacy
-                    }
-                },
-                session_duration_secs: self.session_start.elapsed().as_secs(),
-                flush_count: telem.flush_count,
-                flush_success_count: telem.flush_success_count,
-                flush_error_count: telem.flush_error_count,
-                tool_search_count: telem.tool_search_count,
-                injection_count: telem.injection_count,
-                recovery_search_count: telem.compaction_recovery_count,
-                total_chunks_at_end,
-                chunks_added_this_session: telem.chunks_added as usize,
-                session_end_result: session_end_result.to_owned(),
-                dream_count: telem.dream_count,
-                dream_success_count: telem.dream_success_count,
-                dream_error_count: telem.dream_error_count,
-                capture_prompt_tokens: telem.capture_prompt_tokens,
-                capture_completion_tokens: telem.capture_completion_tokens,
-                capture_cost_usd_ticks: telem.capture_cost_usd_ticks,
-                dream_prompt_tokens: telem.dream_prompt_tokens,
-                dream_completion_tokens: telem.dream_completion_tokens,
-                dream_cost_usd_ticks: telem.dream_cost_usd_ticks,
-                injected_bytes: telem.injected_bytes,
-            },
+        tracing::info!(
+            target: crate::session::memory::MEMORY_LOG_TARGET,
+            session_id = %self.session_info.id,
+            memory_enabled = self.memory.is_enabled(),
+            memory_mode = ?self.memory.mode(),
+            session_duration_secs = self.session_start.elapsed().as_secs(),
+            flush_count = telem.flush_count,
+            flush_success_count = telem.flush_success_count,
+            flush_error_count = telem.flush_error_count,
+            tool_search_count = telem.tool_search_count,
+            injection_count = telem.injection_count,
+            recovery_search_count = telem.compaction_recovery_count,
+            total_chunks_at_end,
+            chunks_added_this_session = telem.chunks_added as usize,
+            session_end_result,
+            dream_count = telem.dream_count,
+            dream_success_count = telem.dream_success_count,
+            dream_error_count = telem.dream_error_count,
+            capture_prompt_tokens = telem.capture_prompt_tokens,
+            capture_completion_tokens = telem.capture_completion_tokens,
+            capture_cost_usd_ticks = telem.capture_cost_usd_ticks,
+            dream_prompt_tokens = telem.dream_prompt_tokens,
+            dream_completion_tokens = telem.dream_completion_tokens,
+            dream_cost_usd_ticks = telem.dream_cost_usd_ticks,
+            injected_bytes = telem.injected_bytes,
+            "MEMORY_SESSION_END: session memory summary",
         );
     }
 
-    /// Session-end memory save and summary telemetry, shared by the Shutdown and channel-closed arms.
+    /// Session-end memory save and summary, shared by the Shutdown and channel-closed arms.
     ///
     /// `log_suffix` is appended to the `MEMORY_SESSION_END:` log line so each arm keeps a distinct reason string in logs.
-    pub(super) async fn run_session_end_memory_pipeline(
-        &self,
-        log_suffix: &str,
-        timer: &xai_grok_telemetry::session_end::SharedSessionEndTimer,
-    ) {
-        let span = session_end::span(Phase::Memory);
+    pub(super) async fn run_session_end_memory_pipeline(&self, log_suffix: &str) {
         if self.startup_hints.is_subagent {
             tracing::debug!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 "MEMORY_SUBAGENT_SKIP: skipping on_session_end for subagent session"
             );
             return;
@@ -131,7 +118,6 @@ impl SessionActor {
         if self.memory.uses_legacy_pipeline()
             && let Some(storage) = self.memory.storage()
         {
-            let _save = session_end::timed_child(timer, Phase::MemorySave, span.span());
             let conversation = self.chat_state_handle.get_conversation().await;
             let result = crate::session::memory::hooks::on_session_end(
                 &storage,
@@ -160,7 +146,7 @@ impl SessionActor {
             let telem = self.memory.telemetry_snapshot();
             let msg = format!("MEMORY_SESSION_END: {log_suffix}");
             tracing::info!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 result = ?result,
                 tool_searches = telem.tool_search_count,
                 injection_searches = telem.injection_count,
@@ -203,7 +189,7 @@ impl SessionActor {
     pub(super) async fn maybe_run_dream(&self) {
         if self.startup_hints.is_subagent {
             tracing::debug!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 "MEMORY_SUBAGENT_SKIP: skipping dream for subagent session"
             );
             return;
@@ -222,7 +208,7 @@ impl SessionActor {
             DreamGate::Open { sessions } => sessions,
             other => {
                 tracing::info!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     gate = ?other,
                     "MEMORY_DREAM: gate check result, skipping"
                 );
@@ -231,7 +217,7 @@ impl SessionActor {
         };
 
         tracing::info!(
-            target: xai_grok_telemetry::memory_log::TARGET,
+            target: crate::session::memory::MEMORY_LOG_TARGET,
             session_count = sessions.len(),
             "MEMORY_DREAM: gates passed, starting consolidation"
         );
@@ -265,7 +251,7 @@ impl SessionActor {
         ) {
             Ok(s) if s.is_empty() => {
                 tracing::info!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     "MEMORY_DREAM_SLASH: no session logs found, nothing to consolidate"
                 );
                 return MemoryDreamResponse::new(MemoryDreamDisposition::NoWork);
@@ -273,7 +259,7 @@ impl SessionActor {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     error = %e,
                     "MEMORY_DREAM_SLASH: failed to list sessions"
                 );
@@ -282,7 +268,7 @@ impl SessionActor {
         };
 
         tracing::info!(
-            target: xai_grok_telemetry::memory_log::TARGET,
+            target: crate::session::memory::MEMORY_LOG_TARGET,
             session_count = sessions.len(),
             "MEMORY_DREAM_SLASH: starting manual consolidation"
         );
@@ -336,7 +322,7 @@ impl SessionActor {
             Ok(Some(g)) => g,
             Ok(None) => {
                 tracing::info!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     "{log_prefix}: lock held by another process, skipping"
                 );
                 return DreamAttempt::Skipped(
@@ -346,7 +332,7 @@ impl SessionActor {
             }
             Err(e) => {
                 tracing::warn!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     error = %e,
                     "{log_prefix}: lock acquire failed"
                 );
@@ -369,7 +355,7 @@ impl SessionActor {
                     }
                     other => {
                         tracing::info!(
-                            target: xai_grok_telemetry::memory_log::TARGET,
+                            target: crate::session::memory::MEMORY_LOG_TARGET,
                             gate = ?other,
                             "{log_prefix}: gate closed under lock, skipping"
                         );
@@ -390,7 +376,7 @@ impl SessionActor {
                 Some(msg) => msg,
                 None => {
                     tracing::info!(
-                        target: xai_grok_telemetry::memory_log::TARGET,
+                        target: crate::session::memory::MEMORY_LOG_TARGET,
                         "{log_prefix}: no readable session content, skipping"
                     );
                     return DreamAttempt::Skipped(
@@ -409,7 +395,7 @@ impl SessionActor {
             Ok(Ok(r)) => r,
             Ok(Err(e)) => {
                 tracing::warn!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     error = %e,
                     "{log_prefix}: model call failed"
                 );
@@ -418,7 +404,7 @@ impl SessionActor {
             }
             Err(_) => {
                 tracing::warn!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     "{log_prefix}: model call timed out (30m)"
                 );
                 self.memory.record_dream_result(false);
@@ -455,7 +441,7 @@ impl SessionActor {
                     Some(path.display().to_string())
                 } else {
                     tracing::warn!(
-                        target: xai_grok_telemetry::memory_log::TARGET,
+                        target: crate::session::memory::MEMORY_LOG_TARGET,
                         "{log_prefix}: consolidation marker failed to write; gate stays open to retry"
                     );
                     None
@@ -466,7 +452,7 @@ impl SessionActor {
                     self.memory.record_dream_neutral();
                 } else {
                     tracing::warn!(
-                        target: xai_grok_telemetry::memory_log::TARGET,
+                        target: crate::session::memory::MEMORY_LOG_TARGET,
                         "{log_prefix}: consolidation marker failed to write; gate stays open to retry"
                     );
                 }
@@ -490,7 +476,7 @@ impl SessionActor {
         .await;
 
         tracing::info!(
-            target: xai_grok_telemetry::memory_log::TARGET,
+            target: crate::session::memory::MEMORY_LOG_TARGET,
             status = ?result.status,
             sessions_eligible = result.sessions_eligible,
             sessions_cleaned = cleaned_stems.len(),
@@ -523,7 +509,6 @@ impl SessionActor {
             x_grok_conv_id: Some(format!("dream-{}", uuid::Uuid::new_v4())),
             x_grok_req_id: Some(format!("xai-dream-{}", uuid::Uuid::new_v4())),
             x_grok_session_id: Some(session_id),
-            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
             ..Default::default()
         };
         let response = sampling_client
@@ -547,7 +532,7 @@ impl SessionActor {
 
         if !self.memory.uses_legacy_pipeline() {
             tracing::debug!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 "MEMORY_FLUSH: legacy flush is disabled for this memory mode (trigger={trigger})"
             );
             return false;
@@ -556,13 +541,13 @@ impl SessionActor {
         // Atomically acquire the flushing lock. If another flush is already running (idle timer, pre-compaction, or user-requested), skip.
         if !self.memory.try_acquire_flush_lock() {
             tracing::info!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 "MEMORY_FLUSH: skipped — another flush is already in progress (trigger={trigger})"
             );
             return false;
         }
 
-        tracing::info!(target: xai_grok_telemetry::memory_log::TARGET, "MEMORY_FLUSH: starting");
+        tracing::info!(target: crate::session::memory::MEMORY_LOG_TARGET, "MEMORY_FLUSH: starting");
         let flush_start = std::time::Instant::now();
 
         self.send_xai_notification(XaiSessionUpdate::MemoryFlushStarted)
@@ -577,16 +562,8 @@ impl SessionActor {
                 Some(snapshot) => snapshot,
                 None => self.snapshot_memory_flush_state().await,
             };
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::memory_telemetry::MemoryFlushStart {
-                    session_id: self.session_info.id.to_string(),
-                    trigger: trigger.to_owned(),
-                    conversation_len: counts.total,
-                    user_message_count: counts.user,
-                },
-            );
             tracing::info!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 "MEMORY_FLUSH: conversation has {user} user, {assistant} assistant, {tool} tool messages ({total} total)",
                 user = counts.user,
                 assistant = counts.assistant,
@@ -610,7 +587,7 @@ impl SessionActor {
             };
             let mut items: Vec<ConversationItem> = vec![ConversationItem::system(system_prompt)];
             tracing::info!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 "MEMORY_FLUSH: sending {n} recent messages to model (+ system prompt + user closer)",
                 n = recent.len(),
             );
@@ -628,7 +605,7 @@ impl SessionActor {
                     .unwrap_or_default(),
             };
             tracing::info!(
-                target: xai_grok_telemetry::memory_log::TARGET,
+                target: crate::session::memory::MEMORY_LOG_TARGET,
                 "MEMORY_FLUSH: using model={model}"
             );
             let session_id = self.session_info.id.to_string();
@@ -638,7 +615,6 @@ impl SessionActor {
                 x_grok_conv_id: Some(format!("flush-{}", uuid::Uuid::new_v4())),
                 x_grok_req_id: Some(format!("xai-flush-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.clone()),
-                x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
 
@@ -778,7 +754,7 @@ impl SessionActor {
             }
         };
 
-        tracing::info!(target: xai_grok_telemetry::memory_log::TARGET, outcome = %outcome, "MEMORY_FLUSH: completed");
+        tracing::info!(target: crate::session::memory::MEMORY_LOG_TARGET, outcome = %outcome, "MEMORY_FLUSH: completed");
         let flush_outcome = if outcome.starts_with("written") {
             "written"
         } else if outcome.starts_with("nothing") {
@@ -791,30 +767,7 @@ impl SessionActor {
             "error"
         };
         self.memory.record_flush_result(flush_outcome);
-        xai_grok_telemetry::session_ctx::log_event(
-            xai_grok_telemetry::memory_telemetry::MemoryFlushComplete {
-                session_id: self.session_info.id.to_string(),
-                trigger: trigger.to_owned(),
-                outcome: flush_outcome.to_owned(),
-                duration_ms: flush_start.elapsed().as_millis() as u64,
-                response_length: response_len,
-                accepted_length: accepted_len,
-                was_truncated,
-            },
-        );
 
-        let flush_trigger = match trigger {
-            "slash_command" => xai_grok_telemetry::events::MemoryFlushTrigger::SlashCommand,
-            "interval" => xai_grok_telemetry::events::MemoryFlushTrigger::Interval,
-            "pre_compaction" => xai_grok_telemetry::events::MemoryFlushTrigger::PreCompaction,
-            _ => xai_grok_telemetry::events::MemoryFlushTrigger::UserRequested,
-        };
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::MemoryFlushed {
-            trigger: flush_trigger,
-            success: flush_outcome == "written",
-            duration_ms: flush_start.elapsed().as_millis() as u64,
-            response_length: response_len,
-        });
 
         self.memory.release_flush_lock();
         self.send_xai_notification(XaiSessionUpdate::MemoryFlushCompleted {

@@ -238,11 +238,12 @@ impl TracingModel {
 }
 /// Target for the full ACP update payload dump (plain JSON, no ANSI). Payload fields on this target must be wrapped
 /// in [`LazyJson`] so serialization only happens inside a recording subscriber.
-pub use xai_grok_telemetry::debug_log::ACP_UPDATE_PAYLOAD_TARGET;
+pub const ACP_UPDATE_PAYLOAD_TARGET: &str = "acp_update_payload";
 /// Target for the always-on compact ACP update summary line (kind, ids, status, payload sizes).
 /// Cheap to format at streaming rate.
-/// Defined in `xai-grok-telemetry` so the firehose directives and the pager filter share one constant (re-exported here for callsites).
-pub use xai_grok_telemetry::debug_log::ACP_UPDATE_TARGET;
+pub const ACP_UPDATE_TARGET: &str = "acp_update";
+/// Target for noisy RMCP client-side SSE transport logs, filtered to `error` in the TUI.
+pub const RMCP_SSE_NOISE_TARGET: &str = "rmcp::transport::common::client_side_sse";
 /// Use as a `%`-captured event field so `serde_json::to_string` runs only when a layer whose filter passed actually
 /// records the field. That globally enables the callsite; per-layer filters only gate recording, not argument
 /// evaluation.
@@ -334,35 +335,9 @@ pub fn init_tracing() -> TracingHandle {
         .with_target(true)
         .with_ansi(true)
         .with_writer(make_writer);
-    let otel_layer = xai_grok_telemetry::otel_layer::build_otel_layer(
-        xai_grok_telemetry::otel_layer::OtelClientInfo {
-            client_name: "pig-pager",
-            client_version: xai_grok_version::VERSION,
-            service_version: xai_grok_version::full_version(),
-            app_entrypoint: "tui",
-        },
-        xai_grok_shell::agent::init::build_default_otel_layer_config(),
-    );
-    let instrumentation_layer = xai_grok_telemetry::instrumentation::layer();
-    let sampling_log_layer = xai_grok_telemetry::sampling_log::layer();
-    let hooks_log_layer = xai_grok_telemetry::hooks_log::layer();
-    let registry = tracing_subscriber::registry()
-        .with(fmt_layer.with_filter(env_filter))
-        .with(instrumentation_layer)
-        .with(sampling_log_layer)
-        .with(xai_grok_telemetry::span_profile::layer("tui"))
-        .with(hooks_log_layer)
-        .with(otel_layer);
-    xai_grok_telemetry::debug_log::install_firehose(registry, "tui");
-    xai_grok_telemetry::external::init(
-        xai_grok_shell::agent::config::resolve_external_otel_config(
-            xai_grok_telemetry::external::config::ExternalClientInfo {
-                service_version: xai_grok_version::full_version().to_owned(),
-                client_version: xai_grok_version::VERSION.to_owned(),
-                app_entrypoint: "tui".to_owned(),
-            },
-        ),
-    );
+    let registry = tracing_subscriber::registry().with(fmt_layer.with_filter(env_filter));
+    tracing::subscriber::set_global_default(registry)
+        .expect("failed to set global tracing subscriber");
     TracingHandle { rx }
 }
 /// Curated per-crate directives for the TUI subscriber.
@@ -370,7 +345,6 @@ pub fn init_tracing() -> TracingHandle {
 /// `xai_grok_gateway` carries the bridge diagnostics that moved out of `xai_grok_shell`.
 /// Built from the target constants so a rename can't silently turn a directive into a no-op token.
 fn default_directives() -> String {
-    use xai_grok_telemetry::debug_log::RMCP_SSE_NOISE_TARGET;
     let payload_level = "off";
     format!(
         "xai_grok_shell=info,xai_grok_gateway=info,xai_grok_login=info,xai_grok_pager=trace,xai_grok_tools=info,xai_grok_session_search=info,xai_acp_lib=info,{RMCP_SSE_NOISE_TARGET}=error,sampling_log=off,{ACP_UPDATE_TARGET}=debug,{ACP_UPDATE_PAYLOAD_TARGET}={payload_level}"

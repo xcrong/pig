@@ -384,25 +384,6 @@ impl InitPass {
         self.notify_tools_changed();
 
         let transport = self.transport(&server);
-        let transport_kind = match transport {
-            "stdio" => xai_grok_telemetry::events::McpTransport::Stdio,
-            "sse" => xai_grok_telemetry::events::McpTransport::Sse,
-            _ => xai_grok_telemetry::events::McpTransport::Http,
-        };
-        debug_assert!(
-            xai_grok_telemetry::activity::gauge_value(
-                xai_grok_telemetry::activity::MCP_SERVERS_CONNECTED_KEY
-            ) >= 1,
-            "McpServerConnected must stamp a self-inclusive count"
-        );
-        xai_grok_telemetry::session_ctx::log_event(
-            xai_grok_telemetry::events::McpServerConnected {
-                server_name: server.clone(),
-                tool_count,
-                transport: transport_kind,
-                duration_ms: elapsed.as_millis() as u64,
-            },
-        );
         self.events
             .emit(xai_grok_session_events::Event::McpServerConnected {
                 server_name: server.clone(),
@@ -411,15 +392,6 @@ impl InitPass {
                 duration_ms: elapsed.as_millis() as u64,
                 tools: tool_names,
             });
-        crate::session::telemetry::emit_mcp_connection_span(
-            "connected",
-            &server,
-            transport,
-            self.scope(&server),
-            Some(elapsed.as_millis() as i64),
-            Some(tool_count as i64),
-            None,
-        );
         self.tally.add_connected(tool_count);
         Ok(())
     }
@@ -453,32 +425,7 @@ impl InitPass {
         } else {
             error.error_category()
         };
-        let error_type = match error_category {
-            xai_grok_session_events::McpErrorCategory::AuthRequired => {
-                xai_grok_telemetry::events::McpErrorType::Auth
-            }
-            xai_grok_session_events::McpErrorCategory::Timeout => {
-                xai_grok_telemetry::events::McpErrorType::Timeout
-            }
-            _ => xai_grok_telemetry::events::McpErrorType::HandshakeFailed,
-        };
         let transport = self.transport(&server);
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::McpServerFailed {
-            server_name: server.clone(),
-            error_type,
-            duration_ms: elapsed.as_millis() as u64,
-            timeout_sec,
-            error_message: Some(error.to_string()),
-        });
-        crate::session::telemetry::emit_mcp_connection_span(
-            "failed",
-            &server,
-            transport,
-            self.scope(&server),
-            Some(elapsed.as_millis() as i64),
-            None,
-            Some(error_type.as_ref()),
-        );
         self.events
             .emit(xai_grok_session_events::Event::McpServerFailed {
                 server_name: server.clone(),
@@ -507,17 +454,6 @@ impl InitPass {
             })
             .await?;
 
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::McpInitCompleted {
-            total_duration_ms: started.elapsed().as_millis() as u64,
-            spawn_duration_ms: started.duration_since(self.mcp_init_start).as_millis() as u64,
-            server_count: self.server_count,
-            servers_succeeded: self.tally.succeeded,
-            servers_failed: self.tally.failed,
-            servers_auth_required: self.tally.auth_required,
-            total_tools_registered: self.tally.tools_registered,
-            strategy: self.strategy,
-            is_reinit: self.is_reinit,
-        });
         self.events
             .emit(xai_grok_session_events::Event::McpInitCompleted {
                 total_servers: self.server_count,
@@ -575,7 +511,6 @@ impl InitPass {
 
     fn notify_initialized(&self, elapsed: std::time::Duration, mcp_tool_count: usize) {
         tracing::info!(
-            target: crate::instrumentation::TARGET,
             event = "timing",
             name = "session.mcp_handshakes_bg",
             elapsed_us = elapsed.as_micros() as u64,

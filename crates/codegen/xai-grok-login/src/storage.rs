@@ -133,26 +133,10 @@ pub fn backup_corrupt_auth_file(path: &Path) -> Option<PathBuf> {
             );
             // Must reach unified.jsonl: the tracing line above is invisible in production captures
             // This is the only record of both the corruption and where the original bytes went
-            xai_grok_telemetry::unified_log::error(
-                "auth: corrupt auth.json backed up",
-                None,
-                Some(serde_json::json!({
-                    "original": path.display().to_string(),
-                    "backup": backup.display().to_string(),
-                })),
-            );
             Some(backup)
         }
         Err(e) => {
             tracing::warn!(error = %e, "auth: failed to rename corrupt auth.json for backup");
-            xai_grok_telemetry::unified_log::error(
-                "auth: corrupt auth.json backup failed",
-                None,
-                Some(serde_json::json!({
-                    "original": path.display().to_string(),
-                    "error": e.to_string(),
-                })),
-            );
             None
         }
     }
@@ -194,13 +178,6 @@ fn write_auth_json_with(
             );
             // Must reach unified.jsonl: a silent in-memory-only credential (the prior behavior) leaves sibling processes with a stale refresh token
             // Without the log there is no record of why
-            xai_grok_telemetry::unified_log::warn(
-                "auth: disk full, falling back to non-atomic in-place write",
-                None,
-                Some(serde_json::json!({
-                    "path": auth_file.display().to_string(),
-                })),
-            );
             write_auth_json_in_place(auth_file, auth_store)
         }
         other => other,

@@ -363,17 +363,6 @@ impl AgentView {
                     let (chars, words) =
                         crate::views::prompt_suggestion::suggestion_size(self.prompt.text());
                     let session_id = self.session.session_id.as_ref().map(|s| s.0.to_string());
-                    xai_grok_telemetry::session_ctx::log_event(
-                        xai_grok_telemetry::events::PromptSuggestion {
-                            action: xai_grok_telemetry::events::PromptSuggestionAction::Accepted,
-                            chars,
-                            words,
-                            model: None,
-                            latency_ms: None,
-                            request_id: None,
-                            session_id,
-                        },
-                    );
                     self.prompt.refresh_slash(&self.session.models);
                     return InputOutcome::Changed;
                 }
@@ -387,17 +376,6 @@ impl AgentView {
                 );
                 let session_id = self.session.session_id.as_ref().map(|s| s.0.to_string());
                 self.prompt.prompt_suggestion.dismiss();
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::events::PromptSuggestion {
-                        action: xai_grok_telemetry::events::PromptSuggestionAction::Dismissed,
-                        chars,
-                        words,
-                        model: None,
-                        latency_ms: None,
-                        request_id: None,
-                        session_id,
-                    },
-                );
                 return InputOutcome::Changed;
             }
         }
@@ -670,12 +648,6 @@ impl AgentView {
             match self.prompt.handle_key(key) {
                 PromptEvent::Edited => {
                     if undo_tip_accepted {
-                        xai_grok_telemetry::session_ctx::log_event(
-                            xai_grok_telemetry::events::ContextualTip {
-                                tip: xai_grok_telemetry::events::ContextualTipKind::Undo,
-                                action: xai_grok_telemetry::events::ContextualTipAction::Accepted,
-                            },
-                        );
                         // Retire the hint on the restore that consumed it (its "Input cleared" copy is now stale)
                         // That mirrors the clipboard tip's clear-on-paste so one restore counts exactly one acceptance
                         self.ephemeral_tip

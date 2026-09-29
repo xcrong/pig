@@ -209,11 +209,6 @@ async fn handle_get_billing(agent: &MvpAgent) -> ExtResult {
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "billing: upstream request failed");
-            xai_grok_telemetry::unified_log::warn(
-                "billing: upstream request failed",
-                None,
-                Some(serde_json::json!({ "error": e.to_string() })),
-            );
             acp::Error::internal_error().data(format!("Failed to fetch billing data: {e}"))
         })?;
 
@@ -227,25 +222,12 @@ async fn handle_get_billing(agent: &MvpAgent) -> ExtResult {
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
             .unwrap_or_else(|| format!("HTTP {status}"));
 
-        xai_grok_telemetry::unified_log::warn(
-            "billing: upstream error",
-            None,
-            Some(serde_json::json!({
-                "status": status,
-                "detail": detail,
-            })),
-        );
 
         return Err(acp::Error::internal_error().data(format!("Billing service error: {detail}")));
     }
 
     let mut billing: BillingConfigResponse = credits_resp.json().await.map_err(|e| {
         tracing::error!(error = %e, "billing: failed to parse response");
-        xai_grok_telemetry::unified_log::warn(
-            "billing: failed to parse response",
-            None,
-            Some(serde_json::json!({ "error": e.to_string() })),
-        );
         acp::Error::internal_error().data(format!("Failed to parse billing data: {e}"))
     })?;
 
@@ -260,11 +242,6 @@ async fn handle_get_billing(agent: &MvpAgent) -> ExtResult {
 
     // Every prompt, `/usage`, and poll path hits `x.ai/billing`
     // Log the fetched credits snapshot so support can correlate the limit UI with real balances
-    xai_grok_telemetry::unified_log::info(
-        "billing: fetched credits config",
-        None,
-        Some(billing_unified_log_ctx(&billing)),
-    );
 
     to_raw_response(&billing)
 }

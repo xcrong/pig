@@ -149,7 +149,7 @@ fn spawn_agent_local(
     });
     tokio::task::spawn_local(
         GatewayReceiver::new(gw_rx, conn)
-            .with_on_meta(xai_grok_otel::span_from_meta_traceparent)
+            .with_on_meta(|_| tracing::Span::current())
             .run(),
     );
     handle_io
@@ -230,19 +230,13 @@ pub async fn run_stdio_agent(
              parent — stdin EOF remains the only cleanup"
         );
     }
-    xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
     xai_file_utils::queue::cleanup_orphaned_uploads(
         &grok_home::grok_home(),
         xai_file_utils::queue::DEFAULT_MAX_AGE,
     );
     if let Ok(version) = std::env::var("GROK_CLIENT_VERSION") {
-        crate::unified_log::info(
-            "GROK_CLIENT_VERSION",
-            None,
-            Some(serde_json::json!({ "version": version })),
-        );
+        tracing::info!(version = %version, "GROK_CLIENT_VERSION");
     }
-    let _total_timer = crate::instrumentation_timer!("startup.stdio_agent_total");
     let outgoing = tokio::io::stdout().compat_write();
     let mut agent_config = agent_config.clone();
     let (acp_incoming_rx, acp_incoming_tx) = simplex(MAX_BUFFER_SIZE);
@@ -287,7 +281,6 @@ pub async fn run_stdio_agent(
                 auth_manager.current(),
             )
             .await?;
-            apply_otel_config(&auth_manager, &agent_config.grok_com_config);
             let handle_io = spawn_agent_local(
                 agent_config,
                 auth_manager,
@@ -305,7 +298,6 @@ pub async fn run_stdio_agent(
     agent_cancel.cancel();
     crate::terminal::pty_session::close_all().await;
     crate::upload::drain_pending_uploads(PERSISTENT_EXIT_DRAIN).await;
-    xai_grok_telemetry::session_ctx::drain_at_process_exit().await;
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     result
 }
@@ -316,7 +308,6 @@ pub async fn run_headless(
     memory_config: Option<crate::config::MemoryConfig>,
 ) -> anyhow::Result<()> {
     register_fs_watch_runtime();
-    xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
     crate::http::set_process_client_mode_headless();
     use crate::agent::relay::spawn_relay_connection_with_callback;
     use tokio_util::sync::CancellationToken;
@@ -479,7 +470,7 @@ pub async fn run_headless(
                 );
                 tokio::task::spawn_local(
                     GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(xai_grok_otel::span_from_meta_traceparent)
+                        .with_on_meta(|_| tracing::Span::current())
                         .run(),
                 );
                 if let Err(e) = handle_io.await {
@@ -649,23 +640,6 @@ impl DeferredRelayArm {
         None
     }
 }
-/// Close the external-OTEL gate before telemetry init; see [`crate::agent::otel_gate`].
-pub fn suppress_otel() {
-    crate::agent::otel_gate::suppress();
-}
-/// Startup external-OTEL gate for an in-process (embedded) agent.
-/// Mirrors the leader startup gate so the pager process is fail-closed by construction at the agent boundary.
-pub fn apply_otel_config(auth_manager: &AuthManager, grok_com_config: &GrokComConfig) {
-    suppress_otel();
-    let has_session = auth_manager.current().is_some() || auth_manager.read_disk_auth().is_some();
-    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
-        channel: crate::agent::otel_gate::resolved_policy_channel(),
-        has_session,
-        session_pending: crate::agent::otel_gate::is_session_pending(has_session, grok_com_config),
-    }) {
-        crate::agent::otel_gate::open_at_startup();
-    }
-}
 /// Boot-time switches of [`run_leader`], set by `grok agent leader` flags.
 pub struct LeaderRunOptions {
     /// Keep serving after the last IPC client disconnects (devbox / systemd leaders).
@@ -711,7 +685,6 @@ pub async fn run_leader(
         cursor_worker: cursor_worker_boot,
     } = options;
     register_fs_watch_runtime();
-    xai_grok_telemetry::unified_log::set_version(xai_grok_version::VERSION);
     let mut agent_config = agent_config.clone();
     agent_config.mode = crate::agent::config::AgentMode::Leader;
     let ws_url = &agent_config.grok_com_config.grok_ws_url;
@@ -844,32 +817,9 @@ pub async fn run_leader(
     debug!("IPC socket created");
     let _lock = lock;
     let ctx = &agent_config.grok_com_config;
-    suppress_otel();
     let auth: Option<GrokAuth> =
         xai_grok_login::try_noninteractive_auth_no_mint(ctx, agent_config.endpoints.proxy_url())
             .await;
-    let has_session = auth.is_some()
-        || agent_config
-            .create_auth_manager()
-            .read_disk_auth()
-            .is_some();
-    let session_pending =
-        crate::agent::otel_gate::is_session_pending(has_session, &agent_config.grok_com_config);
-    let policy_channel =
-        crate::agent::otel_gate::policy_channel_for(&agent_config.endpoints.proxy_url());
-    if crate::agent::otel_gate::should_open_at_startup(crate::agent::otel_gate::StartupGate {
-        channel: policy_channel,
-        has_session,
-        session_pending,
-    }) {
-        info!(
-            channel = ?policy_channel,
-            has_session,
-            session_pending,
-            "Opening external-OTEL gate at startup: no fleet policy is pending for this leader"
-        );
-        crate::agent::otel_gate::open_at_startup();
-    }
     let _ = ready_tx.send(true);
     info!(
         "Leader ready: local-only boot (model/settings refresh runs in background), ACP forwarding enabled"
@@ -938,6 +888,10 @@ pub async fn run_leader(
             let mut config_watcher_path_rx = config_watcher_path_rx_opt;
             let agent_config_watcher_path_tx = config_watcher_path_tx.clone();
             let agent_activity_for_agent = agent_activity.clone();
+            let mint_provider_configured = agent_config_for_spawn
+                .grok_com_config
+                .auth_provider_command
+                .is_some();
             tokio::task::spawn_local(async move {
                 let (gw_tx, gw_rx) = tokio::sync::mpsc::unbounded_channel();
                 let gateway = GatewaySender::new(gw_tx);
@@ -967,7 +921,7 @@ pub async fn run_leader(
                 );
                 tokio::task::spawn_local(
                     GatewayReceiver::new(gw_rx, conn)
-                        .with_on_meta(xai_grok_otel::span_from_meta_traceparent)
+                        .with_on_meta(|_| tracing::Span::current())
                         .run(),
                 );
                 if let Err(e) = handle_io.await {
@@ -1044,7 +998,10 @@ pub async fn run_leader(
                 }
             });
             tokio::task::spawn_local(run_changed_notifier(external_roster, fan_out));
-            if session_pending {
+            // Mint in the background when no session exists yet and an auth-provider
+            // command can create one noninteractively.
+            if auth_manager_for_mint.current().is_none() && mint_provider_configured
+            {
                 let mint_auth_manager = auth_manager_for_mint;
                 let mint_cancel = cancel_clone.clone();
                 tokio::task::spawn_local(async move {
@@ -1194,16 +1151,6 @@ pub async fn run_leader(
                                 expires_at = ?auth.expires_at,
                                 "Auth token hot-reloaded from config watcher"
                             );
-                            xai_grok_telemetry::unified_log::info(
-                                "auth hot-swapped from disk",
-                                None,
-                                Some(
-                                    serde_json::json!({
-                                    "key_len": auth.key.len(),
-                                    "expires_at": auth.expires_at.map(|e| e.to_rfc3339()),
-                                }),
-                                ),
-                            );
                             let session_for_relay = deferred_relay_arm
                                 .is_some()
                                 .then(|| (*auth).clone());
@@ -1238,11 +1185,6 @@ pub async fn run_leader(
                                 warn!(error = %e, "failed to inject auth-cleared cleanup into ACP stream");
                             }
                             models_manager_for_config.on_auth_changed().await;
-                            xai_grok_telemetry::unified_log::warn(
-                                "auth cleared from disk",
-                                None,
-                                None,
-                            );
                             info!("Auth cleared by config watcher");
                         }
                         ConfigUpdate::McpServersChanged => {
@@ -1467,68 +1409,6 @@ mod tests {
         };
         crate::agent::relay::RelayConfig::for_session(&auth, &cfg, None, None)
             .expect("x.ai OIDC session must be relay-eligible")
-    }
-    /// The embedded startup gate (every pager `--no-leader` / fallback path) must be fail-closed by construction.
-    /// A session user stays closed until the agent resolves settings, even when an env API key is also present.
-    /// The key must not bypass the session's remote policy.
-    #[test]
-    #[serial_test::serial]
-    fn embedded_otel_gate_keeps_a_session_user_fail_closed() {
-        use crate::agent::auth_method::{LEGACY_XAI_API_KEY_ENV_VAR, XAI_API_KEY_ENV_VAR};
-        use xai_grok_telemetry::external::{
-            is_settings_gate_open, mark_external_otel_settings_resolved,
-        };
-        unsafe fn set_or_clear(key: &str, value: Option<std::ffi::OsString>) {
-            match value {
-                Some(v) => unsafe { std::env::set_var(key, v) },
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
-        /// Restores the api-key env and reopens the gate on drop so no state leaks.
-        struct Restore {
-            key: Option<std::ffi::OsString>,
-            legacy: Option<std::ffi::OsString>,
-            proxy: Option<std::ffi::OsString>,
-        }
-        impl Drop for Restore {
-            fn drop(&mut self) {
-                unsafe {
-                    set_or_clear(XAI_API_KEY_ENV_VAR, self.key.take());
-                    set_or_clear(LEGACY_XAI_API_KEY_ENV_VAR, self.legacy.take());
-                    set_or_clear(PROXY_ENV_VAR, self.proxy.take());
-                }
-                mark_external_otel_settings_resolved();
-            }
-        }
-        const PROXY_ENV_VAR: &str = "GROK_CLI_CHAT_PROXY_BASE_URL";
-        let _restore = Restore {
-            key: std::env::var_os(XAI_API_KEY_ENV_VAR),
-            legacy: std::env::var_os(LEGACY_XAI_API_KEY_ENV_VAR),
-            proxy: std::env::var_os(PROXY_ENV_VAR),
-        };
-        let cfg = GrokComConfig::default();
-        unsafe {
-            std::env::set_var(XAI_API_KEY_ENV_VAR, "test-key");
-            std::env::remove_var(LEGACY_XAI_API_KEY_ENV_VAR);
-            std::env::remove_var(PROXY_ENV_VAR);
-        }
-        let session = GrokAuth {
-            expires_at: chrono::DateTime::from_timestamp(9_999_999_999, 0),
-            auth_mode: AuthMode::Oidc,
-            oidc_issuer: Some(xai_grok_login::XAI_OAUTH2_ISSUER.to_string()),
-            ..GrokAuth::test_default()
-        };
-        let with_session = {
-            let dir = tempfile::tempdir().unwrap();
-            let am = Arc::new(AuthManager::new(dir.path(), GrokComConfig::default()));
-            am.hot_swap(session);
-            am
-        };
-        apply_otel_config(&with_session, &cfg);
-        assert!(
-            !is_settings_gate_open(),
-            "a session user must boot fail-closed even with an env key set"
-        );
     }
     /// Wait until at least one relay connection is accepted, or panic.
     #[tracing::instrument(level = "debug", skip_all)]

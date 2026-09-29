@@ -92,7 +92,6 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 xai-grok-sandbox = { path = "../xai-grok-sandbox", default-features = false }
 xai-file-utils = { path = "../xai-file-utils" }
-xai-grok-otel = { workspace = true }
 dhat = { workspace = true, optional = true }
 zstd = { workspace = true }
 

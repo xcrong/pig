@@ -1157,8 +1157,6 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
         };
         let reg = dashboard.dispatch.slash_controller.registry();
         {
-            use xai_grok_telemetry::events::{PagerCommandSource, PagerSlashCommand};
-            use xai_grok_telemetry::session_ctx::log_event;
             let source = if reg.is_builtin(invocation.token) {
                 PagerCommandSource::Builtin
             } else {

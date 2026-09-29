@@ -184,23 +184,6 @@ pub(super) fn record_upload_failure(ctx: &PromptTraceContext, f: UploadFailure<'
     if prior_failures > 0 {
         return;
     }
-    let msg = format!("upload failed: {} ({})", f.artifact, f.reason);
-    let sid = Some(ctx.session_info.id.0.as_ref());
-    let log_ctx = Some(serde_json::json!({
-        "artifact": f.artifact,
-        "reason": f.reason,
-        "method": method,
-        "error": f.error,
-        "gcs_path": f.gcs_path,
-        "status_code": f.status_code,
-        "bytes": f.bytes,
-        "phase": f.phase,
-    }));
-    if level == UploadFailureLogLevel::Warn {
-        xai_grok_telemetry::unified_log::warn(&msg, sid, log_ctx);
-    } else {
-        xai_grok_telemetry::unified_log::error(&msg, sid, log_ctx);
-    }
 }
 /// Increment when making breaking changes to PromptMetadata structure.
 pub(crate) use prod_mc_cli_chat_proxy_types::{
@@ -791,65 +774,6 @@ pub(crate) async fn upload_session_metadata(
         }
     };
     upload_artifact_to_gcs(ctx, &gcs_path, &metadata_json, "application/json", artifact).await;
-}
-/// Uploads the session-scoped unified log to cloud storage. Path format: {session_id}/turn_{N}/unified_log.jsonl Called only from 401/404 auth-failure diagnostics, never per turn.
-/// Only entries belonging to the current session (matching `sid`) are included. The snapshot runs on a blocking thread since `snapshot_session_log` reads and parses the on-disk log file.
-pub(crate) async fn upload_unified_log(ctx: &PromptTraceContext, wait: UploadWait) {
-    let session_id = ctx.session_info.id.0.to_string();
-    let log_bytes = match tokio::task::spawn_blocking(move || {
-        xai_grok_telemetry::unified_log::snapshot_session_log(&session_id)
-    })
-    .await
-    {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => {
-            tracing::debug!(
-                session_id = %ctx.session_info.id.0,
-                turn_number = ctx.turn_number,
-                "No unified log entries for this session, skipping upload"
-            );
-            return;
-        }
-        Err(e) => {
-            tracing::warn!(
-                session_id = %ctx.session_info.id.0,
-                turn_number = ctx.turn_number,
-                error = %e,
-                "Failed to snapshot unified log"
-            );
-            return;
-        }
-    };
-    let gcs_path = format!(
-        "{}/unified_log.jsonl",
-        ctx.gcs_config.gcs_prefix.as_deref().unwrap_or("")
-    );
-    upload_small_artifact(
-        ctx,
-        &log_bytes,
-        &gcs_path,
-        "application/x-ndjson",
-        "unified_log",
-        wait,
-    )
-    .await;
-    let full_log_bytes =
-        tokio::task::spawn_blocking(xai_grok_telemetry::unified_log::snapshot_log).await;
-    let user_id = ctx
-        .auth_manager
-        .current_or_expired()
-        .map(|a| a.user_id)
-        .filter(|id| !id.is_empty())
-        .unwrap_or_else(|| "unknown".to_owned());
-    if let Ok(Some(full_bytes)) = full_log_bytes {
-        crate::upload::gcs::upload_to_auth_diagnostics(
-            &full_bytes,
-            &user_id,
-            &ctx.gcs_config.upload_method,
-            ctx.auth_manager.clone(),
-        )
-        .await;
-    }
 }
 /// Path format: {session_id}/turn_{N}/permission_decisions.json
 pub(crate) async fn upload_permission_events(

@@ -177,16 +177,6 @@ impl SessionActor {
             );
             enforce_pending_image_strip_bound(&mut pending, Some(&request_id));
         }
-        xai_grok_telemetry::unified_log::warn(
-            "shell.turn.images_stripped",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "sampler_request_id": request_id.as_str(),
-                "stripped": stripped,
-                "reason": reason.as_ref(),
-                "persist_deferred": persist_deferred,
-            })),
-        );
         if !persist_deferred {
             // Request-local only: tell the user now, on the same channel as load-time image drops, rendered as a system scrollback note
             self.send_xai_notification(XaiSessionUpdate::ImageDropped {
@@ -233,15 +223,6 @@ impl SessionActor {
             StripOutcome::WriteFailed { .. } => ("write_failed", 0),
             StripOutcome::ActorUnavailable => ("actor_unavailable", 0),
         };
-        xai_grok_telemetry::unified_log::warn(
-            "shell.turn.images_strip_persisted",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "sampler_request_id": request_id.as_str(),
-                "outcome": outcome_label,
-                "persisted": persisted,
-            })),
-        );
         // Every outcome answered without the user's image, so every outcome says so
         // Only `Applied` may also claim the stored conversation changed (a failed or missed write leaves the image on disk)
         let notes = match outcome {

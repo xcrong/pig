@@ -100,19 +100,6 @@ impl SessionActor {
         }
         let mut state = self.state.try_lock().expect("session state is actor-owned");
         state.notifications_suppressed = true;
-        xai_grok_telemetry::unified_log::info(
-            "shell.task_wake.cancel_barrier",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "trigger": trigger.map(crate::session::CancelTrigger::as_str),
-                "gate": self
-                    .tool_context
-                    .task_wake_suppressed
-                    .as_ref()
-                    .is_some_and(|gate| gate.get()),
-                "state": state.notifications_suppressed,
-            })),
-        );
         drop(state);
         if let Some(is_turn_active) = &self.tool_context.is_turn_active {
             is_turn_active.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -120,11 +107,8 @@ impl SessionActor {
     }
 
     fn abort_turn_task(&self, task: &AgentTask, epoch: super::turn_report_slot::TurnEpoch) {
-        self.turn_phases.emit_pending_latency();
         task.abort();
         self.turn_report.release_aborted(epoch);
-        // The aborted task never reaches its turn-end emission; a cancelled turn still counts.
-        self.emit_long_reasoning_turn_event();
     }
 
     /// The Ctrl+C teardown, except the running command moves to the background instead of being killed.
@@ -138,11 +122,6 @@ impl SessionActor {
         }
         let flushed = self.flush_stranded_interjections().await;
         if flushed > 0 {
-            xai_grok_telemetry::unified_log::info(
-                "shell.prompt.send_now_flushed_interjections",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({ "count": flushed })),
-            );
         }
         let outcome = self
             .cancel_running_task(crate::session::CancelOptions {
@@ -160,18 +139,8 @@ impl SessionActor {
             let mut state = self.state.lock().await;
             state.notifications_suppressed = false;
             if state.take_hook_block_hold() {
-                xai_grok_telemetry::unified_log::info(
-                    "shell.prompt.hook_block_hold_released",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({ "reason": "send_now" })),
-                );
             }
         }
-        xai_grok_telemetry::unified_log::info(
-            "shell.task_wake.gate_cleared",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({ "reason": "send_now" })),
-        );
         outcome
     }
 
@@ -196,15 +165,6 @@ impl SessionActor {
         front_prompt_id: Option<&str>,
         rewind_disposition: &str,
     ) {
-        xai_grok_telemetry::unified_log::info(
-            "shell.cancel.rewind_decision",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "requested_prompt_id": requested_prompt_id,
-                "front_prompt_id": front_prompt_id,
-                "rewind_disposition": rewind_disposition,
-            })),
-        );
     }
 
     /// Trim the rewound turn from in-memory history and resolve it as `Rewound`.
@@ -325,11 +285,6 @@ impl SessionActor {
                     gate.set(false);
                 }
                 state.notifications_suppressed = false;
-                xai_grok_telemetry::unified_log::info(
-                    "shell.task_wake.gate_cleared",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({ "reason": "rewind" })),
-                );
                 state.rewindable = false;
                 // The cut is captured under the lock so later commits cannot move it
                 let target_prompt_index = self
@@ -424,18 +379,6 @@ impl SessionActor {
             .expect("current_prompt_id mutex poisoned")
             .clone();
         {
-            xai_grok_telemetry::unified_log::info(
-                "shell.cancel.processing",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "prompt_id": &pinned_prompt_id,
-                    "cancel_subagents": cancel_subagents,
-                    "kill_background_tasks": kill_background_tasks,
-                    "rewind_if_no_output": rewind_requested,
-                    "requested_prompt_id": &requested_prompt_id,
-                    "trigger": trigger.as_ref().map(crate::session::CancelTrigger::as_str),
-                })),
-            );
         }
 
         // Sample before the abort and the teardown awaits, so the persisted cancel elapsed is turn runtime, not post-abort kill/token work
@@ -567,11 +510,6 @@ impl SessionActor {
                     gate.set(false);
                 }
                 state.notifications_suppressed = false;
-                xai_grok_telemetry::unified_log::info(
-                    "shell.task_wake.gate_cleared",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({ "reason": "rewind" })),
-                );
                 state.rewindable = false;
                 state.pending_inputs.pop_front()
             } else {

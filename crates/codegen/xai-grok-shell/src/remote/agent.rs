@@ -74,7 +74,7 @@ impl SandboxClient {
                 crate::http::process_client_mode(),
             );
 
-        Ok(xai_grok_otel::inject_trace_context_into_request(builder))
+        Ok(builder)
     }
 
     /// Check an HTTP response for errors, then deserialize the JSON body.

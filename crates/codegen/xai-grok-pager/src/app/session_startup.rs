@@ -5,7 +5,7 @@
 use super::cli::PagerArgs;
 use std::path::{Path, PathBuf};
 pub(crate) fn stamp_phase_traceparent(meta: &mut Option<agent_client_protocol::Meta>) {
-    let Some(span) = xai_grok_telemetry::startup::current_phase_span() else {
+    let Some(span) = crate::acp::startup::current_phase_span() else {
         return;
     };
     stamp_span_traceparent(meta, &span);
@@ -821,7 +821,6 @@ pub(crate) fn pre_acp_auth_manager(
     ));
     auth.configure_refresher(
         agent_config.grok_com_config.auth_provider_command.clone(),
-        None,
     );
     auth
 }

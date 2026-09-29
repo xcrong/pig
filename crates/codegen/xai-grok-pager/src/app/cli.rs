@@ -96,19 +96,19 @@ See ~/.grok/README.md for more information.
         /// Force re-download and install even if already up to date.
         #[arg(long)]
         force_reinstall: bool,
-        /// Install a specific version (e.g. 0.1.150 or 0.1.151-alpha.2).
+        /// Install a specific version (e.g. 1.0.1 or 1.0.2-alpha.1).
         #[arg(long)]
         version: Option<String>,
         /// Switch to the alpha release channel (faster updates, may have bugs).
         #[arg(long, conflicts_with_all = ["stable", "enterprise"])]
         alpha: bool,
-        /// Switch to the stable release channel (default, weekly releases).
+        /// Switch to the stable release channel (default).
         #[arg(long, conflicts_with_all = ["alpha", "enterprise"])]
         stable: bool,
-        /// Switch to the enterprise release channel.
+        /// Deprecated: no pig enterprise channel; falls back to stable with a notice.
         #[arg(long, conflicts_with_all = ["alpha", "stable"], hide = true)]
         enterprise: bool,
-        /// Internal: what spawned this `grok update` (`user_command`, `auto_background`, `leader_converge`). Hidden.
+        /// Internal: what spawned this `pig update` (`user_command`, `auto_background`, `leader_converge`). Hidden.
         #[arg(long, hide = true)]
         trigger: Option<String>,
         /// Internal compat alias for `--trigger=auto_background` (older parents still spawn children with it).

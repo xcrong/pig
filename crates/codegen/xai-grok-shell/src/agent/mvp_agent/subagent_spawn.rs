@@ -207,25 +207,7 @@ impl MvpAgent {
             .as_ref()
             .map(|h| h.non_interactive)
             .unwrap_or(false);
-        let (gcs_upload_method, gcs_bucket_url) = match self.trace_upload_config_snapshot() {
-            Some(method) => {
-                let bucket = match &method {
-                    UploadMethod::Direct { .. } => self
-                        .cfg
-                        .borrow()
-                        .endpoints
-                        .resolve_trace_bucket_url()
-                        .map(|r| r.value),
-                    UploadMethod::Proxy { .. } => Some("proxy-managed".to_string()),
-                    UploadMethod::S3 { bucket, .. } => Some(format!("s3://{bucket}")),
-                };
-                match bucket {
-                    Some(url) => (Some(method), Some(url)),
-                    None => (None, None),
-                }
-            }
-            None => (None, None),
-        };
+        let (gcs_upload_method, gcs_bucket_url) = (None, None);
         let project_trusted = crate::agent::folder_trust::project_scope_allowed(&parent_cwd);
         let (base_roles, base_personas, subagent_model_overrides, subagent_toggle) = {
             let cfg = self.cfg.borrow();

@@ -35,7 +35,6 @@ pub(crate) struct HumanPromptContent {
     pub(crate) client_identifier: Option<String>,
     pub(crate) screen_mode: Option<String>,
     pub(crate) verbatim: bool,
-    pub(crate) traceparent: Option<String>,
     pub(crate) json_schema: Option<serde_json::Value>,
     pub(crate) tool_overrides_update: Option<xai_grok_sampling_types::ToolOverridesUpdate>,
     pub(crate) respond_to: oneshot::Sender<crate::session::commands::PromptTurnResult>,
@@ -53,7 +52,6 @@ impl HumanPromptContent {
             client_identifier: self.client_identifier,
             screen_mode: self.screen_mode,
             verbatim: self.verbatim,
-            traceparent: self.traceparent,
             json_schema: self.json_schema,
             send_now: false,
             admission: None,
@@ -143,7 +141,6 @@ impl MessageDeliveryHandle {
             AgentDeliveryIdentity,
         >,
         receipt_sink: mpsc::Sender<crate::agent::subagent::PromptTurnReceipt>,
-        parent_telemetry_ctx: xai_grok_telemetry::TelemetryCtx,
     ) -> ActiveMessageAdmission {
         let (operation, content, identity, grant) = envelope.into_parts();
         let delivery = grant.delivery;
@@ -172,7 +169,6 @@ impl MessageDeliveryHandle {
             .send(SessionCommand::ParentAgentMessage {
                 delivery,
                 receipt_sink,
-                parent_telemetry_ctx,
                 respond_to,
             })
             .is_err()

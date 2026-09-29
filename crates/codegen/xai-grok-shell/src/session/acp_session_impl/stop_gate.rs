@@ -141,8 +141,6 @@ impl SessionActor {
         result.results = demote_ignored_blocks(result.results);
         self.send_hook_execution(&HookBatch::from_envelope(&envelope), &result.results)
             .await;
-        self.emit_hook_executed_telemetry("stop", None, &result.results)
-            .await;
     }
 
     pub(crate) async fn list_active_subagents(
@@ -246,8 +244,6 @@ impl SessionActor {
 
     async fn emit_stop_results(&self, batch: &HookBatch, results: &[result::HookRunResult]) {
         self.send_hook_execution(batch, results).await;
-        self.emit_hook_executed_telemetry(&batch.event_name, None, results)
-            .await;
     }
 
     /// Run the turn-end `Stop`/`SubagentStop` hook gate and decide whether the agent may stop or must keep working.
@@ -353,7 +349,7 @@ impl SessionActor {
     }
 
     /// Annotate the scrollback when a stop gate keeps the agent working.
-    /// Each block gets one line (with `HookBlocked` telemetry); when only `additionalContext` was returned, the context lines are written instead.
+    /// Each block gets one line; when only `additionalContext` was returned, the context lines are written instead.
     async fn announce_keep_working(
         &self,
         blocks: &[dispatcher::StopBlock],
@@ -365,10 +361,6 @@ impl SessionActor {
                 block.hook_name, block.reason
             ))
             .await;
-            xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::HookBlocked {
-                hook_name: block.hook_name.clone(),
-                cause: xai_grok_telemetry::events::HookBlockCause::StopBlocked,
-            });
         }
         if blocks.is_empty() {
             for context in additional_context {

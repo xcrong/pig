@@ -564,7 +564,7 @@ impl AuthIdentity {
 /// Root view component: owns all application state.
 pub struct AppView {
     /// Taken by whichever path reaches a usable session (or interactive idle) first.
-    pub pending_startup: Option<xai_grok_telemetry::startup::PendingStartup>,
+    pub pending_startup: Option<crate::acp::startup::PendingStartup>,
     pub active_view: ActiveView,
     /// View to return to after a mid-session login flow completes or is cancelled.
     /// `Some` only while a `/login` (or 401-triggered re-auth) initiated from an active session is in progress.
@@ -1174,8 +1174,8 @@ enum UnconsumedInputScope {
 }
 impl AppView {
     /// Finishes startup if this view still holds the obligation; does nothing after.
-    pub(crate) fn finish_startup(&mut self, outcome: xai_grok_telemetry::startup::StartupOutcome) {
-        xai_grok_telemetry::startup::PendingStartup::finish_held(
+    pub(crate) fn finish_startup(&mut self, outcome: crate::acp::startup::StartupOutcome) {
+        crate::acp::startup::PendingStartup::finish_held(
             &mut self.pending_startup,
             outcome,
         );
@@ -1321,12 +1321,6 @@ impl AppView {
         self.gate = meta.gate.clone();
         if was_gated && self.gate.is_none() {
             self.paywall_check_started = None;
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::SubscriptionActivated {
-                    auth_method: self.login_method_id.as_ref().map(|id| id.0.to_string()),
-                    upsell_shown_this_session: self.access_gate_shown_logged,
-                },
-            );
         }
         self.subscription_tier = meta.subscription_tier.clone();
         self.backend_billed = meta.backend_billed;
@@ -4353,7 +4347,6 @@ impl AppView {
     /// Render the current view to the terminal.
     pub fn draw(&mut self, terminal: &mut PagerTerminal) {
         self.draw_inner(terminal);
-        xai_grok_telemetry::startup::record_first_draw();
         crate::memory_release::run_deferred_release();
     }
     fn draw_inner(&mut self, terminal: &mut PagerTerminal) {
@@ -4694,13 +4687,6 @@ impl AppView {
                             }
                             if !has_access && !self.access_gate_shown_logged {
                                 self.access_gate_shown_logged = true;
-                                xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SuperGrokUpsellShown {
-                                    source: xai_grok_telemetry::events::SuperGrokUpsell::WelcomeScreen,
-                                    auth_method: self
-                                        .login_method_id
-                                        .as_ref()
-                                        .map(|id| id.0.to_string()),
-                                });
                             }
                             if let Some(tutorial) = self.tutorial.as_mut() {
                                 crate::views::tutorial::render_tutorial(
@@ -5087,12 +5073,6 @@ impl AppView {
                 .announcement_cta_impressions_logged
                 .insert((key.clone(), surface))
             {
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::events::AnnouncementCtaShown {
-                        id: id.clone(),
-                        source: surface,
-                    },
-                );
             }
         }
     }
@@ -5311,10 +5291,6 @@ impl AppView {
             &mut self.tip_seen_counts,
         ) {
             self.clipboard_focus_tip.note_fired(&outcome, now);
-            xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::ContextualTip {
-                tip: xai_grok_telemetry::events::ContextualTipKind::ImageInput,
-                action: xai_grok_telemetry::events::ContextualTipAction::Shown,
-            });
             return true;
         }
         false

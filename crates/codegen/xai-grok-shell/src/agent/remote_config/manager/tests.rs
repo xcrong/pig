@@ -4,7 +4,7 @@ use super::super::{
     CACHE_TTL, CacheAuthMethod, Commit, MODELS_CACHE_FILE, ModelsCache, ModelsCacheScope,
     ModelsFetchFuture, SettingsCacheManager, allowlist_denied_message, build_prefetched_map,
     degraded_log_level, evaluate_models_commit, resolve_prefetch_inputs_from_parts,
-    resolve_startup_endpoints, selectable_catalog_key_for_persisted,
+    resolve_startup_endpoints, selectable_catalog_key_for_persisted, DegradedLogLevel,
 };
 use super::*;
 
@@ -2491,16 +2491,16 @@ async fn identity_switch_clears_user_pick_latch() {
 #[test]
 fn personal_offline_boot_does_not_emit_a_managed_degraded_warn() {
     use crate::managed_config::LaunchProfile;
-    use xai_grok_telemetry::unified_log::LogLevel;
+    use super::super::DegradedLogLevel;
 
     assert_eq!(
         degraded_log_level(LaunchProfile::Personal),
-        LogLevel::Debug,
+        DegradedLogLevel::Debug,
         "a personal offline boot must not WARN on every degraded start",
     );
     assert_eq!(
         degraded_log_level(LaunchProfile::Managed),
-        LogLevel::Warn,
+        DegradedLogLevel::Warn,
         "a managed degraded start stays a WARN: settings can gate the client",
     );
 }

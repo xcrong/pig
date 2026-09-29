@@ -105,11 +105,11 @@ impl RequestClassification {
     }
 }
 
-/// Matches the hyphenated `config.ui.permission_mode` values, not the telemetry enum's underscore serde used for product analytics.
+/// Matches the hyphenated `config.ui.permission_mode` values.
 pub(super) fn permission_mode_artifact_str(
-    mode: xai_grok_telemetry::enums::PermissionMode,
+    mode: crate::permission::PermissionMode,
 ) -> &'static str {
-    use xai_grok_telemetry::enums::PermissionMode;
+    use crate::permission::PermissionMode;
     match mode {
         PermissionMode::AlwaysApprove => "always-approve",
         PermissionMode::Auto => "auto",

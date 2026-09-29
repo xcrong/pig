@@ -48,6 +48,6 @@ pub(crate) use endpoint::ModelsFetchFuture;
 #[cfg(test)]
 pub(crate) use fetch::build_prefetched_map;
 #[cfg(test)]
-pub(crate) use metrics::degraded_log_level;
+pub(crate) use metrics::{DegradedLogLevel, degraded_log_level};
 #[cfg(test)]
 pub(crate) use prefetch::resolve_prefetch_inputs_from_parts;

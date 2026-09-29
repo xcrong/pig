@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::future::Future;
 use std::sync::{Arc, LazyLock};
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent;
 
 use agent_client_protocol as acp;
 use tokio::{
@@ -1224,8 +1222,26 @@ pub fn parse_mcp_meta_config(
         .unwrap_or_default()
 }
 
-/// MCP initialization strategy. Defined in `xai-grok-telemetry`; re-exported here so existing call sites continue to work.
-pub use xai_grok_telemetry::enums::McpInitStrategy;
+/// MCP initialization strategy: whether the agent waits for MCP handshakes
+/// before the first LLM call.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpInitStrategy {
+    /// Wait for MCP initialization before first LLM call
+    #[default]
+    Blocking,
+    /// Start immediately, advertise tools as they become available
+    Progressive,
+}
+
+impl<S: AsRef<str>> From<S> for McpInitStrategy {
+    fn from(s: S) -> Self {
+        match s.as_ref() {
+            "progressive" => McpInitStrategy::Progressive,
+            _ => McpInitStrategy::Blocking,
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum McpError {
@@ -1586,15 +1602,15 @@ impl xai_tool_runtime::Tool for McpErasedTool {
         _ctx: xai_tool_runtime::ToolCallContext,
         raw: serde_json::Value,
     ) -> Result<ToolOutput, xai_tool_runtime::ToolError> {
-        let call_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
+        let call_span = tracing::info_span!(
             "mcp.tool_call",
             server_name = %self.tool.server_name,
             tool_name = %self.tool.name,
             reconnect = tracing::field::Empty,
             auth_retry = tracing::field::Empty,
-        ));
+        );
         let mcp_call_start = std::time::Instant::now();
-        let state_lock_span = region!("mcp.state_lock", Parent::Explicit(call_span.span()));
+        let state_lock_span = tracing::info_span!(parent: &call_span, "mcp.state_lock");
         let (client, event_writer) = {
             let state = self.tool.mcp_state.lock().await;
             let c = Arc::clone(state.get_client(&self.tool.server_name).ok_or_else(|| {
@@ -1605,7 +1621,7 @@ impl xai_tool_runtime::Tool for McpErasedTool {
             })?);
             (c, state.event_writer().clone())
         };
-        state_lock_span.close();
+        drop(state_lock_span);
 
         let server = &self.tool.server_name;
         let tool = &self.tool.name;
@@ -1629,7 +1645,7 @@ impl xai_tool_runtime::Tool for McpErasedTool {
                 &mut reconnect_attempted,
                 &mut is_timeout,
                 ew,
-                call_span.span(),
+                &call_span,
             )
             .await
         {
@@ -1651,7 +1667,7 @@ impl xai_tool_runtime::Tool for McpErasedTool {
                         &mut reconnect_attempted,
                         &mut is_timeout,
                         ew,
-                        call_span.span(),
+                        &call_span,
                     )
                     .await
                 } else {
@@ -1660,30 +1676,10 @@ impl xai_tool_runtime::Tool for McpErasedTool {
             }
             Err(e) => Err(e),
         };
-        call_span.span().record("reconnect", reconnect_attempted);
-        call_span.span().record("auth_retry", auth_retry_attempted);
-        call_span.close();
+        call_span.record("reconnect", reconnect_attempted);
+        call_span.record("auth_retry", auth_retry_attempted);
+        drop(call_span);
 
-        // Protocol, init and input errors keep `failure` unset: only the server's silence is counted.
-        let failure = match &dispatch_result {
-            Ok(_) => None,
-            Err(_) if is_timeout => Some(xai_grok_telemetry::events::McpCallFailure::Timeout),
-            Err(e) if e.kind == xai_tool_runtime::ToolErrorKind::NetworkError => {
-                Some(xai_grok_telemetry::events::McpCallFailure::Transport)
-            }
-            Err(_) => None,
-        };
-        // Telemetry labels a server may put in `structuredContent`; read before the content moves.
-        let (outcome, mode) = match &dispatch_result {
-            Ok(call_result) => {
-                let structured = call_result.structured_content.as_ref();
-                (
-                    structured_label(structured, "outcome"),
-                    structured_label(structured, "mode"),
-                )
-            }
-            Err(_) => (None, None),
-        };
         let result = dispatch_result.map(|call_result| {
             let mut mcp_out = mcp_output_from_call_result(
                 tool.clone(),
@@ -1717,38 +1713,8 @@ impl xai_tool_runtime::Tool for McpErasedTool {
             reconnect_attempted,
             auth_retry_attempted,
         });
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::McpToolCalled {
-            server_name: server.clone(),
-            tool_name: tool.clone(),
-            qualified_name,
-            success,
-            duration_ms,
-            failure,
-            outcome,
-            mode,
-        });
         result
     }
-}
-
-/// Caps server-provided telemetry labels at 64 bytes, leaving headroom above known codes
-/// such as `permission_required`. This is a conservative policy choice, not a protocol limit;
-/// raising it forwards longer server strings to telemetry.
-const STRUCTURED_LABEL_MAX_LEN: usize = 64;
-
-/// A label-shaped string under `key` in a result's `structuredContent`, for telemetry.
-/// Only `[A-Za-z0-9_.-]` strings count: an object or number there is data for the model,
-/// and free text (an email, a name, a token) must not reach the analytics sinks.
-fn structured_label(structured: Option<&serde_json::Value>, key: &str) -> Option<String> {
-    structured?
-        .get(key)?
-        .as_str()
-        .filter(|s| !s.is_empty() && s.len() <= STRUCTURED_LABEL_MAX_LEN)
-        .filter(|s| {
-            s.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-        })
-        .map(str::to_owned)
 }
 
 /// Check whether a `ServiceError` indicates the underlying transport has died and a fresh connection could recover it.
@@ -1832,9 +1798,7 @@ impl McpErasedTool {
         let mut attempt: i64 = 0;
         loop {
             attempt += 1;
-            let attempt_span = xai_grok_telemetry::region::Region::from_span(
-                tracing::info_span!(parent: call_span, "mcp.call_attempt", attempt),
-            );
+            let attempt_span = tracing::info_span!(parent: call_span, "mcp.call_attempt", attempt);
             let response = self
                 .call_tool_round(
                     client,
@@ -1846,7 +1810,7 @@ impl McpErasedTool {
                     ew,
                 )
                 .await?;
-            attempt_span.close();
+            drop(attempt_span);
             let input_required = match response {
                 rmcp::model::CallToolResponse::Complete(call_result) => return Ok(call_result),
                 rmcp::model::CallToolResponse::InputRequired(input_required) => input_required,
@@ -2874,11 +2838,6 @@ enum PendingTransport {
 /// rmcp 2.1 parameterizes `RunningService` over the handler type, and `ClientInfo` is only a `ClientHandler` impl with no notification routing.
 pub type McpService = Arc<RunningService<RoleClient, GrokClientHandler>>;
 
-pub(crate) static MCP_SERVERS_CONNECTED: xai_grok_telemetry::activity::ActivityGauge =
-    xai_grok_telemetry::activity::ActivityGauge::residency(
-        xai_grok_telemetry::activity::MCP_SERVERS_CONNECTED_KEY,
-    );
-
 /// MCP client connection state machine.
 /// Single-flight handshake invariant: at most one task at a time may run the handshake.
 enum ClientState {
@@ -2890,10 +2849,7 @@ enum ClientState {
     /// New callers MUST park on [`McpClient::init_done`] (with a bounded timeout) rather than attempt a parallel handshake.
     Initializing,
     /// Handshake completed; the service is reference-counted via `Arc`.
-    Ready {
-        service: McpService,
-        _connected: xai_grok_telemetry::activity::ActivityGaugeGuard,
-    },
+    Ready { service: McpService },
 }
 
 /// `Copy` projection of [`ClientState`] used for cheap state-machine inspection (see [`McpClient::state_kind`]).
@@ -3586,15 +3542,9 @@ impl McpClient {
             // The compiler can bind `ClientState::Pending(t)` directly from an owned value with no irrefutable-let hole
             // Non-Pending arms restore their original variant before falling through
             match std::mem::replace(&mut *guard, ClientState::Initializing) {
-                ClientState::Ready {
-                    service,
-                    _connected,
-                } => {
+                ClientState::Ready { service } => {
                     let ready = service.clone();
-                    *guard = ClientState::Ready {
-                        service,
-                        _connected,
-                    };
+                    *guard = ClientState::Ready { service };
                     return Ok(ready);
                 }
                 ClientState::Empty => {
@@ -3650,17 +3600,17 @@ impl McpClient {
             PendingTransport::HttpAuth { .. } => "http_auth",
             PendingTransport::Acp { .. } => "acp",
         };
-        let handshake_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
+        let handshake_span = tracing::info_span!(
             "mcp.handshake",
             server_name = %self.server_name,
             transport_type,
             elapsed_ms = tracing::field::Empty,
-        ));
+        );
         let handshake_start = std::time::Instant::now();
         let mut result = self.try_handshake(pending).await;
 
         let handshake_elapsed = handshake_start.elapsed().as_micros() as u64;
-        tracing::info!(target: xai_grok_telemetry::instrumentation::TARGET, event = "timing", name = "mcp_try_handshake", server_name = %self.server_name, elapsed_us = handshake_elapsed);
+        tracing::info!(event = "timing", name = "mcp_try_handshake", server_name = %self.server_name, elapsed_us = handshake_elapsed);
         // On handshake failure, if we have an auth_manager, try refreshing the token and retrying once
         // Handles expired access tokens loaded from disk: the handshake fails at the transport layer before rmcp's transparent 401 refresh kicks in We attempt refresh on any failure (not just auth errors): the cost is low
         // Also, error strings from different MCP servers are not reliable to match
@@ -3687,9 +3637,8 @@ impl McpClient {
             }
         }
         handshake_span
-            .span()
             .record("elapsed_ms", handshake_start.elapsed().as_millis() as i64);
-        handshake_span.close();
+        drop(handshake_span);
 
         // Disarm before publishing the result so the drop guard doesn't double-restore on the success path
         // Disarming also keeps it from fighting the failure-path assignment below
@@ -3706,7 +3655,6 @@ impl McpClient {
                     let service = Arc::new(service);
                     *guard = ClientState::Ready {
                         service: service.clone(),
-                        _connected: MCP_SERVERS_CONNECTED.enter(),
                     };
                     tracing::info!(
                         server = %self.server_name,
@@ -4361,11 +4309,11 @@ impl McpClient {
         let mcp_service = self.ensure_initialized().await?;
 
         let list_tools_start = std::time::Instant::now();
-        let list_tools_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
+        let list_tools_span = tracing::info_span!(
             "mcp.list_tools",
             tools_count = tracing::field::Empty,
             elapsed_ms = tracing::field::Empty,
-        ));
+        );
 
         let mut all_tools = Vec::new();
         let mut cursor: Option<String> = None;
@@ -4385,12 +4333,10 @@ impl McpClient {
             }
         }
         list_tools_span
-            .span()
             .record("tools_count", all_tools.len() as i64);
         list_tools_span
-            .span()
             .record("elapsed_ms", list_tools_start.elapsed().as_millis() as i64);
-        list_tools_span.close();
+        drop(list_tools_span);
 
         let event_writer = mcp_state.lock().await.event_writer().clone();
         let listed_count = all_tools.len();
@@ -4753,7 +4699,6 @@ pub async fn start_mcp_server(
     byo_config: Option<&McpOAuthConfig>,
     ctx: &McpSpawnCtx<'_>,
 ) -> Result<McpClient, McpError> {
-    // No whole-start timer here: `InstrumentationTimer` holds a Chrome-mode span guard that must not cross an await (it is `!Send` and tracing's span stack is per-thread), and this fn awaits on every transport. Durations are carried by the per-transport telemetry events instead.
     match mcp_server {
         acp::McpServer::Stdio(acp::McpServerStdio {
             name,
@@ -4766,15 +4711,8 @@ pub async fn start_mcp_server(
                 tracing::info!(server = %name, ?mc, "MCP stdio: meta config override");
             }
 
-            let (startup_timeout, _, _) = McpClient::load_timeouts(overrides, meta_config);
             let command_str = command.to_string_lossy().into_owned();
-            let spawn_start = std::time::Instant::now();
-            // Scoped to the sync spawn-planning prologue: the timer's
-            // Chrome-mode span guard must not cross the spawn await below.
             let cmd = {
-                let mut stdio_spawn_timer =
-                    xai_grok_telemetry::instrumentation::timer("mcp_stdio_spawn");
-                stdio_spawn_timer.with_server(name.as_str());
                 let path_override = stdio_path_override(&env);
                 let (program, spawn_args) =
                     plan_stdio_spawn(&command_str, &args, cfg!(windows), |c| {
@@ -4795,12 +4733,11 @@ pub async fn start_mcp_server(
             };
 
             let spawn_child_start = std::time::Instant::now();
-            let spawn_child_span =
-                xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
+            let spawn_child_span = tracing::info_span!(
                     "mcp.spawn_child",
                     server_name = %name,
                     elapsed_ms = tracing::field::Empty,
-                ));
+                );
             let spawn_result = SafeTokioChildProcess::spawn(
                 cmd,
                 ctx.scope,
@@ -4809,20 +4746,10 @@ pub async fn start_mcp_server(
             )
             .await;
             spawn_child_span
-                .span()
                 .record("elapsed_ms", spawn_child_start.elapsed().as_millis() as i64);
-            spawn_child_span.close();
+            drop(spawn_child_span);
             let (transport, stderr_handle) = spawn_result.map_err(|e| {
                 tracing::error!("Failed to spawn MCP server '{}': {}", name, e);
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::events::McpServerFailed {
-                        server_name: name.clone(),
-                        error_type: xai_grok_telemetry::events::McpErrorType::SpawnFailed,
-                        duration_ms: spawn_start.elapsed().as_millis() as u64,
-                        timeout_sec: startup_timeout,
-                        error_message: Some(e.to_string()),
-                    },
-                );
                 McpError::SpawnFailed {
                     server: name.clone(),
                     source: e,

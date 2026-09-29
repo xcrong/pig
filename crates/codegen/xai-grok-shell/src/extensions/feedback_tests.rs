@@ -1,11 +1,10 @@
 use super::*;
-use crate::extensions::feedback_drafts::{answer, draft_op_error};
+use crate::extensions::feedback_drafts::answer;
 use crate::session::FeedbackDraftUpdateRequest;
 use xai_grok_feedback::{
     FeedbackDraft, FeedbackDraftStore, FeedbackFailureMode, FeedbackStoreError,
     FeedbackTaskCategory, FeedbackType, UpdateOutcome,
 };
-use xai_grok_telemetry::events::FeedbackDraftOpKind;
 
 /// Wire spelling of the `FeedbackDraftUpdateRequest` the pager sends on `drafts/update`.
 fn pager_update_body(draft_id: &str) -> serde_json::Value {
@@ -127,40 +126,6 @@ fn drafts_update_writes_the_full_pager_body() {
     );
 }
 
-/// Pins the `feedback_draft_op` builder: the `list` count rides on success and a store failure
-/// rides as its variant class only, never its message.
-#[test]
-fn draft_op_event_places_count_and_error_class() {
-    let cases = [
-        (
-            FeedbackDraftOpKind::List,
-            Ok(Some(2)),
-            serde_json::json!({
-                "session_id": "sess-1", "op": "list", "ok": true, "draft_count": 2
-            }),
-        ),
-        (
-            FeedbackDraftOpKind::Recover,
-            Err(draft_op_error(&FeedbackStoreError::Busy)),
-            serde_json::json!({
-                "session_id": "sess-1", "op": "recover", "ok": false, "error": "busy"
-            }),
-        ),
-        (
-            FeedbackDraftOpKind::Delete,
-            Ok(None),
-            serde_json::json!({ "session_id": "sess-1", "op": "delete", "ok": true }),
-        ),
-    ];
-    for (op, outcome, expected) in cases {
-        assert_eq!(
-            serde_json::to_value(feedback_drafts::draft_op_event("sess-1", op, outcome)).unwrap(),
-            expected,
-            "{op:?}"
-        );
-    }
-}
-
 #[test]
 fn drafts_update_without_type_fails_the_parse_instead_of_half_updating() {
     let mut body = pager_update_body("01931111-aaaa-7bbb-8ccc-ddddeeeeffff");
@@ -193,13 +158,9 @@ async fn answer_lists_drafts_and_refuses_an_unknown_method() {
         .append_predraft("Todo list", "todos are chopped")
         .expect("predraft appended");
 
-    let listed = answer(
-        &drafts_request("x.ai/feedback/drafts/list"),
-        store.clone(),
-        false,
-    )
-    .await
-    .expect("list answers");
+    let listed = answer(&drafts_request("x.ai/feedback/drafts/list"), store.clone())
+        .await
+        .expect("list answers");
     let listed: serde_json::Value =
         serde_json::from_str(listed.0.get()).expect("list response is JSON");
     assert_eq!(
@@ -210,7 +171,7 @@ async fn answer_lists_drafts_and_refuses_an_unknown_method() {
         Some(1)
     );
 
-    let unknown = answer(&drafts_request("x.ai/feedback/drafts/rename"), store, false)
+    let unknown = answer(&drafts_request("x.ai/feedback/drafts/rename"), store)
         .await
         .expect_err("an unknown drafts method is refused");
     assert_eq!(unknown.code, acp::Error::method_not_found().code);

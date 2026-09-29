@@ -8,10 +8,6 @@ impl SessionActor {
     ) -> PromptTurnResult {
         // Builtin turns carry no user message, so a send-now may cancel from the start.
         self.mark_front_message_committed().await;
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SlashCommandUsed {
-            command: action.command_name().to_string(),
-            args_provided: action.args_provided(),
-        });
         match action {
             BuiltinAction::Compact { user_context } => {
                 self.run_compact(user_context).await?;
@@ -32,21 +28,6 @@ impl SessionActor {
                     } else {
                         "default"
                     };
-                    xai_grok_telemetry::session_ctx::log_event(
-                        xai_grok_telemetry::events::YoloToggled {
-                            enabled: actual,
-                            previous_state: was,
-                            trigger: xai_grok_telemetry::events::YoloTrigger::SlashCommand,
-                            from_mode: Some(from_mode.to_owned()),
-                        },
-                    );
-                    xai_grok_telemetry::event_span!(
-                        "session.permission_mode_changed",
-                        from_mode = crate::session::telemetry::permission_mode_label(was),
-                        to_mode = crate::session::telemetry::permission_mode_label(actual),
-                        trigger = "slash_command",
-                        enabled = actual,
-                    );
                 }
                 let status = if actual { "enabled" } else { "disabled" };
                 tracing::info!(
@@ -75,15 +56,9 @@ impl SessionActor {
             BuiltinAction::HooksTrust => {
                 let msg = match Self::do_hooks_trust_project(&self.session_info.cwd) {
                     Ok(root) => {
-                        xai_grok_telemetry::session_ctx::log_event(
-                            xai_grok_telemetry::events::HookTrusted { success: true },
-                        );
                         format!("Trusted: {}.", root.display())
                     }
                     Err(e) => {
-                        xai_grok_telemetry::session_ctx::log_event(
-                            xai_grok_telemetry::events::HookTrusted { success: false },
-                        );
                         e
                     }
                 };
@@ -138,9 +113,6 @@ impl SessionActor {
                     // paths are under ~/.grok/ to prevent hook path injection.
                     match crate::config::add_hooks_path(&path) {
                         Ok(()) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::HookAdded { success: true },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Added hook path: {path}\n\
                                  Restart session to load hooks from this path."
@@ -148,9 +120,6 @@ impl SessionActor {
                             .await;
                         }
                         Err(e) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::HookAdded { success: false },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to add hook path: {e}"
                             ))
@@ -169,18 +138,12 @@ impl SessionActor {
                 } else {
                     match crate::config::remove_hooks_path(&path) {
                         Ok(true) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::HookRemoved { success: true },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Removed hook path: {path}\nRestart session to stop loading hooks from this path."
                             ))
                             .await;
                         }
                         Ok(false) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::HookRemoved { success: false },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "{path} is not a user-registered hook directory; \
                                  config-defined hook sources cannot be removed from here."
@@ -188,9 +151,6 @@ impl SessionActor {
                             .await;
                         }
                         Err(e) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::HookRemoved { success: false },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to remove hook path: {e}"
                             ))
@@ -281,15 +241,9 @@ impl SessionActor {
                     Some(handle) => {
                         // An explicit user reload forces a full re-copy of locally installed plugins
                         let msg = self.reload_plugins_impl(handle, true).await;
-                        xai_grok_telemetry::session_ctx::log_event(
-                            xai_grok_telemetry::events::PluginReloaded { success: true },
-                        );
                         self.send_host_turn_slash_command_output(&msg).await;
                     }
                     None => {
-                        xai_grok_telemetry::session_ctx::log_event(
-                            xai_grok_telemetry::events::PluginReloaded { success: false },
-                        );
                         self.send_host_turn_slash_command_output(
                             "No plugin registry handle available. Start a new session to discover plugins.",
                         )
@@ -388,12 +342,6 @@ impl SessionActor {
                     let path_str = resolved.to_string_lossy().to_string();
                     match crate::config::run_add_plugin_path(path_str.clone()).await {
                         Ok(()) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::PluginAdded {
-                                    source: xai_grok_telemetry::events::PluginSource::LocalPath,
-                                    success: true,
-                                },
-                            );
                             let msg = format!("Added plugin path: {path_str}");
                             self.send_host_turn_slash_command_output(&msg).await;
                             if let Some(ref handle) = self.plugin_registry_handle {
@@ -402,12 +350,6 @@ impl SessionActor {
                             }
                         }
                         Err(e) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::PluginAdded {
-                                    source: xai_grok_telemetry::events::PluginSource::LocalPath,
-                                    success: false,
-                                },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to add plugin path: {e}"
                             ))
@@ -436,9 +378,6 @@ impl SessionActor {
                     let path_str = resolved.to_string_lossy().to_string();
                     match crate::config::run_remove_plugin_path(path_str.clone()).await {
                         Ok(()) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::PluginRemoved { success: true },
-                            );
                             let msg = format!("Removed plugin path: {path_str}");
                             self.send_host_turn_slash_command_output(&msg).await;
                             if let Some(ref handle) = self.plugin_registry_handle {
@@ -447,9 +386,6 @@ impl SessionActor {
                             }
                         }
                         Err(e) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::PluginRemoved { success: false },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Failed to remove plugin path: {e}"
                             ))
@@ -527,26 +463,6 @@ impl SessionActor {
                                 for w in &outcome.warnings {
                                     tracing::warn!("{w}");
                                 }
-                                let kind = if outcome.is_local {
-                                    xai_grok_telemetry::events::InstallKind::Local
-                                } else {
-                                    xai_grok_telemetry::events::InstallKind::Git
-                                };
-                                xai_grok_telemetry::session_ctx::log_event(
-                                    xai_grok_telemetry::events::PluginInstalled {
-                                        install_kind: kind,
-                                        success: true,
-                                        trust: true,
-                                        error_category: None,
-                                    },
-                                );
-                                xai_grok_telemetry::event_span!(
-                                    "plugin.installed",
-                                    success = true,
-                                    install_kind = kind.as_ref(),
-                                    plugin_count = outcome.plugin_names.len() as i64,
-                                    plugin_name = %outcome.plugin_names.join(","),
-                                );
                                 self.send_host_turn_slash_command_output(&format!(
                                     "Installed {} plugin(s) from {source}: {}\n\
                                      Run /plugins reload to activate.",
@@ -556,26 +472,6 @@ impl SessionActor {
                                 .await;
                             }
                             Err(e) => {
-                                let error_category = e.category();
-                                let kind = if crate::plugin::install_source_is_local(&source, cwd) {
-                                    xai_grok_telemetry::events::InstallKind::Local
-                                } else {
-                                    xai_grok_telemetry::events::InstallKind::Git
-                                };
-                                xai_grok_telemetry::event_span!(
-                                    "plugin.installed",
-                                    success = false,
-                                    install_kind = kind.as_ref(),
-                                    error_category = %error_category,
-                                );
-                                xai_grok_telemetry::session_ctx::log_event(
-                                    xai_grok_telemetry::events::PluginInstalled {
-                                        install_kind: kind,
-                                        success: false,
-                                        trust: true,
-                                        error_category: Some(error_category),
-                                    },
-                                );
                                 self.send_host_turn_slash_command_output(&format!(
                                     "Failed to install plugin: {e}"
                                 ))
@@ -614,12 +510,6 @@ impl SessionActor {
                     };
                     match uninstalled {
                         Ok(outcome) => {
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::PluginUninstalled {
-                                    confirmed: true,
-                                    success: true,
-                                },
-                            );
                             self.send_host_turn_slash_command_output(&format!(
                                 "Uninstalled repo \"{}\" ({} plugin(s): {})",
                                 outcome.repo_key,
@@ -962,7 +852,6 @@ impl SessionActor {
                     session_cwd: self.session_info.cwd.clone(),
                 },
                 Some(&self.notifications.persistence_tx),
-                self.telemetry_enabled,
             )
             .await;
 

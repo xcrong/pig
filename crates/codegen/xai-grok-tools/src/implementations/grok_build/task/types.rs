@@ -112,33 +112,21 @@ pub struct SubagentRequest {
 #[derive(Debug, Default)]
 pub struct SpawnRootSpan {
     span: Option<tracing::Span>,
-    traceparent: Option<String>,
 }
 
 impl Clone for SpawnRootSpan {
     fn clone(&self) -> Self {
-        Self {
-            span: None,
-            traceparent: self.traceparent.clone(),
-        }
+        Self { span: None }
     }
 }
 
 impl SpawnRootSpan {
     pub fn new(span: tracing::Span) -> Self {
-        let traceparent = xai_grok_otel::span_traceparent(&span);
-        Self {
-            span: Some(span),
-            traceparent,
-        }
+        Self { span: Some(span) }
     }
 
     pub fn take_span(&mut self) -> Option<tracing::Span> {
         self.span.take()
-    }
-
-    pub fn traceparent(&self) -> Option<&str> {
-        self.traceparent.as_deref()
     }
 }
 

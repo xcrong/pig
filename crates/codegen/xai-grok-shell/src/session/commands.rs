@@ -376,8 +376,6 @@ pub enum SessionCommand {
         screen_mode: Option<String>,
         /// Skip `<user_query>` wrapping and large-prompt truncation.
         verbatim: bool,
-        /// W3C traceparent from the caller's OTEL span context, used to link `session.handle_prompt` back to `agent.prompt` across the channel hop.
-        traceparent: Option<String>,
         json_schema: Option<serde_json::Value>,
         /// Cancel-and-send: cancel the running turn and run this prompt next.
         /// Also derived server-side during an interruptible wait (see [`SessionActor::queue_input`]).
@@ -404,7 +402,6 @@ pub enum SessionCommand {
             xai_grok_tools::implementations::grok_build::task::types::ActiveAgentMessageDelivery,
         #[allow(private_interfaces)]
         receipt_sink: tokio::sync::mpsc::Sender<crate::agent::subagent::PromptTurnReceipt>,
-        parent_telemetry_ctx: xai_grok_telemetry::TelemetryCtx,
         respond_to: oneshot::Sender<
             xai_grok_tools::implementations::grok_build::task::coordinator::ActiveMessageAdmission,
         >,

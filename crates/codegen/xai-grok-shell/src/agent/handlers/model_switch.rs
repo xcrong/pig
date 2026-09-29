@@ -31,11 +31,6 @@ pub(crate) async fn apply(
     config_notice: ConfigNotice,
 ) -> Result<acp::SetSessionModelResponse, acp::Error> {
     tracing::info!("Received set session model request {args:?}");
-    xai_grok_telemetry::unified_log::info(
-        "model changed",
-        Some(args.session_id.0.as_ref()),
-        Some(serde_json::json!({"model": args.model_id.0.as_ref()})),
-    );
     tracing::debug!("session_session_model::mvp_agent: {:?}", &args);
     let acp::SetSessionModelRequest {
         session_id,
@@ -101,15 +96,6 @@ pub(crate) async fn apply(
                 turn_count,
                 "set_session_model: agent type mismatch rejected"
             );
-            xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::ModelSwitched {
-                session_id: session_id.0.to_string(),
-                previous_model_id: previous_model_id.to_string(),
-                new_model_id: model_id.0.to_string(),
-                success: false,
-                error_code: Some(config::MODEL_SWITCH_INCOMPATIBLE_AGENT.to_string()),
-                required_agent_type: Some(required.clone()),
-                current_agent_type: active_agent_type.clone(),
-            });
             let err_payload = config::ModelSwitchIncompatibleAgentError {
                 code: config::MODEL_SWITCH_INCOMPATIBLE_AGENT.to_string(),
                 active_agent_type: active_agent_type.unwrap_or_else(|| "unknown".to_owned()),
@@ -213,17 +199,6 @@ pub(crate) async fn apply(
                     error = ?e,
                     "set_session_model: zero-turn harness rebuild failed; aborting model switch"
                 );
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::events::ModelSwitched {
-                        session_id: session_id.0.to_string(),
-                        previous_model_id: previous_model_id.to_string(),
-                        new_model_id: model_id.0.to_string(),
-                        success: false,
-                        error_code: Some(config::MODEL_SWITCH_REBUILD_FAILED.to_string()),
-                        required_agent_type: Some(required_agent_type.clone()),
-                        current_agent_type: None,
-                    },
-                );
                 return Err(e);
             }
         }
@@ -262,15 +237,6 @@ pub(crate) async fn apply(
     if config_notice == ConfigNotice::Send {
         notify_config_options(agent, &session_id).await;
     }
-    xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::ModelSwitched {
-        session_id: session_id.0.to_string(),
-        previous_model_id: previous_model_id.to_string(),
-        new_model_id: model_id.0.to_string(),
-        success: true,
-        error_code: None,
-        required_agent_type: Some(required_agent_type.clone()),
-        current_agent_type: None,
-    });
     if agent.cfg.borrow().mode != config::AgentMode::Leader {
         agent.models_manager.set_current_model_id(model_id.clone());
         agent

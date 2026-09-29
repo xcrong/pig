@@ -21,29 +21,6 @@ use xai_grok_tools::{
     },
 };
 
-tokio::task_local! {
-    static FILE_EVENTS: std::cell::RefCell<Vec<Value>>;
-}
-
-pub(super) fn record_event<T: xai_grok_telemetry::TelemetryEvent>(event: &T) -> bool {
-    FILE_EVENTS
-        .try_with(|events| {
-            events
-                .borrow_mut()
-                .push(json!({"name": T::NAME, "payload": event}));
-        })
-        .is_ok()
-}
-
-async fn capture_events<F: std::future::Future>(future: F) -> (F::Output, Vec<Value>) {
-    FILE_EVENTS
-        .scope(std::cell::RefCell::new(Vec::new()), async {
-            let output = future.await;
-            (output, FILE_EVENTS.with(|events| events.take()))
-        })
-        .await
-}
-
 struct CountingFs {
     files: MockFs,
     reads: AtomicUsize,
@@ -854,11 +831,7 @@ async fn approval_preview_preserves_arguments_and_obeys_remaining_budget() {
             let (actor, _fs, remote, _gateway) = fixture(false).await;
             let arguments = json!({"body":"α".repeat(xai_grok_hooks::event::MAX_PAYLOAD_SIZE)});
             for remaining in [FILE_OPERATION_TIMEOUT, Duration::ZERO] {
-                let mut source = McpFileSource::start(
-                    PathBuf::from("/tmp/mcp-source.json"),
-                    xai_grok_telemetry::events::McpFileInputKind::Invocation,
-                    "grok-4.6".to_owned(),
-                );
+                let mut source = McpFileSource::start(PathBuf::from("/tmp/mcp-source.json"));
                 source.operation_remaining = remaining;
                 let preparation = McpFilePreparation::Resolved {
                     source,
@@ -904,65 +877,14 @@ async fn approval_preview_preserves_arguments_and_obeys_remaining_budget() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn snapshot_overflow_emits_once_on_the_session_task_with_measured_bytes() {
-    use xai_grok_telemetry::session_ctx::{TelemetryCtx, with_session_ctx};
-    let context = TelemetryCtx::new(
-        "mcp-overflow-session".to_owned(),
-        Arc::new(tokio::sync::Mutex::new(7)),
-    );
-    let (error, events) = capture_events(with_session_ctx(context, async {
-        let mut source = McpFileSource::start(
-            PathBuf::from("source"),
-            xai_grok_telemetry::events::McpFileInputKind::Arguments,
-            "grok-4.6".to_owned(),
-        );
-        source.bytes = 42;
-        let arguments = json!({"tool_name":"fixture__update","tool_input":{"body":"x".repeat(MAX_BATCH_SNAPSHOT_BYTES)}});
-        PreparedMcpFile::freeze(source, arguments).await.unwrap_err()
-    })).await;
+async fn snapshot_overflow_fails_with_measured_bytes() {
+    let mut source = McpFileSource::start(PathBuf::from("source"));
+    source.bytes = 42;
+    let arguments = json!({"tool_name":"fixture__update","tool_input":{"body":"x".repeat(MAX_BATCH_SNAPSHOT_BYTES)}});
+    let error = PreparedMcpFile::freeze(source, arguments).await.unwrap_err();
     assert_eq!(
         "MCP effective invocation exceeds the 32 MiB snapshot limit",
         error
-    );
-    let names: Vec<_> = events
-        .iter()
-        .map(|event| event.get("name").unwrap().as_str().unwrap())
-        .collect();
-    assert_eq!(
-        vec![
-            "mcp_file_input_used",
-            "mcp_file_input_limit_hit",
-            "mcp_file_input_completed"
-        ],
-        names
-    );
-    for event in &events {
-        assert_eq!(
-            Some(&json!("grok-4.6")),
-            event.pointer("/payload/model_id"),
-            "{event}"
-        );
-    }
-    let completion = events.last().unwrap();
-    assert_eq!(
-        Some(&json!("failed")),
-        completion.pointer("/payload/outcome")
-    );
-    assert_eq!(
-        Some(&json!(42)),
-        completion.pointer("/payload/source_bytes")
-    );
-    assert_eq!(
-        events.get(1).unwrap().pointer("/payload/observed_bytes"),
-        completion.pointer("/payload/snapshot_bytes")
-    );
-    assert!(
-        completion
-            .pointer("/payload/snapshot_bytes")
-            .unwrap()
-            .as_u64()
-            .unwrap()
-            > MAX_BATCH_SNAPSHOT_BYTES as u64
     );
 }
 
@@ -1050,9 +972,8 @@ async fn failed_preparations_preserve_order_and_known_byte_counts() {
                         json!({})
                     },
                 );
-                let (_, events) = capture_events(async {
-                    let result =
-                        prepare_call(&actor, call(json!({"file":"/tmp/mcp-source.json"}))).await;
+                let result =
+                    prepare_call(&actor, call(json!({"file":"/tmp/mcp-source.json"}))).await;
                     if stage.ends_with("budget") {
                         let prepared = result.unwrap();
                         let mut budget = McpFileBatchBudget {
@@ -1086,32 +1007,6 @@ async fn failed_preparations_preserve_order_and_known_byte_counts() {
                     }
                 })
                 .await;
-                let completed: Vec<_> = events
-                    .iter()
-                    .filter(|event| event.get("name") == Some(&json!("mcp_file_input_completed")))
-                    .collect();
-                assert_eq!(1, completed.len(), "{stage}");
-                let completion = completed.first().unwrap();
-                assert_eq!(
-                    Some(&json!("failed")),
-                    completion.pointer("/payload/outcome")
-                );
-                assert_eq!(
-                    Some(&json!(if matches!(stage, "read" | "source-deny") {
-                        0
-                    } else {
-                        document.len()
-                    })),
-                    completion.pointer("/payload/source_bytes")
-                );
-                assert_eq!(
-                    Some(&json!(if stage.ends_with("budget") {
-                        document.len()
-                    } else {
-                        0
-                    })),
-                    completion.pointer("/payload/snapshot_bytes")
-                );
                 assert!(remote.calls.lock().is_empty());
                 assert_eq!(
                     usize::from(stage != "source-deny"),

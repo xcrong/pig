@@ -225,41 +225,6 @@ fn ext_method_no_client(err: &acp::Error) -> bool {
         Some(xai_acp_lib::AcpChannelFailure::SendFailed)
     )
 }
-/// CONTENT-gated tool bodies for the external stream. Capture-time cap so
-/// multi-MB bodies are not retained; emit still drops them when CONTENT is off.
-fn external_tool_bodies(
-    result: &Result<ToolRunResult, xai_tool_runtime::ToolError>,
-) -> (Option<String>, Option<String>) {
-    match result {
-        Ok(tool_result) if tool_result.output.is_error() => {
-            let body = tool_result.output.to_prompt_format();
-            (
-                Some(xai_grok_telemetry::external::truncate::cap_bytes(
-                    &body,
-                    xai_grok_telemetry::external::truncate::MAX_CONTENT_BYTES,
-                )),
-                Some(xai_grok_telemetry::external::truncate::cap_bytes(
-                    &body,
-                    xai_grok_telemetry::external::truncate::MAX_TOOL_INPUT_JSON_BYTES,
-                )),
-            )
-        }
-        Ok(tool_result) => (
-            Some(xai_grok_telemetry::external::truncate::cap_bytes(
-                &tool_result.output.to_prompt_format(),
-                xai_grok_telemetry::external::truncate::MAX_CONTENT_BYTES,
-            )),
-            None,
-        ),
-        Err(e) => (
-            None,
-            Some(xai_grok_telemetry::external::truncate::cap_bytes(
-                &e.to_string(),
-                xai_grok_telemetry::external::truncate::MAX_TOOL_INPUT_JSON_BYTES,
-            )),
-        ),
-    }
-}
 /// Model-facing turn injected after a resumed plan is approved.
 const PLAN_APPROVED_IMPLEMENT_MESSAGE: &str =
     "The user approved the plan. Implement the plan in plan.md.";
@@ -878,7 +843,7 @@ impl SessionActor {
                     let outcome = tool_output_span_outcome(&result);
                     let display_path = display_cwd.as_deref().map(std::path::Path::new);
                     let summary = latest_slot.lock().snapshot();
-                    let (projection, success) = crate::session::telemetry::record_tool_execution(
+                    crate::session::telemetry::record_tool_execution(
                         tool_span_for_record,
                         crate::session::telemetry::ToolExecutionInput {
                             prepared: crate::session::telemetry::PreparedToolFacts {
@@ -905,21 +870,7 @@ impl SessionActor {
                             origin: Some(&origin),
                         },
                     );
-                    xai_grok_telemetry::unified_log::info(
-                        "shell.tool.exec_done",
-                        Some(session_id.as_ref()),
-                        Some(serde_json::json!({
-                            "tool_name": prepared.tool_name.as_str(),
-                            "tool_call_id": prepared.call_id.as_str(),
-                            "elapsed_ms": duration_ms,
-                            "success": success,
-                            "outcome": crate::session::telemetry::coarse_span_outcome(
-                                outcome,
-                                &projection.source,
-                            ),
-                        })),
-                    );
-                    (idx, result, duration_ms, projection)
+                    (idx, result, duration_ms)
                 }
             })
             .collect();
@@ -934,7 +885,6 @@ impl SessionActor {
             usize,
             Result<ToolRunResult, xai_tool_runtime::ToolError>,
             u64,
-            crate::session::telemetry::ToolCallProjection,
         )>();
         let drainer = tokio::spawn(
             async move {
@@ -947,7 +897,7 @@ impl SessionActor {
             .in_current_span(),
         );
         let _drainer_guard = crate::util::AbortOnDrop(drainer);
-        while let Some((idx, result, duration_ms, projection)) = dispatch_rx.recv().await {
+        while let Some((idx, result, duration_ms)) = dispatch_rx.recv().await {
             let Some(prepared) = approved_slots.get_mut(idx).and_then(Option::take) else {
                 tracing::error!(
                     batch_idx = idx,
@@ -981,21 +931,8 @@ impl SessionActor {
                 Err(_) => None,
             };
             let tool_failed = match &result {
-                Ok(tool_result) => {
-                    crate::session::telemetry::record_completed_tool_output(
-                        &tool_result.output,
-                        prepared.authored_arguments(),
-                        duration_ms,
-                    );
-                    tool_result.output.is_error()
-                }
+                Ok(tool_result) => tool_result.output.is_error(),
                 Err(_) => true,
-            };
-            let (ext_tool_output, ext_error_message) = if xai_grok_telemetry::external::is_active()
-            {
-                external_tool_bodies(&result)
-            } else {
-                (None, None)
             };
             let tool_loop = match result {
                 Ok(tool_result) => {
@@ -1133,11 +1070,7 @@ impl SessionActor {
                     crate::session::events::ToolOutcome::InvalidTool
                 }
             };
-            if let Some(file) = &prepared.mcp_file {
-                file.complete(tool_outcome.ran_successfully());
-            }
             let rewriting_hook = prepared.rewriting_hook.clone();
-            let hook_rewrote = rewriting_hook.is_some();
             self.signals_handle().record_tool_duration(
                 &prepared.tool_name,
                 &tool_call_id,
@@ -1161,49 +1094,6 @@ impl SessionActor {
                     },
                 )
                 .await;
-            let (ext_file_path, ext_parameters) = if xai_grok_telemetry::external::is_active() {
-                let parsed: Option<serde_json::Value> =
-                    serde_json::from_str(&prepared.raw_arguments).ok();
-                let file_path = parsed.as_ref().and_then(|v| {
-                    ["file_path", "target_file", "filePath", "path"]
-                        .iter()
-                        .find_map(|k| v.get(*k).and_then(|p| p.as_str()))
-                        .map(str::to_owned)
-                });
-                (file_path, parsed)
-            } else {
-                (None, None)
-            };
-            xai_grok_telemetry::session_ctx::log_event(crate::session::telemetry::completed_event(
-                crate::session::telemetry::CompletedTool {
-                    tool_name: &prepared.tool_name,
-                    projection: &projection,
-                    outcome: tool_outcome,
-                    hook_rewrote,
-                    duration_ms,
-                    tool_result_size_bytes,
-                    file_path: ext_file_path,
-                    parameters: ext_parameters,
-                    tool_use_id: xai_grok_telemetry::external::is_active()
-                        .then(|| prepared.call_id.clone()),
-                    tool_output: ext_tool_output,
-                    error_message: ext_error_message,
-                },
-            ));
-            if let Some(artifact) = compaction_artifact_read(prepared.authored_arguments()) {
-                xai_grok_telemetry::event_span!(
-                    "compaction.segment_read",
-                    session_id = %self.session_info.id.0,
-                    tool_name = %prepared.tool_name,
-                    artifact = %artifact,
-                    // i64: redact drops u64 (serializes as string)
-                    // None means the field is omitted
-                    segment_index = artifact.segment_index().map(|i| i as i64),
-                    success = tool_outcome.ran_successfully(),
-                    duration_ms = duration_ms as i64,
-                    tool_result_size_bytes = tool_result_size_bytes.map_or(0, |n| n as i64),
-                );
-            }
             match &tool_loop {
                 ToolLoop::PermissionReject { .. }
                 | ToolLoop::Cancelled
@@ -1235,12 +1125,6 @@ impl SessionActor {
             let pre_result =
                 xai_grok_hooks::dispatcher::dispatch_pre_tool_use(&registry, &envelope, &ctx).await;
             self.send_hook_execution(&batch, &pre_result.results).await;
-            self.emit_hook_executed_telemetry(
-                "pre_tool_use",
-                Some(resolved_tool_name),
-                &pre_result.results,
-            )
-            .await;
             match pre_result.decision {
                 HookDecision::Deny { reason, hook_name } => {
                     return Ok(Err(self
@@ -1528,7 +1412,7 @@ impl SessionActor {
             && input.source_path().is_some()
         {
             let (effective, arguments, source) = match self
-                .resolve_mcp_file(&call, &tool_call_id, input, model_id_str)
+                .resolve_mcp_file(&call, &tool_call_id, input)
                 .await?
             {
                 Ok(loaded) => loaded,
@@ -1632,15 +1516,6 @@ impl SessionActor {
         let access_kind = access_kind_for_resolved_tool(&resolved_tool_name, &tool_input);
         let plan_gate = plan_mode_edit_gate(&self.plan_mode.lock(), &tool_input, &access_kind);
         if plan_gate != PlanEditGate::Allow {
-            xai_grok_telemetry::event_span!(
-                "tool.decision",
-                tool_name = %call.function.name,
-                tool_use_id = %call.id,
-                model_id = %model_id_str,
-                decision = "deny",
-                source = "plan_mode",
-                wait_ms = 0_i64,
-            );
             let msg = self.plan_mode_edit_rejected_message().await;
             self.handle_tool_not_executed(&call.id, &tool_call_id, msg)
                 .await?;
@@ -1664,15 +1539,6 @@ impl SessionActor {
             _ => false,
         };
         if plan_file_auto_approve {
-            xai_grok_telemetry::event_span!(
-                "tool.decision",
-                tool_name = %call.function.name,
-                tool_use_id = %call.id,
-                model_id = %model_id_str,
-                decision = "allow",
-                source = "config",
-                wait_ms = 0_i64,
-            );
         }
         if !plan_file_auto_approve {
             let (perm_title, perm_kind, perm_raw_input) = tool_call_display
@@ -1687,59 +1553,6 @@ impl SessionActor {
                     .raw_input(perm_raw_input),
             )
             .meta(self.stamp_tool_meta(None, &call.function.name, Some(&tool_input)));
-            let (telemetry_access_kind, _access_detail) = match &access_kind {
-                xai_grok_workspace::permission::AccessKind::Read(p) => (
-                    xai_grok_telemetry::events::AccessKind::Read,
-                    p.clone().unwrap_or_default(),
-                ),
-                xai_grok_workspace::permission::AccessKind::Edit(p) => {
-                    (xai_grok_telemetry::events::AccessKind::Edit, p.clone())
-                }
-                xai_grok_workspace::permission::AccessKind::Bash(cmd) => {
-                    (xai_grok_telemetry::events::AccessKind::Bash, cmd.clone())
-                }
-                xai_grok_workspace::permission::AccessKind::Grep { path, glob } => (
-                    xai_grok_telemetry::events::AccessKind::Grep,
-                    path.clone().or_else(|| glob.clone()).unwrap_or_default(),
-                ),
-                xai_grok_workspace::permission::AccessKind::MCPTool { name, .. } => {
-                    (xai_grok_telemetry::events::AccessKind::Mcp, name.clone())
-                }
-                xai_grok_workspace::permission::AccessKind::WebFetch(u) => {
-                    (xai_grok_telemetry::events::AccessKind::Web, u.clone())
-                }
-                xai_grok_workspace::permission::AccessKind::WebSearch(q) => {
-                    (xai_grok_telemetry::events::AccessKind::Web, q.clone())
-                }
-                xai_grok_workspace::permission::AccessKind::AgentMessage { subagent_id } => (
-                    xai_grok_telemetry::events::AccessKind::AgentMessage,
-                    subagent_id.clone(),
-                ),
-                _ => (xai_grok_telemetry::events::AccessKind::Other, String::new()),
-            };
-            let canonical_permission_tool_name =
-                crate::session::telemetry::canonical_permission_tool_name(&access_kind);
-            let subagent_session_id = if self.startup_hints.is_subagent {
-                Some(self.session_id_string())
-            } else {
-                None
-            };
-            let perm_mode = if self.permissions.is_yolo_mode() {
-                xai_grok_telemetry::enums::PermissionMode::AlwaysApprove
-            } else if self.permissions.is_auto_mode() {
-                xai_grok_telemetry::enums::PermissionMode::Auto
-            } else {
-                xai_grok_telemetry::enums::PermissionMode::Ask
-            };
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::PermissionPrompted {
-                    tool_name: canonical_permission_tool_name.clone(),
-                    access_kind: telemetry_access_kind,
-                    permission_mode: perm_mode,
-                    subagent_session_id: subagent_session_id.clone(),
-                    subagent_type: None,
-                },
-            );
             let perm_start = self.events.permission_requested(&call.function.name);
             debug_assert!(
                 !self.session_info.id.0.is_empty(),
@@ -1753,8 +1566,9 @@ impl SessionActor {
                     .map(|cwd| std::path::PathBuf::from(cwd.as_str())),
             });
             let perm_wait_start = std::time::Instant::now();
-            let perm_wait_span = xai_grok_telemetry::region::Region::from_span(
-                tracing::info_span!("permission.wait", wait_ms = tracing::field::Empty),
+            let _perm_wait_span = tracing::info_span!(
+                "permission.wait",
+                wait_ms = tracing::field::Empty,
             );
             let resolution = {
                 let _pending_guard =
@@ -1774,11 +1588,7 @@ impl SessionActor {
                     })
                     .await
             };
-            perm_wait_span
-                .span()
-                .record("wait_ms", perm_wait_start.elapsed().as_millis() as i64);
-            perm_wait_span.close();
-            let manager_event = resolution.event;
+            _perm_wait_span.record("wait_ms", perm_wait_start.elapsed().as_millis() as i64);
             let decision = resolution.decision;
             self.events.permission_resolved(
                 &call.function.name,
@@ -1798,46 +1608,6 @@ impl SessionActor {
                 },
                 perm_start,
             );
-            let shell_wait_ms = perm_start.elapsed().as_millis() as u64;
-            let decision_outcome = crate::session::telemetry::permission_outcome(&decision);
-            let resolved = crate::session::telemetry::resolved_decision_telemetry(
-                manager_event.as_ref(),
-                &decision,
-                perm_mode,
-                shell_wait_ms,
-                self.permissions.is_yolo_mode(),
-            );
-            xai_grok_telemetry::event_span!(
-                "tool.decision",
-                tool_name = %call.function.name,
-                tool_use_id = %call.id,
-                model_id = %model_id_str,
-                decision = decision_outcome.as_ref(),
-                source = resolved.source.as_deref().unwrap_or(""),
-                wait_ms = resolved.wait_ms as i64,
-            );
-            xai_grok_telemetry::session_ctx::log_event({
-                let payload = crate::session::telemetry::permission_decision_payload(
-                    canonical_permission_tool_name,
-                    telemetry_access_kind,
-                    &decision,
-                    subagent_session_id.clone(),
-                    manager_event.as_ref(),
-                    resolved,
-                );
-                let tool_input = if xai_grok_telemetry::external::is_active() {
-                    xai_grok_telemetry::events::ExternalToolInput {
-                        parameters: Some(raw_input.clone()),
-                        tool_use_id: Some(call.id.clone()),
-                    }
-                } else {
-                    xai_grok_telemetry::events::ExternalToolInput::default()
-                };
-                xai_grok_telemetry::events::PermissionDecisionRecord {
-                    payload,
-                    tool_input,
-                }
-            });
             match decision {
                 Decision::PolicyDeny(ref reason) | Decision::Reject(ref reason) => {
                     let is_policy_deny = matches!(&decision, Decision::PolicyDeny(_));
@@ -2056,7 +1826,7 @@ impl SessionActor {
             let toolset = self.agent.borrow().tool_bridge().toolset();
             crate::session::telemetry::tool_identity(&toolset, &call.function.name)
         };
-        let invocation_id = xai_grok_telemetry::events::InvocationId::generate();
+        let invocation_id = crate::session::telemetry::InvocationId::generate();
         let prepared = PreparedToolCall {
             call_id: call.id.clone(),
             tool_call_id,
@@ -2360,20 +2130,6 @@ impl SessionActor {
                 vec![],
             ),
             ToolInput::Skill(skill) => {
-                xai_grok_telemetry::session_ctx::log_event(
-                    xai_grok_telemetry::events::SkillDispatched {
-                        skill_name: skill.skill.clone(),
-                        plugin_source: None,
-                        trigger: xai_grok_telemetry::events::SkillTrigger::SkillTool,
-                        skill_source: None,
-                        skill_origin: None,
-                    },
-                );
-                xai_grok_telemetry::event_span!(
-                    "skill.activated",
-                    skill_name = %skill.skill,
-                    invocation_trigger = "skill_tool",
-                );
                 (
                     format!("Skill: {}", skill.skill),
                     acp::ToolKind::Other,
@@ -2664,19 +2420,6 @@ impl SessionActor {
     fn emit_skill_md_read(&self, skill: xai_grok_tools::implementations::skills::types::SkillInfo) {
         let skill_source =
             crate::session::telemetry::skill_source(skill.scope, skill.plugin_name.as_deref());
-        xai_grok_telemetry::event_span!(
-            "skill.activated",
-            skill_name = %skill.name,
-            invocation_trigger = "skill_md_read",
-            skill_source = skill_source,
-        );
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::SkillDispatched {
-            skill_name: skill.name,
-            plugin_source: skill.plugin_name,
-            trigger: xai_grok_telemetry::events::SkillTrigger::SkillMdRead,
-            skill_source: Some(skill_source.to_owned()),
-            skill_origin: skill.origin,
-        });
     }
     pub(super) fn make_pre_tool_use_envelope(
         &self,
@@ -2799,11 +2542,11 @@ impl SessionActor {
             }
         }
     }
-    /// Record git/PR ops from a successful tool result into session signals (`turn_result.json`) and telemetry.
+    /// Record git/PR ops from a successful tool result into session signals (`turn_result.json`).
     /// Detection runs here at the shell's tool-result chokepoint over the command and prompt output.
     /// Nothing is wired through the tool's output schema.
     fn record_git_pr_signals(&self, effective_tool_name: &str, result: &ToolRunResult) {
-        use xai_grok_telemetry::enums::PrCreationSource;
+        use crate::session::signals::PrCreationSource;
         use xai_grok_tools::util::git_detect;
         match &result.output {
             xai_grok_tools::types::output::ToolOutput::Bash(b) if b.exit_code == 0 => {
@@ -2818,9 +2561,6 @@ impl SessionActor {
                 }
                 if ops.pr_merged {
                     self.signals_handle().record_pr_merged();
-                    xai_grok_telemetry::session_ctx::log_event(
-                        xai_grok_telemetry::events::PrMerged {},
-                    );
                 }
             }
             xai_grok_tools::types::output::ToolOutput::MCP(m)
@@ -2838,7 +2578,7 @@ impl SessionActor {
     fn record_pr_created(
         &self,
         pr: xai_grok_tools::util::git_detect::PrRef,
-        source: xai_grok_telemetry::enums::PrCreationSource,
+        source: crate::session::signals::PrCreationSource,
     ) {
         self.signals_handle()
             .record_pr_created(crate::session::signals::PrCreatedSignal {

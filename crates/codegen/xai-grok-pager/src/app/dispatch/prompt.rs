@@ -25,7 +25,6 @@ use crate::scrollback::block::RenderBlock;
 use crate::scrollback::blocks::{MemoryCommandKind, SessionEvent};
 use crate::slash::command::DoctorRequest;
 use agent_client_protocol as acp;
-use xai_grok_telemetry::session_ctx::log_event;
 
 /// Shared by every submit guard that refuses while the session reconnects.
 pub(super) const RECONNECTING_NOTICE: &str = "Reconnecting, please wait...";
@@ -414,10 +413,6 @@ pub(super) fn dispatch_show_undo_tip(app: &mut AppView) -> Vec<Effect> {
         crate::tips::clear_detector::undo_tip(),
         &mut app.tip_seen_counts,
     ) {
-        log_event(xai_grok_telemetry::events::ContextualTip {
-            tip: xai_grok_telemetry::events::ContextualTipKind::Undo,
-            action: xai_grok_telemetry::events::ContextualTipAction::Shown,
-        });
     }
     vec![]
 }
@@ -440,10 +435,6 @@ pub(in crate::app) fn show_small_screen_tip(app: &mut AppView) {
         crate::tips::small_screen::small_screen_tip(),
         &mut app.tip_seen_counts,
     ) {
-        log_event(xai_grok_telemetry::events::ContextualTip {
-            tip: xai_grok_telemetry::events::ContextualTipKind::SmallScreen,
-            action: xai_grok_telemetry::events::ContextualTipAction::Shown,
-        });
     }
 }
 
@@ -462,10 +453,6 @@ pub(in crate::app) fn show_ssh_wrap_tip(app: &mut AppView) {
         crate::tips::ssh_wrap::ssh_wrap_tip(),
         &mut app.tip_seen_counts,
     ) {
-        log_event(xai_grok_telemetry::events::ContextualTip {
-            tip: xai_grok_telemetry::events::ContextualTipKind::SshWrap,
-            action: xai_grok_telemetry::events::ContextualTipAction::Shown,
-        });
     }
 }
 
@@ -485,10 +472,6 @@ pub(super) fn dispatch_show_plan_nudge(app: &mut AppView) -> Vec<Effect> {
         crate::tips::plan_nudge::plan_nudge_tip(),
         &mut app.tip_seen_counts,
     ) {
-        log_event(xai_grok_telemetry::events::ContextualTip {
-            tip: xai_grok_telemetry::events::ContextualTipKind::PlanMode,
-            action: xai_grok_telemetry::events::ContextualTipAction::Shown,
-        });
     }
     vec![]
 }
@@ -510,10 +493,6 @@ pub(super) fn dispatch_show_word_select_tip(app: &mut AppView) -> Vec<Effect> {
         crate::tips::word_select::word_select_tip(),
         &mut app.tip_seen_counts,
     ) {
-        log_event(xai_grok_telemetry::events::ContextualTip {
-            tip: xai_grok_telemetry::events::ContextualTipKind::WordSelect,
-            action: xai_grok_telemetry::events::ContextualTipAction::Shown,
-        });
     }
     // Snapshot the prompt as of this double-click (also on a same-key TTL refresh: a new double-click is a new moment)
     // Any later divergence (typed, pasted, dropped) refuses the chord and retires the tip
@@ -539,10 +518,6 @@ pub(in crate::app) fn present_export_copy_tip(
     }
     let shown = agent.show_ephemeral_tip(crate::tips::export_copy::export_copy_tip(), seen_counts);
     if shown {
-        log_event(xai_grok_telemetry::events::ContextualTip {
-            tip: xai_grok_telemetry::events::ContextualTipKind::ExportCopy,
-            action: xai_grok_telemetry::events::ContextualTipAction::Shown,
-        });
     }
     shown
 }
@@ -561,10 +536,6 @@ pub(super) fn dispatch_accept_word_select_tip(app: &mut AppView) -> Vec<Effect> 
         .ephemeral_tip
         .clear(crate::tips::word_select::WORD_SELECT_TIP_KEY);
     agent.word_select_tip_prompt_snapshot = None;
-    log_event(xai_grok_telemetry::events::ContextualTip {
-        tip: xai_grok_telemetry::events::ContextualTipKind::WordSelect,
-        action: xai_grok_telemetry::events::ContextualTipAction::Accepted,
-    });
     super::settings::setters::set_keep_text_selection(
         app,
         crate::appearance::TextSelection::WordSelect,
@@ -594,10 +565,6 @@ fn maybe_show_send_now_tip(app: &mut AppView) {
         crate::tips::send_now::send_now_tip(),
         &mut app.tip_seen_counts,
     ) {
-        log_event(xai_grok_telemetry::events::ContextualTip {
-            tip: xai_grok_telemetry::events::ContextualTipKind::SendNow,
-            action: xai_grok_telemetry::events::ContextualTipAction::Shown,
-        });
     }
 }
 
@@ -852,8 +819,6 @@ pub(super) fn dispatch_send_prompt_submission(
                     (is_builtin, command)
                 };
                 {
-                    use xai_grok_telemetry::events::{PagerCommandSource, PagerSlashCommand};
-                    use xai_grok_telemetry::session_ctx::log_event;
                     let source = if is_builtin {
                         PagerCommandSource::Builtin
                     } else {

@@ -636,14 +636,10 @@ impl SessionActor {
     ) -> Option<String> {
         use crate::session::helpers::prompt_suggest;
 
-        use xai_grok_telemetry::events::{PromptSuggestion, PromptSuggestionAction as PsAction};
-
         if !crate::util::config::prompt_suggestions_enabled_from_disk() {
             tracing::debug!("prompt suggest: feature disabled; skipping request");
             return None;
         }
-
-        let session_id = self.session_info.id.to_string();
 
         let sampling = crate::util::config::resolve_prompt_suggest_config_from_disk();
         let (visible_output_tokens, temperature, configured_reasoning_effort) =
@@ -668,15 +664,6 @@ impl SessionActor {
                 reasoning_is_off,
                 "prompt suggest: effective model not in catalog; skipping request"
             );
-            xai_grok_telemetry::session_ctx::log_event(PromptSuggestion {
-                action: PsAction::SkippedCatalog,
-                chars: 0,
-                words: 0,
-                model: None,
-                latency_ms: None,
-                request_id: None,
-                session_id: Some(session_id),
-            });
             return None;
         };
 
@@ -758,49 +745,21 @@ impl SessionActor {
             x_grok_conv_id: Some(format!("promptsuggest-{}", uuid::Uuid::new_v4())),
             x_grok_req_id: Some(request_id.clone()),
             x_grok_session_id: Some(self.session_info.id.to_string()),
-            x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
             ..Default::default()
-        };
-
-        let started = std::time::Instant::now();
-        let log_fetch = |action, chars, words, latency_ms| {
-            xai_grok_telemetry::session_ctx::log_event(PromptSuggestion {
-                action,
-                chars,
-                words,
-                model: Some(request_model.clone()),
-                latency_ms,
-                request_id: Some(request_id.clone()),
-                session_id: Some(session_id.clone()),
-            });
         };
 
         let response = match sampling_client.conversation_collect(request).await {
             Ok(r) => r,
             Err(e) => {
                 tracing::debug!(error = %e, "prompt suggest inference failed");
-                log_fetch(
-                    PsAction::FetchFailed,
-                    0,
-                    0,
-                    Some(started.elapsed().as_millis() as u64),
-                );
                 return None;
             }
         };
-        let latency_ms = Some(started.elapsed().as_millis() as u64);
 
         let raw = response.assistant_text();
         let suggestion = match prompt_suggest::sanitize_suggestion(&raw) {
-            None => {
-                log_fetch(PsAction::FetchedEmpty, 0, 0, latency_ms);
-                None
-            }
-            Some(s) => {
-                let (chars, words) = prompt_suggest::suggestion_size(&s);
-                log_fetch(PsAction::Fetched, chars, words, latency_ms);
-                Some(s)
-            }
+            None => None,
+            Some(s) => Some(s),
         };
         tracing::debug!(
             raw_preview = %xai_grok_tools::util::truncate_str(raw.trim(), 60),

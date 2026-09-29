@@ -168,7 +168,7 @@ pub(crate) struct SessionMemory {
     /// queue only keeps the sanitized error text, so a failure inherited from
     /// an earlier process has no class here.
     pub last_capture_failure:
-        RefCell<Option<xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass>>,
+        RefCell<Option<crate::session::memory_observation::V2FailureClass>>,
     /// The compaction count at which the last flush ran (once-per-cycle guard).
     pub last_flush_compaction: AtomicU64,
     pub flush_count: AtomicU64,
@@ -323,14 +323,14 @@ impl SessionMemory {
 
     pub(crate) fn record_capture_failure(
         &self,
-        failure_class: Option<xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass>,
+        failure_class: Option<crate::session::memory_observation::V2FailureClass>,
     ) {
         self.last_capture_failure.replace(failure_class);
     }
 
     pub(crate) fn last_capture_failure(
         &self,
-    ) -> Option<xai_grok_telemetry::memory_telemetry::MemoryV2FailureClass> {
+    ) -> Option<crate::session::memory_observation::V2FailureClass> {
         *self.last_capture_failure.borrow()
     }
 
@@ -371,7 +371,7 @@ impl SessionMemory {
 
     pub(crate) fn record_capture_usage(
         &self,
-        usage: &xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
+        usage: &crate::session::memory_observation::V2ModelUsage,
     ) {
         add_model_usage(
             usage,
@@ -383,7 +383,7 @@ impl SessionMemory {
 
     pub(crate) fn record_dream_usage(
         &self,
-        usage: &xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
+        usage: &crate::session::memory_observation::V2ModelUsage,
     ) {
         add_model_usage(
             usage,
@@ -462,7 +462,7 @@ impl SessionMemory {
                     Ok(n) => total_removed += n,
                     Err(e) => {
                         tracing::warn!(
-                            target: xai_grok_telemetry::memory_log::TARGET,
+                            target: crate::session::memory::MEMORY_LOG_TARGET,
                             path = %path.display(),
                             error = %e,
                             "DREAM_CLEANUP: failed to remove chunks from index"
@@ -472,7 +472,7 @@ impl SessionMemory {
             }
             if total_removed > 0 {
                 tracing::info!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     chunks_removed = total_removed,
                     files = paths.len(),
                     "DREAM_CLEANUP: removed stale chunks from index"
@@ -511,7 +511,7 @@ impl SessionMemory {
 }
 
 fn add_model_usage(
-    usage: &xai_grok_telemetry::memory_telemetry::MemoryV2ModelUsage,
+    usage: &crate::session::memory_observation::V2ModelUsage,
     prompt_tokens: &AtomicU64,
     completion_tokens: &AtomicU64,
     cost_usd_ticks: &AtomicU64,

@@ -43,6 +43,31 @@ pub use kitty_keyboard::{
 pub use pop_fence::{PopFence, PopFenceOutcome};
 pub use term_version::{TermVersion, TermVersionSource};
 
+/// Flat snapshot of terminal details for local logs.
+#[derive(Debug, Clone)]
+pub struct TerminalTelemetry {
+    pub brand: String,
+    pub multiplexer: String,
+    pub is_ssh: bool,
+    pub is_byobu: bool,
+    pub term_var: String,
+    pub tmux_version: String,
+    pub xtversion: String,
+    pub term_version: String,
+    pub term_version_source: String,
+    pub kitty_event_types_withheld: bool,
+    pub host_os: String,
+    pub display_server: String,
+    pub modifier_cmd_fate: String,
+    pub modifier_opt_fate: String,
+    pub enter_modifier_fate: String,
+    pub hyperlink_osc8: String,
+    pub hyperlink_skip_reason: String,
+    pub clipboard_route: String,
+    pub clipboard_native_tool: String,
+    pub clipboard_data_control: String,
+}
+
 #[cfg(test)]
 mod test;
 
@@ -538,14 +563,14 @@ impl TerminalContext {
         term_version::best_term_version(da2::detected(), self.env_term_version.as_ref())
     }
 
-    /// Extract a flat snapshot of terminal details for telemetry.
-    pub fn telemetry_snapshot(&self) -> xai_grok_telemetry::events::TerminalTelemetry {
+    /// Extract a flat snapshot of terminal details for local logs.
+    pub fn telemetry_snapshot(&self) -> TerminalTelemetry {
         let os = crate::host::HostOs::current();
         let server = crate::host::DisplayServer::current();
         let kb = self.keyboard_capabilities();
         let route = crate::clipboard::clipboard_route();
         let (term_version, term_version_source) = self.term_version();
-        xai_grok_telemetry::events::TerminalTelemetry {
+        TerminalTelemetry {
             brand: self.brand.to_string(),
             multiplexer: self.multiplexer.to_string(),
             is_ssh: self.is_ssh,

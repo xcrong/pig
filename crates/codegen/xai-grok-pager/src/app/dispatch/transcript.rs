@@ -7,7 +7,6 @@ use crate::app::app_view::{ActiveView, AppView};
 use crate::scrollback::block::{BlockContent, RenderBlock};
 use crate::scrollback::blocks::ToolCallBlock;
 use agent_client_protocol as acp;
-use xai_grok_telemetry::session_ctx::log_event;
 
 /// Copy the selected block's content to the system clipboard.
 ///
@@ -490,10 +489,6 @@ pub(super) fn dispatch_open_extensions_modal(
     let mut modal = ExtensionsModalState::new(tab);
     modal.session_team_id = app.team_id.clone();
     agent.extensions_modal = Some(modal);
-    log_event(xai_grok_telemetry::events::ExtensionsModalOpened {
-        trigger,
-        tab: tab.telemetry_tab(),
-    });
 
     let Some(session_id) = agent.session.session_id.clone() else {
         // Tabs default to Loading; the fetch fires on SessionCreated.

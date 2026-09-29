@@ -6,7 +6,6 @@ use crate::model::{GrokAuth, UserInfo, lookup_auth};
 use crate::storage::{read_auth_json, write_auth_json};
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
-use xai_grok_telemetry::unified_log::LogLevel;
 /// Timeout for the `/user` fetch, shared by the inline (login) and background paths.
 const USER_FETCH_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 /// Logs `auth update enrichment dropped` if the task is cancelled before it finishes.
@@ -25,12 +24,9 @@ impl Drop for EnrichmentExitGuard {
         if !self.armed {
             return;
         }
-        xai_grok_telemetry::unified_log::warn(
-            "auth update enrichment dropped",
-            None,
-            Some(serde_json::json!({
-                "elapsed_ms": self.started.elapsed().as_millis() as u64,
-            })),
+        tracing::warn!(
+            elapsed_ms = self.started.elapsed().as_millis() as u64,
+            "auth update enrichment dropped"
         );
     }
 }
@@ -43,26 +39,6 @@ pub(super) fn spawn(manager: Arc<AuthManager>, auth: GrokAuth) {
         run_user_info_enrichment(&manager, auth).await;
         exit_guard.disarm();
     });
-}
-#[cfg(test)]
-tokio::task_local! {
-    pub(super) static TEST_LOG_HOOK: Arc<dyn Fn() + Send + Sync>;
-}
-/// `unified_log` writes under a global writer mutex and may trim the file, so the write leaves the executor; only the owned entry moves.
-/// A failed write task is reported through `tracing` and never reaches the auth result. The write still takes that global mutex: this keeps these sites off the session thread, it does not make the sink non-blocking.
-async fn log_offloaded(lvl: LogLevel, msg: String, ctx: serde_json::Value) {
-    #[cfg(test)]
-    let hook = TEST_LOG_HOOK.try_with(Arc::clone).ok();
-    let write = tokio::task::spawn_blocking(move || {
-        #[cfg(test)]
-        if let Some(hook) = hook {
-            hook();
-        }
-        xai_grok_telemetry::unified_log::emit(lvl, &msg, None, Some(ctx));
-    });
-    if let Err(e) = write.await {
-        tracing::warn!(error = %e, "unified_log write task failed");
-    }
 }
 async fn fetch_user_info(manager: &AuthManager, key: &str, log_label: &str) -> Option<UserInfo> {
     let user_url = format!("{}/user", manager.proxy_base_url);
@@ -85,55 +61,35 @@ async fn fetch_user_info(manager: &AuthManager, key: &str, log_label: &str) -> O
         Ok(resp) if resp.status().is_success() => match resp.json::<UserInfo>().await {
             Ok(ui) if !ui.user_id.is_empty() => Some(ui),
             Ok(_) => {
-                log_offloaded(
-                    LogLevel::Warn,
-                    format!("{log_label} skipped"),
-                    serde_json::json!({
+                tracing::warn!(enrichment_ctx = %serde_json::json!({
                         "reason": "empty_user_id",
                         "elapsed_ms": started.elapsed().as_millis() as u64,
-                    }),
-                )
-                .await;
+                    }), "{log_label} skipped");
                 None
             }
             Err(e) => {
-                log_offloaded(
-                    LogLevel::Warn,
-                    format!("{log_label} failed"),
-                    serde_json::json!({
+                tracing::warn!(enrichment_ctx = %serde_json::json!({
                         "reason": "parse",
                         "error": e.to_string(),
                         "elapsed_ms": started.elapsed().as_millis() as u64,
-                    }),
-                )
-                .await;
+                    }), "{log_label} failed");
                 None
             }
         },
         Ok(resp) => {
-            log_offloaded(
-                LogLevel::Warn,
-                format!("{log_label} failed"),
-                serde_json::json!({
+            tracing::warn!(enrichment_ctx = %serde_json::json!({
                     "reason": "http_status",
                     "http_status": resp.status().as_u16(),
                     "elapsed_ms": started.elapsed().as_millis() as u64,
-                }),
-            )
-            .await;
+                }), "{log_label} failed");
             None
         }
         Err(e) => {
-            log_offloaded(
-                LogLevel::Warn,
-                format!("{log_label} failed"),
-                serde_json::json!({
+            tracing::warn!(enrichment_ctx = %serde_json::json!({
                     "reason": if e.is_timeout() { "timeout" } else { "transport" },
                     "error": e.to_string(),
                     "elapsed_ms": started.elapsed().as_millis() as u64,
-                }),
-            )
-            .await;
+                }), "{log_label} failed");
             None
         }
     }
@@ -158,71 +114,24 @@ async fn run_user_info_enrichment(manager: &AuthManager, auth: GrokAuth) {
         .into_guard();
     let lock_wait_ms = lock_started.elapsed().as_millis() as u64;
     let Some(_lock_guard) = lock_guard else {
-        xai_grok_telemetry::unified_log::warn(
-            "auth update enrichment skipped",
-            None,
-            Some(serde_json::json!({
-                "reason": "lock_timeout",
-                "lock_wait_ms": lock_wait_ms,
-            })),
-        );
         return;
     };
     let Ok(mut map) = read_auth_json(&manager.path) else {
-        xai_grok_telemetry::unified_log::warn(
-            "auth update enrichment skipped",
-            None,
-            Some(serde_json::json!({ "reason": "read_disk_failed" })),
-        );
         return;
     };
     let Some(mut disk) = lookup_auth(&map, &manager.scope) else {
-        xai_grok_telemetry::unified_log::info(
-            "auth update enrichment skipped",
-            None,
-            Some(serde_json::json!({ "reason": "no_disk_auth" })),
-        );
         return;
     };
     if disk.key != auth.key || disk.refresh_token != auth.refresh_token {
-        xai_grok_telemetry::unified_log::info(
-            "auth update enrichment skipped",
-            None,
-            Some(serde_json::json!({
-                "reason": "sibling_rotated",
-                "written_key_prefix": xai_grok_auth::bearer_suffix(&auth.key),
-                "disk_key_prefix": xai_grok_auth::bearer_suffix(&disk.key),
-            })),
-        );
         return;
     }
     apply_user_info_enrichment(&mut disk, user_info);
     map.insert(manager.scope.clone(), disk.clone());
     let write_started = std::time::Instant::now();
     if let Err(e) = write_auth_json(&manager.path, &map) {
-        xai_grok_telemetry::unified_log::error(
-            "auth update enrichment write failed",
-            None,
-            Some(serde_json::json!({
-                "error": e.to_string(),
-                "user_ms": user_elapsed_ms,
-                "lock_wait_ms": lock_wait_ms,
-                "write_ms": write_started.elapsed().as_millis() as u64,
-            })),
-        );
         return;
     }
     manager.with_inner_write(|inner| *inner = Some(disk));
-    xai_grok_telemetry::unified_log::info(
-        "auth update enrichment done",
-        None,
-        Some(serde_json::json!({
-            "user_ms": user_elapsed_ms,
-            "lock_wait_ms": lock_wait_ms,
-            "write_ms": write_started.elapsed().as_millis() as u64,
-            "total_ms": started.elapsed().as_millis() as u64,
-        })),
-    );
 }
 /// Keyed on account and principal rather than on `auth.key`, since a token refresh mid-GET rotates the bearer; merged only while still unresolved, since that refresh's own enrichment is newer. A same-identity caller hears the live value; another identity hears `None`.
 /// Not written to disk and not via [`apply_user_info_enrichment`]: either would let a response delayed past a privacy write (which takes no file lock) put the older `coding_data_retention_opt_out` back.
@@ -247,12 +156,7 @@ pub(super) async fn hydrate_can_administer_team(
         }
         _ => None,
     });
-    log_offloaded(
-        LogLevel::Info,
-        "auth capability hydration done".to_owned(),
-        serde_json::json!({ "can_administer_team": value, "merged": merged }),
-    )
-    .await;
+    tracing::info!(enrichment_ctx = %serde_json::json!({ "can_administer_team": value, "merged": merged }), "auth capability hydration done");
     manager.with_inner_read(|inner| match inner {
         Some(live) if same_account(live) => live.can_administer_team,
         _ => None,

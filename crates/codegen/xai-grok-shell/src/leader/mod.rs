@@ -544,16 +544,11 @@ fn is_policy_reclaimable_leader(pid: u32) -> bool {
 }
 /// Best-effort, time-boxed kill of reachable leaders, reclaiming a leader still running after leader mode was disabled by policy (`reason`).
 /// Skips leaders not auto-spawned by interactive clients ([`is_policy_reclaimable_leader`]).
-/// Emits unified_log (captured in unified.jsonl) so operators can attribute eviction kills; the `tracing` lines are kept for local debug. Errors are logged, never fatal.
+/// Emits `tracing` lines so operators can attribute eviction kills. Errors are logged, never fatal.
 #[tracing::instrument(level = "debug", skip_all)]
 pub async fn kill_stale_reachable_leaders(reason: &'static str) {
     let targets = reachable_leader_pids(&discover_leaders().await);
     let discovered = targets.len();
-    crate::unified_log::info(
-        "leader.startup_kill.begin",
-        None,
-        Some(serde_json::json!({ "reason": reason, "discovered": discovered })),
-    );
     let mut killed = 0usize;
     let mut failed = 0usize;
     let mut skipped_supervised = 0usize;
@@ -562,62 +557,22 @@ pub async fn kill_stale_reachable_leaders(reason: &'static str) {
             if !is_policy_reclaimable_leader(*pid) {
                 skipped_supervised += 1;
                 info!(pid = *pid, "skipping externally supervised leader");
-                crate::unified_log::info(
-                    "leader.startup_kill.skipped_supervised",
-                    None,
-                    Some(serde_json::json!({
-                        "pid": *pid,
-                        "leader_ver": dead_leader_ver,
-                        "reason": reason,
-                    })),
-                );
                 continue;
             }
             match crate::util::kill_process_by_pid(*pid) {
                 Ok(()) => {
                     killed += 1;
                     info!(pid = *pid, "killed stale reachable leader");
-                    crate::unified_log::warn(
-                        "leader.startup_kill.killed",
-                        None,
-                        Some(serde_json::json!({
-                            "pid": *pid,
-                            "dead_leader_ver": dead_leader_ver,
-                            "reason": reason,
-                            "killer_ver": xai_grok_version::VERSION,
-                        })),
-                    );
                 }
                 Err(e) => {
                     failed += 1;
                     warn!(pid = *pid, error = %e, "failed to kill stale leader");
-                    crate::unified_log::warn(
-                        "leader.startup_kill.failed",
-                        None,
-                        Some(serde_json::json!({
-                            "pid": *pid,
-                            "dead_leader_ver": dead_leader_ver,
-                            "error": e.to_string(),
-                        })),
-                    );
                 }
             }
         }
     })
     .await
     .is_err();
-    crate::unified_log::info(
-        "leader.startup_kill.done",
-        None,
-        Some(serde_json::json!({
-            "reason": reason,
-            "discovered": discovered,
-            "killed": killed,
-            "failed": failed,
-            "skipped_supervised": skipped_supervised,
-            "timed_out": timed_out,
-        })),
-    );
 }
 fn resolve_target_from_descriptors(
     target: LeaderTarget,
@@ -1127,17 +1082,6 @@ async fn request_leader_vacate(conn: &LeaderConnection, pid: Option<u32>) {
         };
         ("sigterm", outcome)
     };
-    xai_grok_telemetry::unified_log::warn(
-        "leader.evict.vacate_requested",
-        None,
-        Some(serde_json::json!({
-            "method": method,
-            "outcome": outcome,
-            "leader_pid": pid,
-            "leader_version": leader_version,
-            "client_version": CLIENT_LEADER_VERSION,
-        })),
-    );
 }
 /// Evict a below-floor leader that holds the socket but NOT the flock (the caller
 /// MUST hold the flock, so this teardown is serialized against other clients).
@@ -1166,17 +1110,6 @@ async fn evict_leader(conn: LeaderConnection, lock: &LeaderLock) {
     } else {
         "exited"
     };
-    xai_grok_telemetry::unified_log::warn(
-        "leader.evict.completed",
-        None,
-        Some(serde_json::json!({
-            "outcome": outcome,
-            "leader_pid": pid,
-            "leader_version": leader_version,
-            "client_version": CLIENT_LEADER_VERSION,
-            "waited_ms": wait_start.elapsed().as_millis() as u64,
-        })),
-    );
 }
 /// PID-keyed timer state: the holder PID being timed and when we first saw it live-but-unconnectable.
 type ZombieTimer = Option<(u32, Instant)>;
@@ -1358,17 +1291,6 @@ async fn evict_zombie_leader(pid: u32, sock_path: &Path, waited: Duration) {
             "sigkilled"
         }
     };
-    xai_grok_telemetry::unified_log::warn(
-        "leader.zombie.evicted",
-        None,
-        Some(serde_json::json!({
-            "zombie_pid": pid,
-            "socket_path": sock_path.display().to_string(),
-            "outcome": outcome,
-            "client_version": CLIENT_LEADER_VERSION,
-            "waited_ms": waited.as_millis() as u64,
-        })),
-    );
 }
 /// Connect to existing leader or spawn a new one. Uses OS-level file locking (flock) to coordinate: Try to connect to existing socket (fast path) If connection fails, try to acquire exclusive lock
 /// If lock acquired, we are responsible for spawning the leader If lock not acquired, another process is leader/spawning; wait and retry The `env_urls.grok_ws_url` determines which leader instance to connect to.
@@ -1438,19 +1360,6 @@ pub async fn connect_or_spawn(
                             elapsed_ms,
                             "Adopted sibling-spawned leader after eviction race"
                         );
-                        xai_grok_telemetry::unified_log::info(
-                            "leader.spawn.sibling_adopted",
-                            None,
-                            Some(serde_json::json!({
-                                "leader_pid": lock.read_pid(),
-                                "leader_version": conn
-                                    .registration()
-                                    .leader_binary_version
-                                    .as_deref(),
-                                "client_version": CLIENT_LEADER_VERSION,
-                                "elapsed_ms": elapsed_ms,
-                            })),
-                        );
                         return Ok(conn);
                     }
                     evict_leader(conn, &lock).await;
@@ -1489,15 +1398,6 @@ pub async fn connect_or_spawn(
                 let elapsed_ms = start.elapsed().as_millis() as u64;
                 info!(elapsed_ms, "Spawned and connected to leader");
                 if replacing_stale {
-                    xai_grok_telemetry::unified_log::info(
-                        "leader.spawn.replacement",
-                        None,
-                        Some(serde_json::json!({
-                            "reason": "version_floor",
-                            "client_version": CLIENT_LEADER_VERSION,
-                            "elapsed_ms": elapsed_ms,
-                        })),
-                    );
                 }
                 return Ok(conn);
             }

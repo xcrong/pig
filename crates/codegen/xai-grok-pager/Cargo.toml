@@ -122,8 +122,6 @@ xai-grok-workspace = { workspace = true }
 # Foreign coding-agent session discovery.
 xai-grok-foreign-sessions = { workspace = true }
 xai-token-estimation = { workspace = true }
-xai-grok-telemetry = { workspace = true }
-xai-grok-otel = { workspace = true }
 xai-fast-worktree = { path = "../xai-fast-worktree", features = ["metadata"] }
 gethostname = { workspace = true, optional = true }
 backon = { workspace = true }

@@ -3,8 +3,6 @@
 
 use super::*;
 use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
-use xai_grok_telemetry::region;
-use xai_grok_telemetry::region::Parent;
 
 const CLASSIFIER_REQUEST_TOKEN_RESERVE: u64 = 16_384;
 
@@ -235,10 +233,9 @@ where
         return result;
     };
     // Tool-call 401s show up as tool errors, not the ReAuthRequired banner
-    let src = xai_grok_login::recovery::RecoverySource::Background;
     let recovered = match shared_recovery {
-        Some(cell) => *cell.get_or_init(|| am.try_recover_unauthorized(src)).await,
-        None => am.try_recover_unauthorized(src).await,
+        Some(cell) => *cell.get_or_init(|| am.try_recover_unauthorized()).await,
+        None => am.try_recover_unauthorized().await,
     };
     if recovered {
         tracing::info!(
@@ -248,11 +245,6 @@ where
         call().await
     } else {
         tracing::warn!(tool = tool_name, "auth recovery: tool 401, refresh failed");
-        xai_grok_telemetry::unified_log::warn(
-            "auth recovery: tool 401, refresh failed",
-            None,
-            Some(serde_json::json!({ "tool": tool_name })),
-        );
         result
     }
 }
@@ -304,12 +296,6 @@ fn revoked_sampling_info() -> xai_grok_sampler::SamplingErrorInfo {
 
 impl SessionActor {
     pub(super) async fn prepare_tool_definitions_timed(&self) -> (Vec<ToolDefinition>, u64) {
-        let prep_span = region::Region::from_span(tracing::info_span!(
-            "turn.tool_prep",
-            mcp_wait_ms = tracing::field::Empty,
-            total_prep_ms = tracing::field::Empty,
-            tool_count = tracing::field::Empty,
-        ));
         let mcp_wait_start = tokio::time::Instant::now();
         let full_wait = self.requires_full_mcp_wait();
         if (full_wait || matches!(self.mcp_strategy.get(), McpInitStrategy::Blocking))
@@ -327,12 +313,12 @@ impl SessionActor {
         let mcp_wait_ms = mcp_wait_start.elapsed().as_millis() as u64;
 
         let defs = self.prepare_tool_definitions_inner().await;
-        prep_span.span().record("mcp_wait_ms", mcp_wait_ms as i64);
-        prep_span
-            .span()
-            .record("total_prep_ms", mcp_wait_start.elapsed().as_millis() as i64);
-        prep_span.span().record("tool_count", defs.len() as i64);
-        prep_span.close();
+        tracing::info!(
+            mcp_wait_ms,
+            total_prep_ms = mcp_wait_start.elapsed().as_millis() as u64,
+            tool_count = defs.len(),
+            "turn tool definitions prepared",
+        );
         (defs, mcp_wait_ms)
     }
 
@@ -535,15 +521,6 @@ impl SessionActor {
                     model = %model_id,
                     "auth provider pre-turn refresh failed"
                 );
-                xai_grok_telemetry::unified_log::warn(
-                    "auth provider pre-turn refresh failed",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "provider": provider.name,
-                        "model": model_id,
-                        "cold": current_key.is_none(),
-                    })),
-                );
             }
             // Unusable provider: already warned once, no per-turn breadcrumb.
             xai_grok_login::ProviderRefreshOutcome::Unusable => {}
@@ -565,22 +542,12 @@ impl SessionActor {
                 provider = %provider.name,
                 "auth recovery: sampler 401, provider re-mint declined or failed"
             );
-            xai_grok_telemetry::unified_log::warn(
-                "auth recovery: sampler 401, provider re-mint declined or failed",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({ "provider": provider.name })),
-            );
             return false;
         };
         tracing::info!(
             session_id = %self.session_info.id.0,
             provider = %provider.name,
             "auth recovery: sampler 401, auth provider re-mint, retrying"
-        );
-        xai_grok_telemetry::unified_log::info(
-            "auth recovery: sampler 401, auth provider re-mint, retrying",
-            Some(self.session_info.id.0.as_ref()),
-            None,
         );
         self.set_chat_api_key(new_key).await;
         true
@@ -614,16 +581,12 @@ impl SessionActor {
         });
         let sid = Some(self.session_info.id.0.as_ref());
         if refresh_active {
-            xai_grok_telemetry::unified_log::info(
-                "auth gate: Unknown BYOK on first-party endpoint — session-token refresh kept active",
-                sid,
-                Some(ctx),
+            tracing::info!(
+                "auth gate: Unknown BYOK on first-party endpoint — session-token refresh kept active"
             );
         } else {
-            xai_grok_telemetry::unified_log::warn(
-                "auth gate: Unknown BYOK on non-first-party endpoint — refresh withheld (may surface stale-token 401)",
-                sid,
-                Some(ctx),
+            tracing::warn!(
+                "auth gate: Unknown BYOK on non-first-party endpoint — refresh withheld (may surface stale-token 401)"
             );
         }
     }
@@ -631,28 +594,6 @@ impl SessionActor {
     /// Reconstruct a full `SamplerConfig` (with credentials) by combining the actor's `SamplingConfig` and `Credentials`.
     /// Folds in the URL-derived headers (cli-chat-proxy auth, the staging auth header) so the sampler crate stays URL-agnostic.
     pub(super) async fn reconstruct_full_config(&self) -> SamplingConfig {
-        #[allow(clippy::items_after_statements)]
-        #[derive(Debug)]
-        struct TraceContextInjector;
-        impl xai_grok_sampler::HeaderInjector for TraceContextInjector {
-            fn inject(&self, headers: &mut reqwest::header::HeaderMap) {
-                if let Some(tp) = xai_grok_otel::current_traceparent()
-                    && let Ok(v) = reqwest::header::HeaderValue::from_str(&tp)
-                {
-                    headers.insert("traceparent", v);
-                }
-            }
-
-            fn set_span_parent(&self, span: &tracing::Span, traceparent: &str) {
-                if !xai_grok_otel::set_parent_from_traceparent(span, traceparent) {
-                    tracing::debug!(
-                        traceparent = %traceparent,
-                        "HTTP span did not adopt its trace parent"
-                    );
-                }
-            }
-        }
-
         let cfg = self
             .chat_state_handle
             .get_sampling_config()
@@ -800,7 +741,7 @@ impl SessionActor {
             compaction_at_tokens: self.compaction_at_tokens.get(),
             // The sampler sends the opt-in header itself when this is set.
             doom_loop_recovery: self.doom_loop_recovery,
-            header_injector: Some(std::sync::Arc::new(TraceContextInjector)),
+            header_injector: None,
         }
     }
 
@@ -859,7 +800,6 @@ impl SessionActor {
         // One shared worker serializes parent and subagent classifier requests.
         tokio::task::spawn_local(async move {
             while let Some((messages, respond_to)) = rx.recv().await {
-                let request_span = region!("permission.classifier_request", Parent::Root);
                 let result = async {
                     let (sampling_client, model, context_window) = match &aux_classifier_sampler {
                         Some((client, model, context_window)) => {
@@ -919,7 +859,6 @@ impl SessionActor {
                         x_grok_conv_id: Some(format!("perm-classifier-{}", uuid::Uuid::new_v4())),
                         x_grok_req_id: Some(format!("xai-perm-auto-{}", uuid::Uuid::new_v4())),
                         x_grok_session_id: Some(session_id),
-                        x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                         ..ConversationRequest::default()
                     };
                     let fut = sampling_client.conversation_collect(request);
@@ -937,7 +876,6 @@ impl SessionActor {
                 if let Err(error) = &result {
                     tracing::warn!(%error, "permission auto classifier side-query failed");
                 }
-                request_span.close();
                 let _ = respond_to.send(result);
             }
         });
@@ -1057,14 +995,6 @@ impl SessionActor {
         message: String,
         status_code: Option<u16>,
     ) -> (&'static str, String) {
-        xai_grok_telemetry::unified_log::info(
-            "auth: turn failure classified",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "status_code": status_code,
-                "remedy": format!("{remedy:?}"),
-            })),
-        );
         let message = match remedy.advice() {
             Some(advice) => format!("{message}\n\n{advice}"),
             None => message,
@@ -1123,21 +1053,6 @@ impl SessionActor {
             .as_ref()
             .and_then(|am| am.current_or_expired());
         let reauthable = is_reauthable_failure(Some(error_type), message);
-        xai_grok_telemetry::unified_log::warn(
-            "turn.terminal_failure",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "error_type": error_type,
-                "status_code": status_code,
-                "reauthable": reauthable,
-                "auth_mode": auth.as_ref().map(|a| format!("{:?}", a.auth_mode)),
-                "key_prefix": auth.as_ref().map(|a| xai_grok_auth::bearer_suffix(&a.key).to_owned()),
-                "expires_at": auth
-                    .as_ref()
-                    .and_then(|a| a.expires_at.map(|e| e.to_rfc3339())),
-                "message": crate::util::truncate(message, 300),
-            })),
-        );
     }
 
     /// The failed request's usage never arrived: fail the task budget closed (budgeted children) or mark the session totals incomplete.
@@ -1175,11 +1090,6 @@ impl SessionActor {
             session_id = %self.session_info.id.0,
             dispatch_skipped,
             "auth recovery: credential-less 401, parking on uncharged resubmit"
-        );
-        xai_grok_telemetry::unified_log::warn(
-            "auth recovery: credential-less 401, parking on uncharged resubmit",
-            Some(self.session_info.id.0.as_ref()),
-            dispatch_skipped.then(|| serde_json::json!({ "dispatch": "skipped_already_parked" })),
         );
         SamplerFailureRecovery::RefreshAuthAndResubmit {
             credential,
@@ -1377,17 +1287,6 @@ impl SessionActor {
                     endpoint_is_first_party = gate.endpoint_is_first_party,
                     "auth recovery: sampler 401 not refreshable (api-key auth) — surfacing 401",
                 );
-                xai_grok_telemetry::unified_log::warn(
-                    "auth recovery: sampler 401 not eligible (api-key auth)",
-                    Some(self.session_info.id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "kind": error.kind.as_ref(),
-                        "status_code": error.status_code,
-                        "is_session_based": gate.is_session_based,
-                        "model_byok": gate.model_byok.as_ref(),
-                        "endpoint_is_first_party": gate.endpoint_is_first_party,
-                    })),
-                );
             }
             eligible
         };
@@ -1405,14 +1304,6 @@ impl SessionActor {
             && error.status_code == Some(401)
             && auth_provider.is_none()
         {
-            xai_grok_telemetry::unified_log::warn(
-                "auth recovery: sampler 401 not eligible (non-auth error kind)",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "kind": error.kind.as_ref(),
-                    "status_code": error.status_code,
-                })),
-            );
         }
 
         // Last-resort recovery used to short-circuit on whatever is in memory, so it reported success with the bearer the server had just rejected.
@@ -1425,15 +1316,10 @@ impl SessionActor {
                 return Ok(self.park_uncharged_401(error.credential, true));
             }
             if am
-                .try_recover_unauthorized(xai_grok_login::recovery::RecoverySource::Turn)
+                .try_recover_unauthorized()
                 .await
             {
                 tracing::info!(session_id = %self.session_info.id.0, "auth recovery: sampler 401, recovered, retrying");
-                xai_grok_telemetry::unified_log::info(
-                    "auth recovery: sampler 401, recovered, retrying",
-                    Some(self.session_info.id.0.as_ref()),
-                    None,
-                );
                 self.prepare_sampler_for_turn().await;
                 return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
                     credential: error.credential,
@@ -1443,14 +1329,6 @@ impl SessionActor {
             tracing::warn!(session_id = %self.session_info.id.0, "auth recovery: sampler 401, refresh failed");
             // `park_enabled` makes a kill-switch flip observable; `credential`
             // distinguishes a Sent/Unknown refusal from a remedy refusal.
-            xai_grok_telemetry::unified_log::warn(
-                "auth recovery: sampler 401, refresh failed",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "park_enabled": self.uncharged_401_park_enabled,
-                    "credential": error.credential,
-                })),
-            );
             // The 401 says nothing about the missing credential: park instead of failing the turn.
             // Do not add `prepare_sampler_for_turn` here — a prepare's refresh would count against the shared escalation budget.
             if self.uncharged_401_park_eligible(am, error.credential) {
@@ -1482,21 +1360,6 @@ impl SessionActor {
                     status_code: error.status_code,
                 });
             }
-            xai_grok_telemetry::unified_log::error(
-                "shell.turn.transient_retry_exhausted",
-                Some(self.session_info.id.0.as_ref()),
-                Some(serde_json::json!({
-                    "kind": error.kind.as_ref(),
-                    "status_code": error.status_code,
-                    "step_retries_used": transient.step_attempts,
-                    "prompt_retries_used": transient.prompt_attempts,
-                    "episode_elapsed_ms": transient
-                        .episode_start
-                        .map_or(0, |s| s.elapsed().as_millis() as u64),
-                    "max_retries":
-                        transient_display_ceiling(transient.step_attempts, transient.prompt_attempts),
-                })),
-            );
         }
 
         // 5. Idle timeout: record it; the generic notification and the fatal error follow.
@@ -1732,7 +1595,6 @@ impl SessionActor {
                     if !park.is_parked() {
                         self.prepare_sampler_for_turn().await;
                     }
-                    self.turn_phases.record_sampling_retries(1);
                 }
             }
         }
@@ -1743,14 +1605,13 @@ impl SessionActor {
         mut request: ConversationRequest,
     ) -> Result<SamplerTurnOutcome, xai_grok_sampler::SamplingErrorInfo> {
         let request_id = xai_grok_sampler::RequestId::random();
-        self.turn_phases.record_sampling_request();
-        let _sampling_phase = self.turn_phases.begin_sampling();
+        self.turn_generation.record_sampling_request();
         let stream_drained_rx = {
             let (tx, rx) = tokio::sync::oneshot::channel();
             self.turn_stream_drained.lock().insert(
                 request_id.clone(),
                 crate::session::acp_session::StreamOwnership {
-                    generation: self.turn_phases.current_generation(),
+                    generation: self.turn_generation.current_generation(),
                     waiter: Some(tx),
                 },
             );
@@ -1759,13 +1620,7 @@ impl SessionActor {
 
         let request_id_str = request_id.as_str().to_string();
         let collected = {
-            let gate_span = region!("turn.sampling_gate", Parent::Inherit);
             let _permit = acquire_subagent_sampling_permit(&self.sampling_gate).await;
-            gate_span.close();
-            let sampling_span = region!("turn.sampling", Parent::Inherit);
-            // The sampler task has no tracing ancestor; this parents its HTTP span under the region
-            // without holding it open.
-            request.traceparent = xai_grok_otel::span_traceparent(sampling_span.span());
             self.sampler_handle
                 .submit_and_collect_with_metadata(request_id.clone(), request)
                 .await
@@ -1805,7 +1660,6 @@ impl SessionActor {
                 // Do not commit that pre-boundary success or its metrics onto the restored turn
                 // A real timeout remains fail-open
                 if terminal_event_queued {
-                    let _drain_span = region!("turn.stream_drain_barrier", Parent::Inherit);
                     if self
                         .wait_for_stream_drain(
                             &request_id,
@@ -1932,15 +1786,6 @@ impl SessionActor {
         );
         // Per-wait unified-log marker so each pause is visible in session logs like auth backoff
         // The terminal give-up alone (the `subagent_rate_limit_exhausted` marker) is not enough
-        xai_grok_telemetry::unified_log::info(
-            "shell.turn.subagent_rate_limit_backoff",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "attempt": attempt,
-                "max_attempts": budget.max_attempts(),
-                "delay_ms": backoff.as_millis() as u64,
-            })),
-        );
         // Whole seconds with a one-second floor: a sub-second jittered wait would otherwise render as "waiting 0s"
         let announced = Duration::from_secs(backoff.as_secs_f64().round().max(1.0) as u64);
         self.send_xai_notification(XaiSessionUpdate::RetryState(
@@ -1970,16 +1815,6 @@ impl SessionActor {
             cause = limit.as_ref(),
             retry_after_secs = ?error.retry_after_secs,
             "subagent stopped waiting out rate limits; failing the turn"
-        );
-        xai_grok_telemetry::unified_log::warn(
-            "shell.turn.subagent_rate_limit_exhausted",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "attempts": attempts,
-                "cause": limit.as_ref(),
-                "retry_after_secs": error.retry_after_secs,
-                "status_code": error.status_code,
-            })),
         );
     }
 
@@ -2028,25 +1863,11 @@ impl SessionActor {
                             model = %model_id,
                             "auth: preflight get_valid_token failed"
                         );
-                        xai_grok_telemetry::unified_log::warn(
-                            "auth.preflight.refresh_failed",
-                            Some(self.session_info.id.0.as_ref()),
-                            Some(serde_json::json!({
-                                "error": format!("{e}"),
-                                "hard_expired": hard_expired,
-                                "model": model_id,
-                            })),
-                        );
                         return;
                     }
                 }
             }
         } else {
-            xai_grok_telemetry::unified_log::debug(
-                "token refresh skipped: no auth manager",
-                Some(self.session_info.id.0.as_ref()),
-                None,
-            );
         }
 
         // JWT from config.toml: a separate mechanism for BYOK tokens

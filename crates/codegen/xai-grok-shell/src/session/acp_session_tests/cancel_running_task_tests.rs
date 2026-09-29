@@ -303,7 +303,7 @@ async fn persist_ack_waits_for_disk_flush_before_success() {
                 events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
-                turn_phases: std::sync::Arc::default(),
+                turn_generation: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
@@ -853,7 +853,7 @@ async fn first_turn_memory_injection_disabled_does_not_persist_to_chat_history()
                 events: crate::session::events::EventTracker::new(std::path::Path::new("/tmp")),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
-                turn_phases: std::sync::Arc::default(),
+                turn_generation: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
@@ -1215,7 +1215,7 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                 ),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
-                turn_phases: std::sync::Arc::default(),
+                turn_generation: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
@@ -1290,7 +1290,6 @@ async fn cancel_running_task_teardown_clears_running_and_pending_work() {
                         queue_meta: None,
                         queue_mutation_policy: QueueMutationPolicy::hidden(),
                         send_now: false,
-                        traceparent: None,
                     });
             }
             let _ = actor
@@ -1837,7 +1836,6 @@ async fn cancel_running_task_interactive_preserves_queued_work() {
             }),
             queue_mutation_policy: QueueMutationPolicy::editable(),
             send_now: false,
-            traceparent: None,
         };
         (item, rx)
     }
@@ -2381,7 +2379,6 @@ async fn cancel_resolves_front_when_running_task_is_none() {
             }),
             queue_mutation_policy: QueueMutationPolicy::editable(),
             send_now: false,
-            traceparent: None,
         };
         (item, rx)
     }
@@ -2787,7 +2784,7 @@ async fn cancel_propagates_to_sampler_handle_so_no_further_emission() {
                 ),
                 observability_bridge: noop_observability_bridge(),
                 current_turn_number: std::cell::Cell::new(0),
-                turn_phases: std::sync::Arc::default(),
+                turn_generation: std::sync::Arc::default(),
                 last_recap_main_turn: std::cell::Cell::new(0),
                 recap_in_flight: std::cell::Cell::new(false),
                 recap_epoch: std::cell::Cell::new(0),
@@ -2988,7 +2985,6 @@ async fn cancel_keeps_remaining_queued_prompts_visible_to_clients() {
             }),
             queue_mutation_policy: QueueMutationPolicy::editable(),
             send_now: false,
-            traceparent: None,
         }
     }
     let local = tokio::task::LocalSet::new();

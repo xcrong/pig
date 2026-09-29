@@ -197,12 +197,6 @@ impl AgentView {
                         );
                     }
                     if ctx.source.tip_showing() {
-                        xai_grok_telemetry::session_ctx::log_event(
-                            xai_grok_telemetry::events::ContextualTip {
-                                tip: xai_grok_telemetry::events::ContextualTipKind::ImageInput,
-                                action: xai_grok_telemetry::events::ContextualTipAction::Accepted,
-                            },
-                        );
                     }
                     self.prompt.refresh_slash(&self.session.models);
                     ClipboardPasteCompletion::Handled

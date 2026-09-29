@@ -6,13 +6,9 @@
 //! `Authorization` header for storage / feedback / registry /
 //! idle-resume) with the manager's in-memory token
 //! ([`AuthManager::current_or_expired`] -- hard-expired tokens stay
-//! visible, since most 401s arrive exactly then). The two sinks are:
-//!
-//! 1. [`xai_grok_telemetry::unified_log::warn`] for the local
-//!    `~/.grok/logs/unified.jsonl` file (best-effort; ships to GCS
-//!    only on OIDC refresh failure via `auth/refresh.rs`).
-//! 2. A discrete `tracing::warn_span!("auth_401_attribution", ...)` captured by the OTel layer in `util/otel_layer.rs` and shipped
-//!    via OTLP export to the configured telemetry backend (queryable by span name `auth_401_attribution`).
+//! visible, since most 401s arrive exactly then). The sink is a discrete
+//! `tracing::warn_span!("auth_401_attribution", ...)` carrying the scrubbed
+//! attribution fields as span attributes (local log only).
 //!
 //! # Schema (every emit)
 //!
@@ -73,7 +69,7 @@ pub fn reset_test_emit_count() {
 
 /// Concrete implementation of [`Auth401AttributionCallback`] for the sampler crate's six 401 arms.
 /// One instance is constructed per `SamplerConfig` and cloned cheaply (the struct holds an `Arc` and an `Option<String>`).
-/// The `session_id` is captured at construction time and used for the `unified_log::warn` `sid` field; non-session callers may pass `None`.
+/// The `session_id` is captured at construction time and recorded as a span field; non-session callers may pass `None`.
 pub struct ShellAttribution {
     auth_manager: Arc<AuthManager>,
     session_id: Option<String>,
@@ -214,7 +210,7 @@ pub fn record_consumer_401(
     record_auth_401(auth_manager, session_id, &consumer, sent_bearer);
 }
 
-/// Emit a single `auth 401 attribution` event to both sinks (local unified log file and OTel span for OTLP export).
+/// Emit a single `auth 401 attribution` tracing span (local log only).
 /// Schema: `(sent_key_prefix, current_key_prefix, mint_age_seconds, expires_at_seconds_from_now, consumer, is_stale_snapshot)`.
 /// `sent_bearer` is the bearer that was sent on the wire (the `Authorization` value with `"Bearer "` stripped, or `x-api-key`). It may also be that bearer's 12-char tail fragment: the sampler and middleware boundaries pass tails. A caller holding the full bearer may rely on the [`compute_attribution_payload`] truncation.
 pub fn record_auth_401(
@@ -225,18 +221,7 @@ pub fn record_auth_401(
 ) {
     let payload = compute_attribution_payload(auth_manager, consumer, sent_bearer);
 
-    // Sink 1 -- local file (~/.grok/logs/unified.jsonl) + scrubbed tracing event
-    // The local file is reliable but only ships to GCS on OIDC refresh failure (auth/refresh.rs::spawn_diagnostic_upload)
-    // By itself it does not show the steady-state 401 population; Sink 2 below provides that
-    xai_grok_telemetry::unified_log::warn(
-        "auth 401 attribution",
-        session_id,
-        Some(payload.clone()),
-    );
-
-    // Sink 2: discrete OTel span exported via OTLP (util/otel_layer.rs) The schema fields below become OTel span attributes under `attributes.custom.<name>` per the tracing-opentelemetry bridge
-    // The OTel layer attaches plain events to the currently-entered span only So a `tracing::warn!` from a `spawn_blocking` closure (idle-resume model refresh) or a background sync task is silently dropped
-    // A `warn_span!` itself is always emitted by the layer's `on_new_span`/`on_close` hooks regardless of parent context Its `duration` is a few microseconds and it is logically a one-shot record, not a wrapping context for any other work
+    // The OTel layer is gone; a `warn_span!` is a one-shot local record, not a wrapping context for any other work.
     let _attribution_span = tracing::warn_span!(
         "auth_401_attribution",
         // String fields
@@ -273,7 +258,7 @@ pub fn record_auth_401(
     EMIT_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
-/// Pure (no I/O) computation of the attribution payload. Extracted from [`record_auth_401`] so unit tests can assert each field without reaching into `unified_log`'s writer or the tracing layer.
+/// Pure (no I/O) computation of the attribution payload. Extracted from [`record_auth_401`] so unit tests can assert each field without reaching into the tracing layer.
 /// Reads [`AuthManager::current_or_expired`], NOT `current()`. `current()` is `None` by construction in the hard-expired window most 401s land in and would blank every field this event exists to fill.
 /// `is_stale_snapshot` is `true` only when a bearer was actually sent and it differs from the held token. "Sent nothing" (fail-closed) and "held nothing" (empty manager) are both `false`.
 fn compute_attribution_payload(

@@ -63,33 +63,7 @@ impl SessionActor {
             if entered && turn_in_flight {
                 self.activate_plan_mode_mid_turn().await;
             }
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::PlanModeToggled {
-                    enabled: true,
-                    trigger: xai_grok_telemetry::events::PlanModeTrigger::User,
-                    turn_in_flight,
-                    was_previously_active: !entered,
-                    from_mode: Some(if entered {
-                        if self.permissions.is_yolo_mode() {
-                            "bypass_permissions"
-                        } else {
-                            "default"
-                        }
-                        .to_owned()
-                    } else {
-                        "plan".to_owned()
-                    }),
-                },
-            );
             if entered {
-                xai_grok_telemetry::event_span!(
-                    "session.permission_mode_changed",
-                    from_mode =
-                        super::telemetry::permission_mode_label(self.permissions.is_yolo_mode()),
-                    to_mode = "plan",
-                    trigger = "user",
-                    enabled = true,
-                );
             }
             return;
         }
@@ -107,22 +81,6 @@ impl SessionActor {
                 new_mode = %session_mode_id.0,
                 turn_in_flight,
                 "Plan mode toggled OFF"
-            );
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::PlanModeToggled {
-                    enabled: false,
-                    trigger: xai_grok_telemetry::events::PlanModeTrigger::User,
-                    turn_in_flight,
-                    was_previously_active: true,
-                    from_mode: Some("plan".into()),
-                },
-            );
-            xai_grok_telemetry::event_span!(
-                "session.permission_mode_changed",
-                from_mode = "plan",
-                to_mode = %session_mode_id.0,
-                trigger = "user",
-                enabled = false,
             );
         }
         let agent_def = match session_mode_id.0.as_ref() {

@@ -53,7 +53,7 @@ async fn handle_upload_trace_with_session_dir(
             .trace_upload_token
             .as_deref()
             .is_some_and(|token| agent.consume_feedback_trace_upload_grant(token, &sid)),
-        None => req.trace_upload_token.is_none() && agent.cfg.borrow().is_trace_upload_enabled(),
+        None => false,
     };
     if !is_allowed {
         return Err(acp::Error::internal_error().data("trace upload is not available"));

@@ -11,7 +11,7 @@ use crate::session::{
 };
 use crate::upload::gcs::WithAuth as _;
 use xai_file_utils::gcs::upload_bytes;
-use xai_grok_telemetry::id::agent_id;
+use crate::remote::client::ephemeral_agent_id;
 
 /// Record inline code review events.
 /// Methods: `x.ai/review/comment`: record a new inline code comment to cloud storage `x.ai/review/comment/delete`: record a tombstone event for a deleted comment
@@ -38,7 +38,7 @@ pub(super) async fn handle_review(agent: &MvpAgent, args: &acp::ExtRequest) -> E
                 "promptIndex": request.prompt_index,
                 "comment": null,
                 "citation": request.citation,
-                "agentId": agent_id().to_string(),
+                "agentId": ephemeral_agent_id(),
                 "clientType": format!("{:?}", agent.client_type()),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             });
@@ -97,7 +97,7 @@ pub(super) async fn handle_review(agent: &MvpAgent, args: &acp::ExtRequest) -> E
                 "event": "delete",
                 "commentId": request.comment_id,
                 "sessionId": request.session_id,
-                "agentId": agent_id().to_string(),
+                "agentId": ephemeral_agent_id(),
                 "clientType": format!("{:?}", agent.client_type()),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             });

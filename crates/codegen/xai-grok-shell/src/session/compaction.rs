@@ -88,7 +88,7 @@ fn fingerprint_prefix(items: &[ConversationItem]) -> u64 {
     h.finish()
 }
 /// Outcome of a background prefire pass-1 run, recorded on the `session.prefire_pass1` span as `compaction_prefire_outcome`.
-/// [`PrefireOutcome::as_str`] values are stable telemetry keys (telemetry/dashboards key off them); don't rename the strings.
+/// [`PrefireOutcome::as_str`] values are stable keys (logs key off them); don't rename the strings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, strum::AsRefStr, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 enum PrefireOutcome {
@@ -455,7 +455,7 @@ fn start_verbatim_compact_turns(
     }
 }
 /// Why auto-compaction was suppressed after a deterministic failure.
-/// [`SuppressReason::as_str`] is a stable telemetry value (BQ/OTLP/dashboards key off it); don't rename the strings.
+/// [`SuppressReason::as_str`] is a stable value (logs key off it); don't rename the strings.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, strum::AsRefStr, strum::IntoStaticStr)]
 #[strum(serialize_all = "snake_case")]
 pub(crate) enum SuppressReason {
@@ -571,7 +571,7 @@ impl SessionActor {
             });
         }
     }
-    /// Tag the current `session.compact` span with `mode` (and `detail`, for `segments`), the A/B variant key for grouping outcomes in telemetry.
+    /// Tag the current `session.compact` span with `mode` (and `detail`, for `segments`), the A/B variant key for grouping outcomes in logs.
     fn record_compaction_variant(&self) {
         let mode = self.compaction.compaction_mode;
         let span = tracing::Span::current();
@@ -614,7 +614,7 @@ impl SessionActor {
             .run_compact_inner(
                 user_context,
                 None,
-                xai_grok_telemetry::events::CompactionTrigger::Manual,
+                crate::session::telemetry::CompactionTrigger::Manual,
                 false,
             )
             .await
@@ -656,7 +656,7 @@ impl SessionActor {
         Err(crate::session::helpers::session_compact::CompactFailure::cancelled_error())
     }
     /// Suppress AUTO compaction after a deterministic failure.
-    /// Emits telemetry and one notification per transition; manual `/compact` is exempt.
+    /// Emits one notification per transition; manual `/compact` is exempt.
     /// Only `Other` shows `detail`; the canned reasons are already actionable.
     async fn suppress_auto_compaction(
         &self,
@@ -682,13 +682,6 @@ impl SessionActor {
                 estimated_tokens,
                 context_window,
                 "auto-compaction suppressed after deterministic compaction failure"
-            );
-            xai_grok_telemetry::session_ctx::log_event(
-                xai_grok_telemetry::events::AutoCompactSuppressed {
-                    reason: reason.into(),
-                    estimated_tokens,
-                    context_window,
-                },
             );
             self.send_xai_notification(
                 crate::extensions::notification::SessionUpdate::AutoCompactFailed {
@@ -725,7 +718,7 @@ impl SessionActor {
             format!("{RETRY_GUIDANCE}\n{detail}")
         }
     }
-    /// Map a deterministic failure's error text to a fixed, content-free [`SuppressReason`] (drives telemetry and the sticky-vs-per-turn scope).
+    /// Map a deterministic failure's error text to a fixed, content-free [`SuppressReason`] (drives the sticky-vs-per-turn scope).
     fn classify_suppress_reason(error_msg: &str) -> SuppressReason {
         let m = error_msg.to_ascii_lowercase();
         if m.contains("spending-limit")
@@ -795,13 +788,6 @@ impl SessionActor {
             session_id = %self.session_info.id.0,
             error = %message,
             "auto-compact auth failure: aborting turn for re-auth"
-        );
-        xai_grok_telemetry::unified_log::warn(
-            "auto-compact auth failure: aborting turn for re-auth",
-            Some(self.session_info.id.0.as_ref()),
-            Some(serde_json::json!({
-                "message": crate::util::truncate(&message, 300),
-            })),
         );
         self.send_xai_notification(XaiSessionUpdate::RetryState(
             crate::extensions::notification::RetryState::Failed {
@@ -927,17 +913,14 @@ impl SessionActor {
         &self,
         user_context: Option<String>,
         auto_continue: Option<crate::extensions::notification::AutoContinueInfo>,
-        trigger: xai_grok_telemetry::events::CompactionTrigger,
+        trigger: crate::session::telemetry::CompactionTrigger,
         lossy_input: bool,
     ) -> Result<(), acp::Error> {
         let (cancel, _cancel_scope) = self.compaction.cancel.enter();
         let tokens_before = self.chat_state_handle.get_total_tokens().await;
         tracing::Span::current().record("compaction_tokens_before", tokens_before as i64);
         self.signals_handle().record_compaction(tokens_before);
-        let trigger_str = match trigger {
-            xai_grok_telemetry::events::CompactionTrigger::Manual => "manual",
-            xai_grok_telemetry::events::CompactionTrigger::Auto => "auto",
-        };
+        let trigger_str = trigger.as_str();
         let sampling_config = self.chat_state_handle.get_sampling_config().await;
         let context_window = sampling_config
             .as_ref()
@@ -962,28 +945,6 @@ impl SessionActor {
             .map(|c| c.api_backend == ApiBackend::Messages)
             .unwrap_or(false);
         let model_id = sampling_config.map(|c| c.model).unwrap_or_default();
-        let compaction = xai_grok_telemetry::events::CompactionScope::begin(
-            xai_grok_telemetry::events::CompactionBeginParams {
-                trigger,
-                tokens_used: tokens_before,
-                context_window,
-                model_id: model_id.clone(),
-                user_context_provided: user_context.is_some(),
-                compaction_mode: match self.compaction.compaction_mode {
-                    xai_chat_state::CompactionMode::Summary => {
-                        xai_grok_telemetry::events::CompactionModeLabel::Summary
-                    }
-                    xai_chat_state::CompactionMode::Transcript => {
-                        xai_grok_telemetry::events::CompactionModeLabel::Transcript
-                    }
-                    xai_chat_state::CompactionMode::Segments(_) => {
-                        xai_grok_telemetry::events::CompactionModeLabel::Segments
-                    }
-                },
-                two_pass_enabled: self.two_pass_active(),
-                is_subagent: self.startup_hints.is_subagent,
-            },
-        );
         let user_context = self.merge_goal_compaction_user_context(user_context);
         let compact_source = trigger_str;
         self.dispatch_hook(
@@ -1120,7 +1081,7 @@ impl SessionActor {
         let started_at = chrono::Utc::now().to_rfc3339();
         let estimated_input_tokens =
             xai_chat_state::estimate_conversation_tokens(&simplified_messages);
-        let auto_trigger = matches!(trigger, xai_grok_telemetry::events::CompactionTrigger::Auto);
+        let auto_trigger = matches!(trigger, crate::session::telemetry::CompactionTrigger::Auto);
         let wall_clock_budget_secs = self
             .agent
             .borrow()
@@ -1142,9 +1103,7 @@ impl SessionActor {
         );
         let observer =
             crate::session::helpers::full_replace_compaction::ShellFullReplaceObserver::new(
-                trigger,
                 context_window,
-                compaction.compaction_id.clone(),
                 self.session_info.id.0.to_string(),
                 estimated_input_tokens,
                 retry_delay_secs,
@@ -1216,18 +1175,6 @@ impl SessionActor {
                         };
                         if let Some(stage) = next_stage {
                             input_overflow_rejections += 1;
-                            xai_grok_telemetry::session_ctx::log_event(
-                                xai_grok_telemetry::events::CompactionRetryDegraded {
-                                    trigger,
-                                    reason: "input_overflow",
-                                    from_stage: Some(input_stage.into()),
-                                    to_stage: Some(stage.into()),
-                                    summary_chars: None,
-                                    attempt: observer.attempt_count(),
-                                    context_window,
-                                    compaction_id: compaction.compaction_id.clone(),
-                                },
-                            );
                             tracing::warn!(
                                 session_id = %self.session_info.id.0,
                                 ?stage,
@@ -1710,7 +1657,7 @@ impl SessionActor {
                         self.memory.record_injected_bytes(injected_bytes);
                         crate::session::memory_observation::log_memory_injection(
                             self.session_info.id.to_string(),
-                            xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Results,
+                            crate::session::memory_observation::MemoryInjectionOutcome::Results,
                             crate::session::memory_observation::MemoryInjectionMetrics {
                                 result_count: context
                                     .global_entry_count
@@ -1728,26 +1675,26 @@ impl SessionActor {
                     }
                     Ok(Err(error)) => {
                         tracing::warn!(
-                            target: xai_grok_telemetry::memory_log::TARGET,
+                            target: crate::session::memory::MEMORY_LOG_TARGET,
                             %error,
                             "MEMORY_COMPACTION_RECOVERY: failed to refresh v2 manifests"
                         );
                         crate::session::memory_observation::log_memory_injection(
                             self.session_info.id.to_string(),
-                            xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Error,
+                            crate::session::memory_observation::MemoryInjectionOutcome::Error,
                             Default::default(),
                         );
                         None
                     }
                     Err(error) => {
                         tracing::warn!(
-                            target: xai_grok_telemetry::memory_log::TARGET,
+                            target: crate::session::memory::MEMORY_LOG_TARGET,
                             %error,
                             "MEMORY_COMPACTION_RECOVERY: v2 manifest task failed"
                         );
                         crate::session::memory_observation::log_memory_injection(
                             self.session_info.id.to_string(),
-                            xai_grok_telemetry::memory_telemetry::MemoryInjectionOutcome::Error,
+                            crate::session::memory_observation::MemoryInjectionOutcome::Error,
                             Default::default(),
                         );
                         None
@@ -1831,7 +1778,7 @@ impl SessionActor {
                     .compaction_recovery_count
                     .fetch_add(n, std::sync::atomic::Ordering::Relaxed);
                 tracing::debug!(
-                    target: xai_grok_telemetry::memory_log::TARGET,
+                    target: crate::session::memory::MEMORY_LOG_TARGET,
                     count = n,
                     "MEMORY_COMPACTION_RECOVERY: {} search(es) performed",
                     n,
@@ -1990,7 +1937,7 @@ impl SessionActor {
             .context_injected
             .store(false, std::sync::atomic::Ordering::Relaxed);
         if self.memory.is_enabled() {
-            tracing::info!(target: xai_grok_telemetry::memory_log::TARGET, "MEMORY_COMPACT: post-compaction reset, next turn re-checks injection (search only if no block persisted)");
+            tracing::info!(target: crate::session::memory::MEMORY_LOG_TARGET, "MEMORY_COMPACT: post-compaction reset, next turn re-checks injection (search only if no block persisted)");
         }
         let _ = self
             .notifications
@@ -2072,20 +2019,6 @@ impl SessionActor {
                 span.record("compaction_itl_max_ms", ms as i64);
             }
         }
-        compaction.complete(
-            xai_grok_telemetry::events::CompactionCompleteStats {
-                tokens_after,
-                two_pass_used,
-                segments_queued,
-                degenerate_retries: telemetry.degenerate_rejections,
-                input_overflow_retries: input_overflow_rejections,
-            },
-            xai_grok_telemetry::events::CompactionTiming {
-                model_wait_ms: compact_output.model_wait_ms(),
-                pre_compaction_ms: Some(pre_compaction_ms),
-                post_compaction_ms: Some(post_compaction_ms),
-            },
-        );
         Ok(())
     }
     pub(crate) fn should_auto_compact(
@@ -2283,7 +2216,7 @@ impl SessionActor {
         }
     }
     /// Compact without auto-continue. The outer turn loop rebuilds and retries.
-    /// Emits telemetry (`auto_compact_fired`) and UI notifications automatically.
+    /// Emits UI notifications automatically.
     #[tracing::instrument(
         name = "session.compact",
         skip_all,
@@ -2305,14 +2238,9 @@ impl SessionActor {
     ) -> Result<(), acp::Error> {
         use crate::extensions::notification::SessionUpdate as XaiSessionUpdate;
         let (_cancel, _cancel_scope) = self.compaction.cancel.enter();
-        let _compaction_phase = self.turn_phases.begin_compaction();
         self.record_compaction_variant();
         let tokens_before = self.chat_state_handle.get_total_tokens().await;
         tracing::Span::current().record("pre_tokens", tokens_before as i64);
-        xai_grok_telemetry::session_ctx::log_event(xai_grok_telemetry::events::AutoCompactFired {
-            tokens_before: trigger_info.tokens_used,
-            percentage: trigger_info.percentage,
-        });
         self.signals_handle()
             .record_compaction(trigger_info.tokens_used);
         let reason = if trigger_info.reason_override == Some(MODEL_FAMILY_SWITCH_COMPACT_BANNER) {
@@ -2338,7 +2266,7 @@ impl SessionActor {
             .run_compact_inner(
                 None,
                 None,
-                xai_grok_telemetry::events::CompactionTrigger::Auto,
+                crate::session::telemetry::CompactionTrigger::Auto,
                 lossy_input,
             )
             .await;
@@ -2394,7 +2322,7 @@ impl SessionActor {
         user_context: Option<&str>,
         use_short_prompt: bool,
         model: &str,
-        trigger: xai_grok_telemetry::events::CompactionTrigger,
+        trigger: crate::session::telemetry::CompactionTrigger,
         summary: Option<&str>,
         error: Option<&acp::Error>,
         attempts: u32,
@@ -2403,10 +2331,7 @@ impl SessionActor {
     ) {
         use crate::extensions::notification::CompactionRequestFile;
         let request_id = uuid::Uuid::new_v4().to_string();
-        let trigger_str = match trigger {
-            xai_grok_telemetry::events::CompactionTrigger::Manual => "manual",
-            xai_grok_telemetry::events::CompactionTrigger::Auto => "auto",
-        };
+        let trigger_str = trigger.as_str();
         let prompt_variant = if use_short_prompt {
             "short"
         } else {

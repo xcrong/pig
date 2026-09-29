@@ -14,7 +14,7 @@ use crate::session::info::Info as SessionInfo;
 use crate::session::persistence::list_summaries;
 use crate::session::share::{ShareSessionRequest, ShareSessionResponse};
 use crate::upload::trace::{SessionMetadataType, upload_session_metadata};
-use xai_grok_telemetry::id::agent_id;
+use crate::remote::client::ephemeral_agent_id;
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -95,7 +95,7 @@ async fn handle_share_session(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtRe
     // Upload to backend and get share URL.
     // The `save_session_data` call may fail with 413 for very large sessions; that is acceptable because the data is already in cloud storage
     let client = BackendClient::new().with_auth_manager(agent.auth_manager.clone());
-    let agent_id = agent_id();
+    let agent_id = ephemeral_agent_id();
     let share_url = client
         .share_session(&exported, &agent_id)
         .await

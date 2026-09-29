@@ -26,10 +26,10 @@ pub async fn discover_skills(
     config: &SkillsConfig,
     project_trusted: bool,
 ) -> Vec<Value> {
-    let span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
+    let span = tracing::info_span!(
         "workspace.discover_skills",
         skill_count = tracing::field::Empty,
-    ));
+    );
     let cwd_str = root_cwd.to_string_lossy();
     // Workspace discovery does no per-vendor compat gating; pass the all-on default
     let skills = xai_grok_agent::prompt::skills::list_skills(
@@ -38,9 +38,9 @@ pub async fn discover_skills(
         xai_grok_agent::prompt::skills::CompatConfig::default(),
         project_trusted,
     )
-    .instrument(span.span().clone())
+    .instrument(span.clone())
     .await;
-    span.span().record("skill_count", skills.len() as i64);
+    span.record("skill_count", skills.len() as i64);
 
     skills
         .into_iter()
@@ -61,9 +61,9 @@ pub async fn discover_skills(
 /// Discover project-instruction files (AGENTS.md, Claude.md, rules) from the workspace root up to the git root.
 /// `project_trusted` is the folder-trust verdict for `root_cwd`; when false, project-scope instructions are omitted.
 pub async fn discover_agents_md(root_cwd: &Path, project_trusted: bool) -> Vec<Value> {
-    let span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
+    let span = tracing::info_span!(
         "workspace.discover_agents_md"
-    ));
+    );
     let cwd_str = root_cwd.to_string_lossy();
     // No user config is loaded on this path, so the vendor and `[paths]` defaults apply
     let files = xai_grok_agent::prompt::agents_md::read_agents_config_with_paths(
@@ -72,7 +72,7 @@ pub async fn discover_agents_md(root_cwd: &Path, project_trusted: bool) -> Vec<V
         &xai_grok_agent::prompt::paths::PathsConfig::default(),
         project_trusted,
     )
-    .instrument(span.span().clone())
+    .instrument(span.clone())
     .await;
 
     files

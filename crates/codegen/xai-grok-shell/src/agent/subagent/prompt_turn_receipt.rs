@@ -19,7 +19,6 @@ const CANCELLED_RECEIPT_SETTLEMENT_GRACE: std::time::Duration = std::time::Durat
 pub(crate) struct PromptTurnReceipt {
     pub prompt_id: String,
     pub result: oneshot::Receiver<PromptTurnResult>,
-    pub telemetry: crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry,
 }
 
 pub(super) enum PromptTurnReceiptOutcome {
@@ -30,7 +29,6 @@ pub(super) enum PromptTurnReceiptOutcome {
 pub(super) struct FinalPromptTurnReceipt {
     pub prompt_id: String,
     pub outcome: PromptTurnReceiptOutcome,
-    pub telemetry: crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,7 +55,6 @@ pub(super) struct PromptTurnSettlementInput {
 pub(super) struct PromptTurnSettlementOutput {
     pub result: SubagentResult,
     pub cancellation_may_hide_usage: bool,
-    pub settlement_status: crate::session::telemetry::ActiveAgentMessageSettlementStatus,
 }
 
 pub(super) fn reduce_prompt_turn_settlement(
@@ -72,7 +69,6 @@ pub(super) fn reduce_prompt_turn_settlement(
     } = input;
 
     if let PromptTurnReceiptDisposition::Completed = disposition {
-        let is_final_receipt_closed = final_receipt.as_ref().is_some_and(Result::is_err);
         let cancellation_may_hide_usage = if let Some(receipt) = final_receipt {
             let empty_summary = String::new;
             let max_turns_summary = |_| String::new();
@@ -97,13 +93,6 @@ pub(super) fn reduce_prompt_turn_settlement(
             false
         };
         return PromptTurnSettlementOutput {
-            settlement_status: crate::session::telemetry::classify_completed_settlement(
-                crate::session::telemetry::ActiveAgentMessageCompletedSettlement {
-                    is_result_success: result.success,
-                    is_result_cancelled: result.cancelled,
-                    is_final_receipt_closed,
-                },
-            ),
             result,
             cancellation_may_hide_usage,
         };
@@ -126,20 +115,6 @@ pub(super) fn reduce_prompt_turn_settlement(
     result.output = Arc::from(final_text);
     result.output_usage_incomplete = true;
     PromptTurnSettlementOutput {
-        settlement_status: match disposition {
-            PromptTurnReceiptDisposition::Cancelled => {
-                crate::session::telemetry::ActiveAgentMessageSettlementStatus::Cancelled
-            }
-            PromptTurnReceiptDisposition::AdmissionUncertain => {
-                crate::session::telemetry::ActiveAgentMessageSettlementStatus::AdmissionUncertain
-            }
-            PromptTurnReceiptDisposition::TimedOut => {
-                crate::session::telemetry::ActiveAgentMessageSettlementStatus::TimedOut
-            }
-            PromptTurnReceiptDisposition::Completed => {
-                unreachable!("completed settlements return before unclean error mapping")
-            }
-        },
         result,
         cancellation_may_hide_usage: true,
     }
@@ -264,17 +239,13 @@ async fn drain_prompt_turn_receipts(
                 match receipt {
                     Some(receipt) => {
                         latest_admission = latest_admission.saturating_add(1);
-                        final_identity = Some((
-                            receipt.prompt_id.clone(),
-                            receipt.telemetry.clone(),
-                        ));
+                        final_identity = Some(receipt.prompt_id.clone());
                         pending.push(async move {
                             let settled = FinalPromptTurnReceipt {
                                 prompt_id: receipt.prompt_id,
                                 outcome: PromptTurnReceiptOutcome::Settled(Box::new(
                                     receipt.result.await,
                                 )),
-                                telemetry: receipt.telemetry,
                             };
                             (latest_admission, settled)
                         });
@@ -295,7 +266,7 @@ async fn drain_prompt_turn_receipts(
                 }
             }, if deadline.is_some() => {
                 while let Ok(receipt) = receipt_stream.try_recv() {
-                    final_identity = Some((receipt.prompt_id, receipt.telemetry));
+                    final_identity = Some(receipt.prompt_id);
                 }
                 // Ready pending identities were recorded at ingress; completion order is not admission order.
                 while pending.next().now_or_never().flatten().is_some() {}
@@ -307,17 +278,13 @@ async fn drain_prompt_turn_receipts(
 
 fn force_receipt_settlement_timeout(
     child_cmd_tx: &mpsc::UnboundedSender<SessionCommand>,
-    final_identity: Option<(
-        String,
-        crate::session::telemetry::ActiveAgentMessageAdmissionTelemetry,
-    )>,
+    final_identity: Option<String>,
 ) -> PromptTurnReceiptSettlement {
     let _ = child_cmd_tx.send(SessionCommand::Shutdown(ShutdownKind::CancelRunningTurn));
     PromptTurnReceiptSettlement {
-        final_receipt: final_identity.map(|(prompt_id, telemetry)| FinalPromptTurnReceipt {
+        final_receipt: final_identity.map(|prompt_id| FinalPromptTurnReceipt {
             prompt_id,
             outcome: PromptTurnReceiptOutcome::TimedOut,
-            telemetry,
         }),
         disposition: PromptTurnReceiptDisposition::TimedOut,
     }

@@ -703,21 +703,6 @@ fn log_subagent_model_resolution(
     let child_key = key_prefix(&resolved.api_key);
     let parent_key = key_prefix(&parent.api_key);
     let keys_match = resolved.api_key == parent.api_key;
-    xai_grok_telemetry::unified_log::debug(
-        "subagent model resolved",
-        None,
-        Some(serde_json::json!({
-            "agent": agent_name,
-            "priority": priority,
-            "child_model": resolved_id.0.as_ref(),
-            "child_base_url": &resolved.base_url,
-            "child_key_prefix": child_key,
-            "parent_model": &parent.model,
-            "parent_base_url": &parent.base_url,
-            "parent_key_prefix": parent_key,
-            "keys_match": keys_match,
-        })),
-    );
 }
 /// Session-token bearer resolver for a subagent config, over the parent's `AuthManager` (wire-valid only).
 /// Without it the subagent runs forever on the `api_key` frozen at spawn and 401s once the parent rotates the token.
@@ -839,18 +824,6 @@ async fn read_parent_sampling_config(
             };
             let model_id = ctx.model_id.clone();
             let global_model_id = ctx.models_manager.current_model_id();
-            xai_grok_telemetry::unified_log::debug(
-                "subagent read parent config (live)",
-                None,
-                Some(serde_json::json!({
-                    "parent_model": &inherited.model,
-                    "parent_base_url": &inherited.base_url,
-                    "parent_key_prefix": key_prefix(&inherited.api_key),
-                    "session_model_id": model_id.0.as_ref(),
-                    "global_model_id": global_model_id.0.as_ref(),
-                    "source": "chat_state",
-                })),
-            );
             return (inherited, model_id);
         }
         tracing::warn!(
@@ -858,17 +831,6 @@ async fn read_parent_sampling_config(
              falling back to spawn context baseline"
         );
     }
-    xai_grok_telemetry::unified_log::warn(
-        "subagent read parent config (fallback)",
-        None,
-        Some(serde_json::json!({
-            "parent_model": &ctx.sampling_config.model,
-            "parent_base_url": &ctx.sampling_config.base_url,
-            "parent_key_prefix": key_prefix(&ctx.sampling_config.api_key),
-            "source": "spawn_context_baseline",
-            "has_chat_state": ctx.parent_chat_state.is_some(),
-        })),
-    );
     let mut fallback = ctx.sampling_config.clone();
     fallback.bearer_resolver = if ctx.would_strip_fallback_key(fallback.api_key.as_deref()) {
         None
@@ -954,21 +916,6 @@ fn resolve_model_override_to_config(
     } else {
         None
     };
-    xai_grok_telemetry::unified_log::debug(
-        "subagent resolve_model_override_to_config",
-        None,
-        Some(serde_json::json!({
-            "model_id": model_id,
-            "canonical_model": canonical_model_id.0.as_ref(),
-            "resolved_model_raw": &config.model,
-            "base_url": &config.base_url,
-            "key_prefix": key_prefix(&config.api_key),
-            "has_own_credentials": entry.has_own_credentials(),
-            "has_session_key": has_session_key,
-            "auth_type": format!("{:?}", resolved_auth_type),
-            "auth_method_id": ctx.auth_method_id.0.as_ref(),
-        })),
-    );
     Some((config, canonical_model_id))
 }
 struct InitialContext {
@@ -1834,17 +1781,6 @@ fn cancellation_error_message(
             "Subagent turn was cancelled: aborted mid-turn".to_string()
         }
         _ => "Subagent turn was cancelled".to_string(),
-    }
-}
-fn telemetry_owner_kind(
-    request: &SubagentRequest,
-) -> xai_grok_telemetry::events::SubagentOwnerKind {
-    if request.owner.is_workflow() {
-        xai_grok_telemetry::events::SubagentOwnerKind::Workflow
-    } else if request.from_scheduler_loop() {
-        xai_grok_telemetry::events::SubagentOwnerKind::SchedulerLoop
-    } else {
-        xai_grok_telemetry::events::SubagentOwnerKind::Task
     }
 }
 fn failure_result(request: &SubagentRequest, error: &str) -> SubagentResult {

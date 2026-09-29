@@ -5,7 +5,7 @@
 //! It never rewrites `remote_settings` wholesale, never calls `re_resolve_runtime_fields`, and never re-initializes telemetry.
 
 use super::*;
-use crate::heap_profile::{SCOPED_KILL_SWITCH_INTERVAL, build_upload_handles};
+use crate::heap_profile::SCOPED_KILL_SWITCH_INTERVAL;
 
 impl MvpAgent {
     pub(super) fn reconfigure_heap_profile_monitor(&self) {
@@ -24,28 +24,8 @@ impl MvpAgent {
     }
 
     fn heap_profile_upload_handles(&self) -> Option<crate::heap_profile::HeapProfileUploadHandles> {
-        let method = self.trace_upload_config_snapshot()?;
-        let bucket_url = self
-            .cfg
-            .borrow()
-            .endpoints
-            .resolve_trace_bucket_url()
-            .map(|r| r.value);
-        // Only direct GCS uploads need a bucket.
-        if bucket_url.is_none()
-            && matches!(
-                method,
-                crate::session::repo_changes::UploadMethod::Direct { .. }
-            )
-        {
-            tracing::debug!("no trace bucket configured; heap-profile uploads disabled");
-            return None;
-        }
-        Some(build_upload_handles(
-            Arc::clone(&self.auth_manager),
-            bucket_url,
-            method,
-        ))
+        // No first-party trace pipeline: heap-profile uploads are disabled.
+        None
     }
 
     /// Spawns the background poll and the scoped kill-switch loop; only agent entrypoints call this.
@@ -68,13 +48,6 @@ impl MvpAgent {
                     }
                 };
                 tokio::time::sleep(poll_interval).await;
-
-                let reported = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    agent_ref.get().report_resource_usage_if_due();
-                }));
-                if reported.is_err() {
-                    tracing::error!("resource telemetry: report tick panicked; continuing");
-                }
 
                 let enabled = agent_ref
                     .get()

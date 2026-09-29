@@ -387,16 +387,6 @@ async fn handle_notification(
                 .load(std::sync::atomic::Ordering::Relaxed);
             let mut will_wake = false;
             if task_snapshot.is_auto_wake_suppressed() {
-                xai_grok_telemetry::unified_log::info(
-                    "shell.task_wake.suppressed",
-                    Some(config.session_id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "task_id": &task_id,
-                        "block_waited": task_snapshot.block_waited,
-                        "explicitly_killed": task_snapshot.explicitly_killed,
-                        "kill_result_delivered": task_snapshot.kill_result_delivered,
-                    })),
-                );
             } else if goal_loop_active {
                 tracing::info!(
                     task_id = %task_id,
@@ -445,7 +435,6 @@ async fn handle_notification(
                         client_identifier: None,
                         screen_mode: None,
                         verbatim: true,
-                        traceparent: xai_grok_otel::current_traceparent(),
                         json_schema: None,
                         send_now: false,
                         tool_overrides_update: None,
@@ -490,17 +479,6 @@ async fn handle_notification(
                     false
                 };
                 will_wake = admitted;
-                xai_grok_telemetry::unified_log::info(
-                    "shell.task_wake.bridge_admission",
-                    Some(config.session_id.0.as_ref()),
-                    Some(serde_json::json!({
-                        "task_id": &task_id,
-                        "monitor": is_monitor,
-                        "enqueued": enqueued,
-                        "admitted": admitted,
-                        "gate": config.task_wake_suppressed.get(),
-                    })),
-                );
                 if will_wake {
                     if is_monitor {
                         let _ =

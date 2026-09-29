@@ -14,9 +14,6 @@ use crate::session::worktree::{
     create_jj_workspace, create_worktree_async, create_worktree_from_worktree_async,
     rehydrate_session_in_worktree, resolve_session_repo_wide, resume_session_in_worktree,
 };
-use xai_grok_telemetry::instrument_task;
-use xai_grok_telemetry::region::Parent;
-use xai_grok_telemetry::session_ctx::spawn_local_in_session_ctx;
 
 type ExtResult = Result<acp::ExtResponse, acp::Error>;
 
@@ -204,13 +201,9 @@ pub async fn handle(
                     gateway: agent.gateway().clone(),
                 };
                 let copy_context = agent.background_copy_context();
-                spawn_local_in_session_ctx(instrument_task!(
-                    "worktree.create",
-                    Parent::Root,
-                    async move {
-                        create_worktree_async(req, notifier, copy_context).await;
-                    }
-                ));
+                tokio::task::spawn_local(async move {
+                    create_worktree_async(req, notifier, copy_context).await;
+                });
             }
             to_response(Ok(result))
         }
@@ -275,13 +268,9 @@ pub async fn handle(
                 let notifier = GatewayWorktreeNotifier {
                     gateway: agent.gateway().clone(),
                 };
-                spawn_local_in_session_ctx(instrument_task!(
-                    "worktree.create",
-                    Parent::Root,
-                    async move {
-                        create_worktree_from_worktree_async(req, notifier).await;
-                    }
-                ));
+                tokio::task::spawn_local(async move {
+                    create_worktree_from_worktree_async(req, notifier).await;
+                });
             }
 
             to_response(Ok(response))
@@ -375,7 +364,7 @@ pub async fn handle(
             let grove_gate_source = apply_grove_worktree_flag(agent, &mut grove_worktree);
             let grove_worktree = grove_worktree.unwrap_or(false);
             let registry_client = agent.session_registry_client();
-            let agent_id = xai_grok_telemetry::id::agent_id();
+            let agent_id = crate::remote::client::ephemeral_agent_id();
 
             to_response(
                 resume_session_in_worktree(

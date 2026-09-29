@@ -82,7 +82,7 @@ pub async fn spawn_agent(
             });
         tokio::task::spawn_local(
             GatewayReceiver::new(gateway_rx, conn)
-                .with_on_meta(xai_grok_otel::span_from_meta_traceparent)
+                .with_on_meta(|_| tracing::Span::current())
                 .run(),
         );
         let _ = handle_io.await;

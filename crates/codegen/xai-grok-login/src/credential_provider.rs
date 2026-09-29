@@ -11,7 +11,7 @@ use crate::grok_auth_credentials::GrokAuthCredentials;
 /// `None` for non-API-key auth.
 fn api_key_id_for(auth: Option<&crate::GrokAuth>) -> Option<String> {
     auth.filter(|a| matches!(a.auth_mode, crate::AuthMode::ApiKey))
-        .map(|a| xai_grok_telemetry::config::deployment_id_from_key(&a.key))
+        .map(|a| crate::deployment_id_from_key(&a.key))
 }
 
 /// Sampler [`BearerResolver`](xai_grok_sampler::BearerResolver) over a live [`AuthManager`].
@@ -73,11 +73,6 @@ impl xai_grok_sampler::BearerResolver for WireValidBearerResolver {
                 return;
             }
             let budget = pre_send_refresh_budget(remaining);
-            xai_grok_telemetry::unified_log::warn(
-                "auth: pre-send refresh, cached bearer would not outlive the send",
-                None,
-                Some(serde_json::json!({ "budget_ms": budget.as_millis() as u64 })),
-            );
             if budget.is_zero() {
                 // Less than the stamp margin left: no time to mint, and `current_bearer` still carries the bearer
                 return;
@@ -135,7 +130,7 @@ impl ShellAuthCredentialProvider {
     }
 }
 
-// Manual Debug impl that redacts the token, like RefreshableSpanExporter in otel_layer.rs
+// Manual Debug impl that redacts the token.
 impl std::fmt::Debug for ShellAuthCredentialProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ShellAuthCredentialProvider")
@@ -197,7 +192,7 @@ impl AuthCredentialProvider for ShellAuthCredentialProvider {
             return false;
         }
         self.auth_manager
-            .try_recover_unauthorized(crate::recovery::RecoverySource::Background)
+            .try_recover_unauthorized()
             .await
     }
 
@@ -257,249 +252,6 @@ impl xai_file_utils::storage_client::Auth401AttributionCallback for StorageClien
             sent_bearer_prefix,
         );
     }
-}
-
-/// Credential provider for the OTel layer's `RefreshableSpanExporter`. Starts with a bootstrap `AuthManager` (disk-read-only, no refresher).
-/// [`Self::set_live`] upgrades it to the agent's live `Arc<AuthManager>` once the agent is initialized.
-/// After upgrade: `snapshot()` reads from the live manager's in-memory cache (kept hot by the proactive refresh task) instead of re-reading disk. `refresh_after_unauthorized()` routes through `unauthorized_recovery` for active OIDC or external-binary refresh. Before upgrade, the bootstrap manager only reads from disk.
-pub struct OtelAuthCredentialProvider {
-    /// Bootstrap manager used before the live one is available.
-    bootstrap: Arc<AuthManager>,
-    /// Swapped to the agent's live `AuthManager` via `set_live()`.
-    /// `None` means still in bootstrap mode.
-    live: arc_swap::ArcSwap<Option<Arc<AuthManager>>>,
-    /// Enterprise deployment key. Takes precedence over OIDC in `snapshot_inner`.
-    deployment_key: arc_swap::ArcSwap<Option<String>>,
-    /// Resolves `deployment_id` from the deployment key in `snapshot_inner`.
-    deployment_id_resolver: DeploymentIdResolver,
-}
-
-impl OtelAuthCredentialProvider {
-    /// Constructs without a deployment-id resolver; the snapshot omits `deployment_id`.
-    /// Use [`Self::with_deployment_id_resolver`] whenever a deployment key may be set.
-    #[cfg(test)]
-    fn new(bootstrap: Arc<AuthManager>) -> Self {
-        Self::with_deployment_id_resolver(bootstrap, std::sync::Arc::new(|_| None))
-    }
-
-    fn with_deployment_id_resolver(
-        bootstrap: Arc<AuthManager>,
-        deployment_id_resolver: DeploymentIdResolver,
-    ) -> Self {
-        Self {
-            bootstrap,
-            live: arc_swap::ArcSwap::from_pointee(None),
-            deployment_key: arc_swap::ArcSwap::from_pointee(None),
-            deployment_id_resolver,
-        }
-    }
-
-    /// Upgrade to the agent's live `AuthManager`.
-    /// After this call, `snapshot()` reads from the live manager and `refresh_after_unauthorized()` drives the full recovery state machine.
-    pub fn set_live(&self, auth_manager: Arc<AuthManager>) {
-        self.live.store(Arc::new(Some(auth_manager)));
-    }
-
-    pub fn set_deployment_key(&self, key: String) {
-        self.deployment_key.store(Arc::new(Some(key)));
-    }
-
-    /// Email for the external stream: OIDC/gateway only, never API-key,
-    /// deployment-key, git, or blank. Identity, not a content gate.
-    fn oauth_gateway_email(&self) -> Option<String> {
-        if self.deployment_key.load().is_some() {
-            return None;
-        }
-        let (am, _) = self.load_state();
-        let auth = am.current_or_expired()?;
-        oauth_gateway_email_from_auth(&auth)
-    }
-
-    /// Loads `live` once, returning the live manager when set, else the bootstrap.
-    fn load_state(&self) -> (Arc<AuthManager>, bool) {
-        let guard = self.live.load();
-        match guard.as_ref() {
-            Some(am) => (am.clone(), true),
-            None => (self.bootstrap.clone(), false),
-        }
-    }
-}
-
-impl std::fmt::Debug for OtelAuthCredentialProvider {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (_, is_live) = self.load_state();
-        f.debug_struct("OtelAuthCredentialProvider")
-            .field("mode", &if is_live { "live" } else { "bootstrap" })
-            .finish()
-    }
-}
-
-impl HttpAuth for OtelAuthCredentialProvider {
-    fn apply(&self, builder: RequestBuilder, base_url: &str) -> RequestBuilder {
-        // The collector is an xAI host, so a session token from another authority must not be sent to it
-        // A deployment key is configured locally rather than minted, so it still applies.
-        if self.deployment_key.load().is_none() && !ActiveAuthBackend::default().is_xai_authority()
-        {
-            return builder;
-        }
-        let snapshot = self.snapshot_inner();
-        let mut creds = GrokAuthCredentials::new(None);
-        if self.deployment_key.load().is_some() {
-            creds.deployment_key = snapshot.token;
-        } else {
-            creds.user_token = snapshot.token;
-        }
-        creds.apply(builder, base_url)
-    }
-}
-
-impl OtelAuthCredentialProvider {
-    fn snapshot_inner(&self) -> CredentialSnapshot {
-        if let Some(ref dk) = **self.deployment_key.load() {
-            return CredentialSnapshot {
-                token: Some(dk.clone()),
-                deployment_id: (self.deployment_id_resolver)(Some(dk)),
-                ..Default::default()
-            };
-        }
-
-        let (am, is_live) = self.load_state();
-        if !is_live {
-            am.force_reload_from_disk();
-        }
-        let auth = am.current_or_expired();
-        let user_id = auth.as_ref().map(|a| a.user_id.clone());
-        let team_id = auth.as_ref().and_then(|a| a.team_id.clone());
-        let organization_id = auth.as_ref().and_then(|a| a.organization_id.clone());
-        let api_key_id = api_key_id_for(auth.as_ref());
-        let token = auth.map(|a| a.key);
-        CredentialSnapshot {
-            token,
-            user_id,
-            team_id,
-            deployment_id: None,
-            api_key_id,
-            organization_id,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl AuthCredentialProvider for OtelAuthCredentialProvider {
-    fn snapshot(&self) -> CredentialSnapshot {
-        // The exporter reads the token from here rather than through `apply`, so both need the guard.
-        // A deployment key is configured locally, so it still applies.
-        if self.deployment_key.load().is_none() && !ActiveAuthBackend::default().is_xai_authority()
-        {
-            return CredentialSnapshot::default();
-        }
-        self.snapshot_inner()
-    }
-
-    fn has_usable_credential(&self) -> bool {
-        if self.deployment_key.load().is_some() {
-            return true;
-        }
-        if !ActiveAuthBackend::default().is_xai_authority() {
-            return false;
-        }
-        self.load_state().0.has_usable_token()
-    }
-
-    async fn refresh_after_unauthorized(&self) -> bool {
-        let (am, is_live) = self.load_state();
-        if !is_live {
-            return false;
-        }
-        am.try_recover_unauthorized(crate::recovery::RecoverySource::Background)
-            .await
-    }
-
-    fn needs_token_auth_header(&self) -> bool {
-        self.deployment_key.load().is_none()
-    }
-}
-
-/// Process-wide OTel credential provider handle. This is one of two acceptable process-wide statics in this crate (the other is `TRACER_PROVIDER` in `otel_layer.rs`).
-/// It is set once at tracing init, before any `AuthManager` exists, and holds a bootstrap-mode provider. The `ArcSwap` inside the provider handles the runtime auth state swap; the `OnceLock` itself is never re-written.
-/// A static beats passing a handle: `build_default_otel_layer_config` is called from 15+ `init_tracing*` sites across 3 binaries. Passing a handle from all of them to the agent init site, where the live `AuthManager` is constructed, would touch ~20 files.
-static OTEL_PROVIDER: std::sync::OnceLock<Arc<OtelAuthCredentialProvider>> =
-    std::sync::OnceLock::new();
-
-/// Upgrade the OTel credential provider to use the agent's live `AuthManager`.
-/// Call this once after the main `AuthManager` is constructed and has its refresher configured.
-/// No-ops if the OTel layer was never initialized (e.g. `InstrumentationMode::Disabled`).
-pub fn wire_otel_auth_manager(auth_manager: Arc<AuthManager>) {
-    if let Some(provider) = OTEL_PROVIDER.get() {
-        provider.set_live(auth_manager);
-        tracing::debug!("otel: upgraded credential provider to live AuthManager");
-    }
-    // The external stream's identity attributes come from the same snapshot, so re-sync it here
-    sync_external_otel_identity();
-}
-
-/// Email for the external OTEL stream. OIDC/gateway only; never API-key,
-/// WebLogin, or a blank address. Callers must also skip deployment-key
-/// snapshots — this helper only inspects `GrokAuth`.
-pub fn oauth_gateway_email_from_auth(auth: &crate::GrokAuth) -> Option<String> {
-    match auth.auth_mode {
-        crate::AuthMode::Oidc | crate::AuthMode::External => {
-            auth.email.clone().filter(|e| !e.is_empty())
-        }
-        crate::AuthMode::ApiKey | crate::AuthMode::WebLogin => None,
-    }
-}
-
-/// Push the current identity attributes (never the token) to the external OTEL stream. Reads the same `CredentialSnapshot` the internal layer stamps per export, so both pipelines attribute identically.
-/// `user.id` is copied whenever the snapshot has a non-empty principal (including API-key sessions). OAuth/gateway email is attached when present; never from git, API-key, or deployment-key.
-/// No-op when the OTel provider was never initialized or the external stream is dormant.
-pub fn sync_external_otel_identity() {
-    if let Some(provider) = OTEL_PROVIDER.get() {
-        let snapshot = provider.snapshot();
-        let mut attrs = xai_grok_telemetry::external::IdentityAttrs::from_snapshot(&snapshot);
-        attrs.email = provider.oauth_gateway_email();
-        xai_grok_telemetry::external::set_identity(attrs);
-    }
-}
-
-/// No-ops if the OTel layer was never initialized.
-pub fn wire_otel_deployment_key(key: String) {
-    if let Some(provider) = OTEL_PROVIDER.get() {
-        provider.set_deployment_key(key);
-        tracing::debug!("otel: set deployment key on credential provider");
-        // Re-sync so the external stream picks up `deployment.id`, which `snapshot_inner` derives from the key
-        // Deployment-key-only setups wire the key after `wire_otel_auth_manager` already synced
-        // Without this re-sync the attribute would stay absent on customer exports until a later sync ran
-        sync_external_otel_identity();
-    }
-}
-
-/// Bootstrap the OTel credential provider both pager and TUI need at tracing init. Starts disk-read-only.
-/// Call [`wire_otel_auth_manager`] after agent init to upgrade to the live `AuthManager` with active refresh.
-/// Resolver and proxy URL are injected so this stays off shell config; the caller owns endpoint assembly.
-pub fn install_bootstrap_otel_provider(
-    proxy_base_url: String,
-    deployment_id_resolver: DeploymentIdResolver,
-) -> (Arc<dyn AuthCredentialProvider>, String) {
-    let grok_com_config = crate::GrokComConfig::default();
-    let token_header_value = grok_com_config.token_header.clone();
-
-    let grok_home = xai_grok_shell_base::util::grok_home::grok_home();
-    let bootstrap = Arc::new(AuthManager::new_with_proxy_base_url(
-        &grok_home,
-        grok_com_config,
-        proxy_base_url,
-    ));
-    let provider = Arc::new(OtelAuthCredentialProvider::with_deployment_id_resolver(
-        bootstrap,
-        deployment_id_resolver,
-    ));
-    let _ = OTEL_PROVIDER.set(provider.clone());
-
-    (
-        provider as Arc<dyn AuthCredentialProvider>,
-        token_header_value,
-    )
 }
 
 #[cfg(test)]
@@ -920,7 +672,7 @@ mod tests {
 
     #[test]
     fn snapshot_populates_tenant_id_per_auth_mode() {
-        use xai_grok_telemetry::config::deployment_id_from_key;
+        use crate::deployment_id_from_key;
         let _guard = EarlyInvalidationGuard::pin_to_default();
         let dir = tempfile::tempdir().unwrap();
 
@@ -970,237 +722,6 @@ mod tests {
         assert!(oidc.deployment_id.is_none() && oidc.api_key_id.is_none());
     }
 
-    /// Bootstrap mode: `snapshot()` re-reads disk, so a token rotated by a sibling process is picked up without a live AuthManager.
-    #[test]
-    fn otel_bootstrap_snapshot_picks_up_disk_writes() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let scope = crate::GrokComConfig::default().auth_scope();
-        let auth_path = dir.path().join("auth.json");
-
-        let mgr = make_manager(
-            &dir,
-            Some(make_auth("initial-token", ChronoDuration::hours(1))),
-        );
-        let mut store = crate::read_auth_json(&auth_path).unwrap_or_default();
-        store.insert(
-            scope.clone(),
-            make_auth("initial-token", ChronoDuration::hours(1)),
-        );
-        crate::storage::write_auth_json(&auth_path, &store).unwrap();
-
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        assert_eq!(provider.snapshot().token.as_deref(), Some("initial-token"));
-
-        // Simulate sibling rotation on disk.
-        let mut store = crate::read_auth_json(&auth_path).unwrap();
-        store.insert(scope, make_auth("rotated-token", ChronoDuration::hours(1)));
-        crate::storage::write_auth_json(&auth_path, &store).unwrap();
-
-        assert_eq!(
-            provider.snapshot().token.as_deref(),
-            Some("rotated-token"),
-            "must pick up sibling-rotated tokens from disk"
-        );
-    }
-
-    /// After `set_live()`, `snapshot()` reads from the live manager's in-memory cache with no disk re-read.
-    /// `refresh_after_unauthorized()` then drives the recovery state machine.
-    #[tokio::test]
-    async fn otel_live_mode_uses_shared_auth_manager() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let bootstrap_dir = tempfile::tempdir().unwrap();
-        let bootstrap_mgr = make_manager(&bootstrap_dir, None);
-        let provider = OtelAuthCredentialProvider::new(bootstrap_mgr);
-
-        // Bootstrap mode: no token.
-        assert!(provider.snapshot().token.is_none());
-        assert!(!provider.refresh_after_unauthorized().await);
-
-        // Wire up the live AuthManager with a fresh token.
-        let live_dir = tempfile::tempdir().unwrap();
-        let live_mgr = make_manager(
-            &live_dir,
-            Some(make_auth("live-token", ChronoDuration::hours(1))),
-        );
-        provider.set_live(live_mgr.clone());
-
-        // Live mode: reads from in-memory cache.
-        assert_eq!(
-            provider.snapshot().token.as_deref(),
-            Some("live-token"),
-            "must read from live AuthManager after set_live()"
-        );
-
-        // Rotate the live manager's token (simulating proactive refresh).
-        live_mgr.hot_swap(make_auth("rotated-live", ChronoDuration::hours(1)));
-        assert_eq!(
-            provider.snapshot().token.as_deref(),
-            Some("rotated-live"),
-            "must see rotated token from live manager"
-        );
-    }
-
-    /// `refresh_after_unauthorized` drives recovery when live.
-    #[tokio::test]
-    async fn otel_live_refresh_after_unauthorized_drives_recovery() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let bootstrap_dir = tempfile::tempdir().unwrap();
-        let bootstrap_mgr = make_manager(&bootstrap_dir, None);
-        let provider = OtelAuthCredentialProvider::new(bootstrap_mgr);
-
-        let live_dir = tempfile::tempdir().unwrap();
-        let live_mgr = Arc::new(AuthManager::new(
-            live_dir.path(),
-            crate::GrokComConfig::default(),
-        ));
-        live_mgr.hot_swap(GrokAuth {
-            key: "stale".into(),
-            auth_mode: crate::AuthMode::Oidc,
-            create_time: chrono::Utc::now() - ChronoDuration::hours(2),
-            user_id: "u".into(),
-            refresh_token: Some("rt-stale".into()),
-            expires_at: Some(chrono::Utc::now() - ChronoDuration::hours(1)),
-            ..GrokAuth::test_default()
-        });
-
-        struct OkRefresher;
-        #[async_trait::async_trait]
-        impl crate::refresh::TokenRefresher for OkRefresher {
-            async fn refresh(
-                &self,
-                _r: crate::manager::RefreshReason,
-            ) -> crate::refresh::RefreshOutcome {
-                crate::refresh::RefreshOutcome::Success(Box::new(GrokAuth {
-                    key: "refreshed".into(),
-                    auth_mode: crate::AuthMode::Oidc,
-                    create_time: chrono::Utc::now(),
-                    user_id: "u".into(),
-                    refresh_token: Some("rt-new".into()),
-                    expires_at: Some(chrono::Utc::now() + ChronoDuration::hours(1)),
-                    ..GrokAuth::test_default()
-                }))
-            }
-        }
-        live_mgr.set_refresher(Arc::new(OkRefresher));
-
-        provider.set_live(live_mgr.clone());
-        assert!(
-            provider.refresh_after_unauthorized().await,
-            "live mode must drive recovery"
-        );
-        assert_eq!(live_mgr.current().unwrap().key, "refreshed");
-    }
-
-    #[test]
-    fn otel_deployment_key_sent_when_no_oidc_token() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(&dir, None); // no OIDC token
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        provider.set_deployment_key("enterprise-key".to_string());
-
-        let snap = provider.snapshot();
-        assert_eq!(
-            snap.token.as_deref(),
-            Some("enterprise-key"),
-            "deployment key must be sent when no OIDC token exists"
-        );
-    }
-
-    #[test]
-    fn otel_deployment_key_wins_over_oidc_token() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(
-            &dir,
-            Some(make_auth("oidc-token", ChronoDuration::hours(1))),
-        );
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        provider.set_deployment_key("deployment-key-123".to_string());
-
-        let snap = provider.snapshot();
-        assert_eq!(
-            snap.token.as_deref(),
-            Some("deployment-key-123"),
-            "deployment key must win over OIDC token"
-        );
-        assert!(snap.user_id.is_none());
-    }
-
-    #[test]
-    fn has_usable_credential_reflects_auth_state() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(&dir, Some(make_auth("live", ChronoDuration::hours(1))));
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        assert!(
-            provider.has_usable_credential(),
-            "valid unexpired token is usable"
-        );
-
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(&dir, Some(make_auth("stale", ChronoDuration::hours(-1))));
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        assert!(
-            !provider.has_usable_credential(),
-            "expired token is not usable"
-        );
-
-        let dir = tempfile::tempdir().unwrap();
-        let provider = OtelAuthCredentialProvider::new(make_manager(&dir, None));
-        assert!(
-            !provider.has_usable_credential(),
-            "absent token is not usable"
-        );
-
-        // A refresh verdict must not make a still wire-valid access token unusable
-        // The gate keys on wire-validity, not the verdict, so a refresh failure doesn't pause uploads while the cached token is good
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(&dir, Some(make_auth("live", ChronoDuration::hours(1))));
-        mgr.record_permanent_failure(
-            "live".into(),
-            crate::error::RefreshTokenFailedReason::RefreshTokenRejected.into(),
-        );
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        assert!(
-            provider.has_usable_credential(),
-            "a wire-valid token stays usable despite a permanent refresh verdict"
-        );
-
-        let dir = tempfile::tempdir().unwrap();
-        let provider = OtelAuthCredentialProvider::new(make_manager(&dir, None));
-        provider.set_deployment_key("enterprise-key".to_string());
-        assert!(
-            provider.has_usable_credential(),
-            "static deployment key is always usable"
-        );
-    }
-
-    /// A token inside the early-invalidation buffer is still accepted by the proxy. The buffer is a client-side pre-refresh margin, not a wire expiry, and the sender puts the token on the wire via `current_or_expired()`.
-    /// The export gate must therefore keep it usable even though `current()` reports `None`. Regression test: exports used to stop during the buffer window.
-    #[test]
-    fn has_usable_credential_true_inside_early_invalidation_buffer() {
-        let _guard = EarlyInvalidationGuard::pin_to_default();
-        let dir = tempfile::tempdir().unwrap();
-        let mgr = make_manager(
-            &dir,
-            Some(make_auth("buffered", ChronoDuration::minutes(4))),
-        );
-        assert!(
-            mgr.current().is_none(),
-            "4-min token sits inside the pinned 5-min buffer, so current() is None"
-        );
-        let provider = OtelAuthCredentialProvider::new(mgr);
-        assert!(
-            provider.has_usable_credential(),
-            "a buffer-window token is still wire-valid, so the gate keeps it usable"
-        );
-    }
-
-    /// A configured `deployment_key` always wins over the AuthManager-resolved user token, matching the precedence in `GrokAuthCredentials::apply`.
-    /// The snapshot must report the deployment key so the 401-attribution prefix matches the wire bytes.
     #[test]
     fn deployment_key_wins_over_resolved_user_token() {
         let _guard = EarlyInvalidationGuard::pin_to_default();
@@ -1218,40 +739,4 @@ mod tests {
         assert!(snap.user_id.is_none());
     }
 
-    #[test]
-    fn oauth_gateway_email_oidc_and_external_only() {
-        let oidc = GrokAuth {
-            auth_mode: crate::AuthMode::Oidc,
-            email: Some("alice@corp.example".into()),
-            ..GrokAuth::test_default()
-        };
-        assert_eq!(
-            oauth_gateway_email_from_auth(&oidc).as_deref(),
-            Some("alice@corp.example")
-        );
-
-        let external = GrokAuth {
-            auth_mode: crate::AuthMode::External,
-            email: Some("bob@gateway.example".into()),
-            ..GrokAuth::test_default()
-        };
-        assert_eq!(
-            oauth_gateway_email_from_auth(&external).as_deref(),
-            Some("bob@gateway.example")
-        );
-
-        let blank = GrokAuth {
-            auth_mode: crate::AuthMode::Oidc,
-            email: Some(String::new()),
-            ..GrokAuth::test_default()
-        };
-        assert_eq!(oauth_gateway_email_from_auth(&blank), None);
-
-        let api = GrokAuth {
-            auth_mode: crate::AuthMode::ApiKey,
-            email: Some("should-not-export@example.com".into()),
-            ..GrokAuth::test_default()
-        };
-        assert_eq!(oauth_gateway_email_from_auth(&api), None);
-    }
 }

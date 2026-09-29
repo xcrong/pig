@@ -30,7 +30,7 @@
 //! A fresh channel would orphan the running coordinator.
 use crate::agent::remote_config::task_model_policy::{
     LatchedTaskModelSelection, TaskModelPolicyInputs, latch_task_model_presentation,
-    presentation_applied_event, rejection_sink,
+    rejection_sink,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -375,11 +375,6 @@ impl AgentRebuildSpec {
         crate::waterfall::mark(session_id_str, crate::waterfall::stage::SB_BUILDER_DONE);
         let agent_build_elapsed = build_phase_start.elapsed();
         task_model_selection.set(presentation.selection);
-        xai_grok_telemetry::session_ctx::log_event(presentation_applied_event(
-            &presentation,
-            task_model_policy,
-            *prompt_audience,
-        ));
         let model_validator = models_manager.clone();
         agent
             .tool_bridge()

@@ -28,13 +28,219 @@ use xai_acp_lib::{AcpAgentTx, AcpClientRx, acp_send};
 use xai_grok_shell::agent::auth_method::AuthMethodKind;
 use xai_grok_shell::agent::config::Config as AgentConfig;
 use xai_grok_shell::sampling::types::ReasoningEffort;
-use xai_grok_telemetry::process_info::{
-    Entrypoint, Interactivity, LeaderMode, ProcessIdentity, set_identity,
-};
-use xai_grok_telemetry::startup;
-pub use xai_grok_telemetry::startup::{
-    AgentKind, Owner, StartupOutcome, StartupPhase, StartupTimer,
-};
+/// Local process identity: which entrypoint this process is, for logs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Entrypoint {
+    Embedded,
+    Leader,
+    Pager,
+    Cli,
+    Headless,
+    Workspace,
+}
+
+/// Whether this process serves other sessions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeaderMode {
+    Attached,
+    Standalone,
+}
+
+/// Whether a human is watching.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Interactivity {
+    Interactive,
+    Unattended,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub entrypoint: Entrypoint,
+    pub leader: LeaderMode,
+    pub interactivity: Interactivity,
+}
+
+static PROCESS_IDENTITY: std::sync::OnceLock<ProcessIdentity> = std::sync::OnceLock::new();
+
+/// Record this process's identity for logs. First call wins.
+pub fn set_identity(identity: ProcessIdentity) {
+    let _ = PROCESS_IDENTITY.set(identity);
+}
+
+/// Local startup-phase tracking for logs and the connect-failure UI.
+/// Timings stay local; nothing leaves the machine.
+pub mod startup {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    /// Who owns the startup being timed.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Owner {
+        Client,
+        Agent,
+    }
+
+    /// Which agent flavor is being started.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AgentKind {
+        Embedded,
+        Leader,
+    }
+
+    /// Named startup phases, shared with the connect-failure UI.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum StartupPhase {
+        ConfigLoad,
+        ManagedPolicy,
+        Bootstrap,
+        ModelCatalog,
+        WorkerSpawn,
+        LeaderConnect,
+        AcpInitialize,
+        EagerAuth,
+        AppInit,
+        SessionCreate,
+    }
+
+    /// How startup ended.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum StartupOutcome {
+        Ok,
+        Timeout,
+        Cancelled,
+        Error,
+    }
+
+    impl StartupOutcome {
+        pub fn label(self) -> &'static str {
+            match self {
+                Self::Ok => "ok",
+                Self::Timeout => "timeout",
+                Self::Cancelled => "cancelled",
+                Self::Error => "error",
+            }
+        }
+    }
+
+    /// Wall-clock timer for one connect attempt. Summaries go to local logs.
+    pub struct StartupTimer {
+        owner: Owner,
+        started: Instant,
+    }
+
+    /// Start timing a connect attempt.
+    pub fn begin(owner: Owner) -> StartupTimer {
+        StartupTimer {
+            owner,
+            started: Instant::now(),
+        }
+    }
+
+    impl StartupTimer {
+        /// One-line phase summary for the `Connected` log.
+        pub fn summary(&self) -> String {
+            format!(
+                "{:?} elapsed_ms={}",
+                self.owner,
+                self.started.elapsed().as_millis()
+            )
+        }
+
+        /// Log a connect-attempt outcome locally.
+        pub fn emit_telemetry(
+            &self,
+            target: AgentKind,
+            outcome: StartupOutcome,
+            timeout_secs: Option<u64>,
+            embedded_fallback: bool,
+        ) {
+            tracing::info!(
+                owner = ?self.owner,
+                target = ?target,
+                outcome = outcome.label(),
+                timeout_secs,
+                embedded_fallback,
+                elapsed_ms = self.started.elapsed().as_millis() as u64,
+                "startup connect outcome",
+            );
+        }
+    }
+
+    /// Enter a named phase. Phases are UI labels; no timing is recorded.
+    pub fn enter(_phase: StartupPhase) {}
+
+    /// Scope a phase to a region of work; logs on drop.
+    pub fn phase_scope(phase: StartupPhase) -> PhaseScope {
+        PhaseScope { phase }
+    }
+
+    /// Guard that logs the phase when it drops.
+    pub struct PhaseScope {
+        phase: StartupPhase,
+    }
+
+    impl Drop for PhaseScope {
+        fn drop(&mut self) {
+            tracing::debug!(phase = ?self.phase, "startup phase scope exited");
+        }
+    }
+
+    /// The obligation to end startup exactly once; a dropped token warns, so forgotten paths stay visible.
+    pub struct PendingStartup {
+        ended: bool,
+    }
+
+    impl PendingStartup {
+        /// One per interactive or headless process.
+        #[allow(clippy::new_without_default)]
+        pub fn new() -> Self {
+            PendingStartup { ended: false }
+        }
+
+        /// Record the startup outcome locally and end recording.
+        pub fn finish(mut self, outcome: StartupOutcome) {
+            tracing::info!(outcome = outcome.label(), "startup finished");
+            self.ended = true;
+        }
+
+        /// End without an outcome, for a run the user cancelled.
+        pub fn abandon(mut self) {
+            self.ended = true;
+        }
+
+        /// Finish a token still held in an `Option`; does nothing once taken.
+        pub fn finish_held(token: &mut Option<Self>, outcome: StartupOutcome) {
+            if let Some(pending) = token.take() {
+                pending.finish(outcome);
+            }
+        }
+    }
+
+    impl Drop for PendingStartup {
+        fn drop(&mut self) {
+            if !self.ended {
+                tracing::warn!("startup was never finished; ending recording");
+            }
+        }
+    }
+
+    static INTERACTIVE_FRAME_RECORDED: AtomicBool = AtomicBool::new(false);
+
+    /// Record the first confirmed frame once; returns whether this call recorded it.
+    pub fn record_interactive_frame() -> bool {
+        !INTERACTIVE_FRAME_RECORDED.swap(true, Ordering::Relaxed)
+    }
+
+    /// Exit after the first render (screenshot/test hook).
+    pub fn exit_after_first_render() -> bool {
+        std::env::var("GROK_EXIT_AFTER_FIRST_RENDER").is_ok_and(|v| !v.is_empty() && v != "0")
+    }
+
+    /// The current phase span, if any. Phases are UI labels only, so this is always `None`.
+    pub fn current_phase_span() -> Option<tracing::Span> {
+        None
+    }
+}
 /// Construct a `METHOD_NOT_FOUND` error for `WaitForTerminalExit`.
 /// Both the interactive pager and headless mode reject this ACP method (the adapter falls back to polling).
 /// Centralised here so the error code and message format stay in sync.
@@ -176,17 +382,14 @@ pub struct ConnectFlags {
 pub async fn connect(cancel: &CancellationToken, flags: ConnectFlags) -> Result<AcpConnection> {
     startup::enter(StartupPhase::ConfigLoad);
     let raw_config = {
-        let _t = xai_grok_telemetry::instrumentation::timer("startup.config_load.merge_layers");
         xai_grok_shell::config::load_effective_config()
             .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?
     };
     let mut agent_config = {
-        let _t = xai_grok_telemetry::instrumentation::timer("startup.config_load.parse");
         AgentConfig::new_from_toml_cfg(&raw_config)
             .map_err(|e| anyhow::anyhow!("Failed to create agent config: {}", e))?
     };
     {
-        let _t = xai_grok_telemetry::instrumentation::timer("startup.config_load.resolve");
         agent_config.resolve_runtime_fields(
             &xai_grok_shell::agent::config::RuntimeResolutionContext {
                 raw_config: &raw_config,
@@ -293,7 +496,6 @@ pub async fn connect_via_leader(
     );
     apply_config_writes(&flags);
     startup::enter(StartupPhase::ConfigLoad);
-    startup::set_auth_mode(xai_grok_shell::managed_config::classify_auth_mode());
     let mut agent_config = AgentConfig::new_from_toml_cfg(raw_config)
         .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
     agent_config.remote_settings = flags.remote_settings.clone();
@@ -316,7 +518,6 @@ pub async fn connect_via_leader(
     };
     startup::enter(StartupPhase::LeaderConnect);
     let conn = {
-        let _t = xai_grok_telemetry::instrumentation::timer("startup.leader_connect.connect");
         connect_or_spawn(
             client_type,
             ClientMode::Stdio,

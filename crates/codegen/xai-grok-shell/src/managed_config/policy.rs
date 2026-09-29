@@ -45,11 +45,19 @@ pub(super) fn managed_policy_gate_decision(
     Ok(())
 }
 
+/// How the process authenticated, for local startup logging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    Deployment,
+    Team,
+    Personal,
+    Unknown,
+}
+
 pub(super) fn auth_mode(
     has_deployment_key: bool,
     signed_in_team: &std::io::Result<bool>,
-) -> xai_grok_telemetry::startup::AuthMode {
-    use xai_grok_telemetry::startup::AuthMode;
+) -> AuthMode {
     match (has_deployment_key, signed_in_team) {
         (true, _) => AuthMode::Deployment,
         (false, Ok(true)) => AuthMode::Team,

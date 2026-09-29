@@ -25,51 +25,21 @@ const MAX_BATCH_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_BATCH_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const FILE_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn log_file_event<T: xai_grok_telemetry::TelemetryEvent>(event: T) {
-    #[cfg(test)]
-    if tests::record_event(&event) {
-        return;
-    }
-    xai_grok_telemetry::session_ctx::log_event(event);
-}
-
 #[derive(Debug)]
 pub(super) struct McpFileSource {
     pub(super) path: PathBuf,
     pub(super) bytes: usize,
     snapshot_bytes: usize,
     operation_remaining: Duration,
-    pub(super) kind: xai_grok_telemetry::events::McpFileInputKind,
-    model_id: String,
-    pub(super) started: Instant,
-    completed: std::sync::atomic::AtomicBool,
-}
-
-impl Drop for McpFileSource {
-    fn drop(&mut self) {
-        self.complete(false);
-    }
 }
 
 impl McpFileSource {
-    fn start(
-        path: PathBuf,
-        kind: xai_grok_telemetry::events::McpFileInputKind,
-        model_id: String,
-    ) -> Self {
-        log_file_event(xai_grok_telemetry::events::McpFileInputUsed {
-            kind,
-            model_id: model_id.clone(),
-        });
+    fn start(path: PathBuf) -> Self {
         McpFileSource {
             path,
-            kind,
-            model_id,
             bytes: 0,
             snapshot_bytes: 0,
             operation_remaining: FILE_OPERATION_TIMEOUT,
-            started: Instant::now(),
-            completed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -105,12 +75,7 @@ impl PreparedMcpFile {
         source.snapshot_bytes = match measured {
             Ok(bytes) | Err(bytes) => bytes,
         };
-        measured.map_err(|observed| {
-            source.log_limit(
-                xai_grok_telemetry::events::McpFileLimitKind::Snapshots,
-                MAX_BATCH_SNAPSHOT_BYTES,
-                observed,
-            );
+        measured.map_err(|_observed| {
             "MCP effective invocation exceeds the 32 MiB snapshot limit".to_owned()
         })?;
         Ok(PreparedMcpFile {
@@ -121,47 +86,6 @@ impl PreparedMcpFile {
 
     pub(super) fn arguments(&self) -> &Value {
         &self.arguments
-    }
-
-    pub(super) fn complete(&self, success: bool) {
-        self.source.complete(success);
-    }
-}
-
-impl McpFileSource {
-    fn complete(&self, success: bool) {
-        if self
-            .completed
-            .swap(true, std::sync::atomic::Ordering::Relaxed)
-        {
-            return;
-        }
-        log_file_event(xai_grok_telemetry::events::McpFileInputCompleted {
-            kind: self.kind,
-            outcome: if success {
-                xai_grok_telemetry::events::McpFileInputOutcome::Success
-            } else {
-                xai_grok_telemetry::events::McpFileInputOutcome::Failed
-            },
-            source_bytes: self.bytes as u64,
-            snapshot_bytes: self.snapshot_bytes as u64,
-            duration_ms: self.started.elapsed().as_millis() as u64,
-            model_id: self.model_id.clone(),
-        });
-    }
-
-    fn log_limit(
-        &self,
-        kind: xai_grok_telemetry::events::McpFileLimitKind,
-        limit: usize,
-        observed: usize,
-    ) {
-        log_file_event(xai_grok_telemetry::events::McpFileInputLimitHit {
-            kind,
-            limit_bytes: limit as u64,
-            observed_bytes: observed as u64,
-            model_id: self.model_id.clone(),
-        });
     }
 }
 
@@ -194,21 +118,18 @@ impl McpFileBatchBudget {
         let Some(file) = &prepared.mcp_file else {
             return Ok(());
         };
-        for (kind, observed, limit) in [
+        for (observed, limit) in [
             (
-                xai_grok_telemetry::events::McpFileLimitKind::Sources,
                 self.source_bytes.saturating_add(file.source.bytes),
                 MAX_BATCH_SOURCE_BYTES,
             ),
             (
-                xai_grok_telemetry::events::McpFileLimitKind::Snapshots,
                 self.snapshot_bytes
                     .saturating_add(file.source.snapshot_bytes),
                 MAX_BATCH_SNAPSHOT_BYTES,
             ),
         ] {
             if observed > limit {
-                file.source.log_limit(kind, limit, observed);
                 return Err("MCP file input batch budget exceeded".to_owned());
             }
         }
@@ -377,21 +298,14 @@ impl SessionActor {
         call: &crate::sampling::types::ToolCallResponse,
         tool_call_id: &acp::ToolCallId,
         input: &UseToolInput,
-        model_id: &str,
     ) -> Result<Result<(ToolInput, Value, McpFileSource), ToolLoop>, acp::Error> {
         let Some(path) = input.source_path() else {
             return Err(acp::Error::internal_error().data("expected file-backed invocation"));
         };
-        let kind = match input {
-            UseToolInput::ArgumentsFile { .. } => {
-                xai_grok_telemetry::events::McpFileInputKind::Arguments
-            }
-            UseToolInput::InvocationFile { .. } => {
-                xai_grok_telemetry::events::McpFileInputKind::Invocation
-            }
-            UseToolInput::Inline(_) => return Err(acp::Error::internal_error()),
-        };
-        let mut source = McpFileSource::start(path.to_path_buf(), kind, model_id.to_owned());
+        if matches!(input, UseToolInput::Inline(_)) {
+            return Err(acp::Error::internal_error());
+        }
+        let mut source = McpFileSource::start(path.to_path_buf());
         let resources = self.tool_bridge_handle().shared_resources().await;
         let fs = resources
             .lock()
@@ -461,13 +375,6 @@ impl SessionActor {
                 .read_file_bounded(&physical, MAX_SOURCE_BYTES)
                 .await
                 .map_err(|error| {
-                    if error.io_error_kind() == Some(io::ErrorKind::FileTooLarge) {
-                        source.log_limit(
-                            xai_grok_telemetry::events::McpFileLimitKind::Source,
-                            MAX_SOURCE_BYTES,
-                            MAX_SOURCE_BYTES + 1,
-                        );
-                    }
                     format!("Cannot read complete MCP source file: {error}")
                 })?;
             source.bytes = bytes.len();

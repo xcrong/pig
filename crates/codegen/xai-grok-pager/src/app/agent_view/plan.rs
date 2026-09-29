@@ -48,7 +48,6 @@ pub(crate) enum PostTurnPlanCommit {
 /// Telemetry for every way a plan review resolves ("build", "abandon", "revise").
 fn log_plan_submit(action: &str) {
     use xai_grok_telemetry::events::PlanSubmit;
-    use xai_grok_telemetry::session_ctx::log_event;
     log_event(PlanSubmit {
         action: action.to_string(),
     });

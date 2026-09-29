@@ -172,7 +172,6 @@ async fn handle_session_summaries(
             let req = serde_json::from_str::<SessionListRequest>(args.params.get())?;
             let cwd = req.workspace_directory.to_string_lossy().to_string();
 
-            let _timer = crate::instrumentation_timer!("session.list_sessions_for_workspace");
 
             let mut summaries = list_summaries(Some(&cwd)).await.map_err(|e| {
                 acp::Error::internal_error().data(format!("failed to list sessions: {e}"))
@@ -194,7 +193,6 @@ async fn handle_session_summaries(
             tracing::debug!("xai/session_summaries/workspace_list is working");
             let _req = serde_json::from_str::<AllSessionOverviewRequest>(args.params.get())?;
 
-            let _timer = crate::instrumentation_timer!("session.list_sessions_for_load");
 
             let summaries = list_summaries(None).await.map_err(|e| {
                 acp::Error::internal_error().data(format!("failed to list workspaces: {e}"))
@@ -205,7 +203,6 @@ async fn handle_session_summaries(
         "x.ai/session_summaries/workspace_list_recent" => {
             let req = serde_json::from_str::<RecentSessionsRequest>(args.params.get())?;
 
-            let _timer = crate::instrumentation_timer!("session.list_sessions_recent");
 
             let limit = req.limit.min(10_000);
             let mut summaries = list_recent_summaries(limit).await.map_err(|e| {

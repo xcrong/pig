@@ -489,7 +489,7 @@ pub(crate) async fn generate_session_compact(
             message.x_grok_conv_id = Some(sid.clone());
             message.x_grok_req_id = Some(format!("xai-compact-{}", uuid::Uuid::new_v4()));
             message.x_grok_session_id = Some(sid);
-            message.x_grok_agent_id = Some(xai_grok_telemetry::id::agent_id());
+            message.x_grok_agent_id = None;
 
             tracing::info!(
                 compact_model = %sampling_config.model,
@@ -584,7 +584,6 @@ pub(crate) async fn generate_session_compact(
                 x_grok_conv_id: Some(session_id.to_string()),
                 x_grok_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
-                x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
             let stream_result =
@@ -707,7 +706,6 @@ pub(crate) async fn generate_session_compact(
                 x_grok_conv_id: Some(session_id.to_string()),
                 x_grok_req_id: Some(format!("xai-compact-{}", uuid::Uuid::new_v4())),
                 x_grok_session_id: Some(session_id.to_string()),
-                x_grok_agent_id: Some(xai_grok_telemetry::id::agent_id()),
                 ..Default::default()
             };
             let stream_result =

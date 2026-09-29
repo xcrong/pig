@@ -1,6 +1,11 @@
 use crate::session::export::{ExportedMessage, ExportedMetadata, ExportedSession};
 use indexmap::IndexMap;
-use prod_mc_cli_chat_proxy_types::SubagentBundle;
+/// Per-process agent identifier for backend session APIs (share/sync/fork).
+/// Random per process: restarts get a fresh id. Never persisted, never derived from the machine.
+pub(crate) fn ephemeral_agent_id() -> String {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| uuid::Uuid::new_v4().to_string()).clone()
+}use prod_mc_cli_chat_proxy_types::SubagentBundle;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use xai_grok_login::backend::{ActiveAuthBackend, AuthBackend};
@@ -80,7 +85,7 @@ async fn add_bundle_fetch_headers(
             crate::http::CLIENT_MODE_HEADER,
             crate::http::process_client_mode(),
         );
-    xai_grok_otel::inject_trace_context_into_request(builder)
+    builder
 }
 /// Fetch the bundled subagent cache payload from cli-chat-proxy `GET /v1/subagents/bundle`.
 ///
@@ -412,9 +417,7 @@ impl BackendClient {
         builder: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, BackendError> {
         let headers = self.auth_header_map().await?;
-        let builder = xai_grok_otel::inject_trace_context_into_request(
-            builder.timeout(DEFAULT_TIMEOUT).headers(headers),
-        );
+        let builder = builder.timeout(DEFAULT_TIMEOUT).headers(headers);
         let request = builder.build()?;
         self.client.execute(request).await.map_err(|e| match e {
             reqwest_middleware::Error::Reqwest(e) => BackendError::Network(e),

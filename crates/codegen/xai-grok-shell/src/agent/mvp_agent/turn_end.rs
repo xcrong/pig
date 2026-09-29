@@ -100,7 +100,7 @@ impl MvpAgent {
         RegisterTurnZero {
             model_id: self.models_manager.current_model_id().0.to_string(),
             hostname: gethostname::gethostname().to_string_lossy().to_string(),
-            device_id: if suppress { None } else { Some(agent_id()) },
+            device_id: if suppress { None } else { Some(crate::remote::client::ephemeral_agent_id()) },
             first_prompt: if suppress {
                 None
             } else {
@@ -499,7 +499,6 @@ pub(super) async fn run_trace_completion(
 pub(super) struct ErrorTurnArtifacts {
     pub(super) turn_messages: Option<xai_chat_state::TurnCapture>,
     pub(super) streaming_partial: Option<crate::session::acp_session::StreamingTurnCapture>,
-    pub(super) upload_unified: bool,
 }
 
 pub(super) async fn upload_error_turn_artifacts(
@@ -511,7 +510,6 @@ pub(super) async fn upload_error_turn_artifacts(
     let ErrorTurnArtifacts {
         turn_messages,
         streaming_partial,
-        upload_unified,
     } = artifacts;
     upload_turn_result(ctx, result, wait).await;
     if let Some(capture) = turn_messages {
@@ -519,9 +517,6 @@ pub(super) async fn upload_error_turn_artifacts(
     }
     if let Some(ref capture) = streaming_partial {
         crate::upload::trace::upload_streaming_partial(ctx, capture, wait).await;
-    }
-    if upload_unified {
-        upload_unified_log(ctx, wait).await;
     }
     match wait {
         UploadWait::Confirm => write_error_manifest(ctx).await,

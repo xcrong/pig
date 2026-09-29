@@ -17,7 +17,7 @@ use crate::remote::BackendClient;
 use crate::session::export::{ExportedMessage, ExportedMetadata};
 use agent_client_protocol as acp;
 use tokio::sync::mpsc;
-use xai_grok_telemetry::id::agent_id;
+use crate::remote::client::ephemeral_agent_id;
 
 /// Max buffered notifications before triggering an emergency flush.
 /// Sized to keep memory under ~50MB even with large notifications.
@@ -145,7 +145,7 @@ async fn do_flush(
 
             // Link session to agent so the relay can route requests to it.
             if let Err(e) = client
-                .upsert_session(session_id, metadata, &agent_id())
+                .upsert_session(session_id, metadata, &ephemeral_agent_id())
                 .await
             {
                 tracing::warn!(error = %e, "Writeback: failed to upsert session");
@@ -202,7 +202,7 @@ async fn sync_task(
                 {
                     tracing::warn!(?e, "Writeback: failed to sync title to backend");
                 } else if let Err(e) = client
-                    .upsert_session(&session_id, &metadata, &agent_id())
+                    .upsert_session(&session_id, &metadata, &ephemeral_agent_id())
                     .await
                 {
                     // save_session_data does not write the session-row title (the backend upsert uses `title=None`)
@@ -221,7 +221,7 @@ async fn sync_task(
                 {
                     tracing::warn!(?e, "Writeback: failed to clear title on backend");
                 } else if let Err(e) = client
-                    .upsert_session(&session_id, &metadata, &agent_id())
+                    .upsert_session(&session_id, &metadata, &ephemeral_agent_id())
                     .await
                 {
                     // Same row-title gap as SetTitle: save_session_data does not clear the session-row pin (the backend upsert uses `title=None`)

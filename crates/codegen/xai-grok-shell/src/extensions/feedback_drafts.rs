@@ -1,9 +1,7 @@
 //! `x.ai/feedback/drafts/*` extension handlers over a session's `FeedbackDraftStore`.
 
 use agent_client_protocol as acp;
-use xai_grok_feedback::{DeleteOutcome, FeedbackDraftStore, FeedbackStoreError, UpdateOutcome};
-use xai_grok_telemetry::events::{FeedbackDraftOp, FeedbackDraftOpError, FeedbackDraftOpKind};
-use xai_grok_telemetry::session_ctx::log_event_dual;
+use xai_grok_feedback::{DeleteOutcome, FeedbackDraftStore, UpdateOutcome};
 
 use super::{ExtResult, parse_params};
 use crate::agent::MvpAgent;
@@ -18,24 +16,16 @@ struct FeedbackDraftSessionRequest {
 
 pub(super) async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let store = feedback_store(agent, &requested_session_id(args)?)?;
-    answer(args, store, agent.product_analytics_enabled()).await
+    answer(args, store).await
 }
 
 /// Answers one `x.ai/feedback/drafts/*` request against the given store.
-pub async fn answer(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-    telemetry_enabled: bool,
-) -> ExtResult {
+pub async fn answer(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     match args.method.as_ref() {
-        "x.ai/feedback/drafts/list" => list_feedback_drafts(args, store, telemetry_enabled).await,
-        "x.ai/feedback/drafts/get" => get_feedback_draft(args, store, telemetry_enabled).await,
-        "x.ai/feedback/drafts/delete" => {
-            delete_feedback_draft(args, store, telemetry_enabled).await
-        }
-        "x.ai/feedback/drafts/update" => {
-            update_feedback_draft(args, store, telemetry_enabled).await
-        }
+        "x.ai/feedback/drafts/list" => list_feedback_drafts(args, store).await,
+        "x.ai/feedback/drafts/get" => get_feedback_draft(args, store).await,
+        "x.ai/feedback/drafts/delete" => delete_feedback_draft(args, store).await,
+        "x.ai/feedback/drafts/update" => update_feedback_draft(args, store).await,
         _ => Err(acp::Error::method_not_found()),
     }
 }
@@ -65,177 +55,63 @@ pub(super) fn feedback_store(
     ))
 }
 
-/// Variant-only: `Display` embeds the session path. Exhaustive so a new variant is a compile error.
-pub fn draft_op_error(error: &FeedbackStoreError) -> FeedbackDraftOpError {
-    match error {
-        FeedbackStoreError::Busy => FeedbackDraftOpError::Busy,
-        FeedbackStoreError::DraftNotFound { .. } => FeedbackDraftOpError::NotFound,
-        FeedbackStoreError::Decode { .. }
-        | FeedbackStoreError::UnsupportedSchema { .. }
-        | FeedbackStoreError::InvalidDocument { .. }
-        | FeedbackStoreError::EmptyDraftId
-        | FeedbackStoreError::DuplicateDraftId { .. }
-        | FeedbackStoreError::InvalidRevision { .. }
-        | FeedbackStoreError::TooLarge { .. }
-        | FeedbackStoreError::DraftCapacityExceeded { .. } => FeedbackDraftOpError::InvalidDocument,
-        FeedbackStoreError::InvalidSessionDirectory { .. }
-        | FeedbackStoreError::Inspect { .. }
-        | FeedbackStoreError::OpenLock { .. }
-        | FeedbackStoreError::Lock(_)
-        | FeedbackStoreError::Read { .. }
-        | FeedbackStoreError::SymlinkPath { .. }
-        | FeedbackStoreError::NonFilePath { .. }
-        | FeedbackStoreError::CreateTemp { .. }
-        | FeedbackStoreError::Write { .. }
-        | FeedbackStoreError::Persist { .. }
-        | FeedbackStoreError::SyncDirectory { .. } => FeedbackDraftOpError::Io,
-        FeedbackStoreError::Encode { .. }
-        | FeedbackStoreError::BlankTitle
-        | FeedbackStoreError::BlankDetails
-        | FeedbackStoreError::TitleTooLarge { .. }
-        | FeedbackStoreError::DetailsTooLarge { .. }
-        | FeedbackStoreError::AreaTooLarge { .. }
-        | FeedbackStoreError::ClockBeforeUnixEpoch(_)
-        | FeedbackStoreError::ClockOutOfRange => FeedbackDraftOpError::Other,
-    }
-}
-
-/// `Ok` carries the `list` row count; every other op reports `Ok(None)` on success.
-type DraftOpOutcome = Result<Option<u32>, FeedbackDraftOpError>;
-
-pub(super) fn draft_op_event(
-    session_id: &str,
-    op: FeedbackDraftOpKind,
-    outcome: DraftOpOutcome,
-) -> FeedbackDraftOp {
-    FeedbackDraftOp {
-        session_id: session_id.to_owned(),
-        op,
-        ok: outcome.is_ok(),
-        error: outcome.err(),
-        draft_count: outcome.ok().flatten(),
-        skipped: None,
-    }
-}
-
-/// Runs one store op and builds the response before it emits `feedback_draft_op`, so telemetry
-/// cannot alter what the client gets.
 async fn draft_op<T: Send + 'static>(
-    telemetry_enabled: bool,
-    session_id: &str,
-    op: FeedbackDraftOpKind,
     store_op: impl FnOnce() -> xai_grok_feedback::Result<T> + Send + 'static,
-    respond: impl FnOnce(T) -> (ExtResult, DraftOpOutcome),
+    respond: impl FnOnce(T) -> ExtResult,
 ) -> ExtResult {
     let result = tokio::task::spawn_blocking(store_op)
         .await
         .map_err(|error| acp::Error::internal_error().data(error.to_string()))?;
-    let (response, outcome) = match result {
+    match result {
         Ok(value) => respond(value),
-        Err(error) => (
-            Err(acp::Error::internal_error().data(error.to_string())),
-            Err(draft_op_error(&error)),
-        ),
-    };
-    log_event_dual(telemetry_enabled, draft_op_event(session_id, op, outcome));
-    response
+        Err(error) => Err(acp::Error::internal_error().data(error.to_string())),
+    }
 }
 
-async fn list_feedback_drafts(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-    telemetry_enabled: bool,
-) -> ExtResult {
-    let session_id = requested_session_id(args)?;
+async fn list_feedback_drafts(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
+    let _session_id = requested_session_id(args)?;
     draft_op(
-        telemetry_enabled,
-        &session_id,
-        FeedbackDraftOpKind::List,
         move || store.list(),
-        |drafts| {
-            (
-                super::to_raw_response(&serde_json::json!({ "drafts": drafts })),
-                Ok(Some(drafts.len() as u32)),
-            )
-        },
+        |drafts| super::to_raw_response(&serde_json::json!({ "drafts": drafts })),
     )
     .await
 }
 
-async fn get_feedback_draft(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-    telemetry_enabled: bool,
-) -> ExtResult {
+async fn get_feedback_draft(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     let request: FeedbackDraftRequest = parse_params(args)?;
     let draft_id = request.draft_id;
     draft_op(
-        telemetry_enabled,
-        &request.session_id,
-        FeedbackDraftOpKind::Load,
         move || store.get(&draft_id),
         |draft| match draft {
-            Some(draft) => (
-                super::to_raw_response(&serde_json::json!({ "draft": draft })),
-                Ok(None),
-            ),
-            None => (
-                Err(acp::Error::invalid_params().data("feedback draft not found")),
-                Err(FeedbackDraftOpError::NotFound),
-            ),
+            Some(draft) => super::to_raw_response(&serde_json::json!({ "draft": draft })),
+            None => Err(acp::Error::invalid_params().data("feedback draft not found")),
         },
     )
     .await
 }
 
-async fn update_feedback_draft(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-    telemetry_enabled: bool,
-) -> ExtResult {
+async fn update_feedback_draft(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     let request: FeedbackDraftUpdateRequest = parse_params(args)?;
     draft_op(
-        telemetry_enabled,
-        &request.session_id,
-        FeedbackDraftOpKind::Recover,
         move || store.update_from_input(&request.draft_id, request.input),
         |updated| {
-            (
-                super::to_raw_response(&serde_json::json!({
-                    "updated": matches!(updated, UpdateOutcome::Updated),
-                })),
-                match updated {
-                    UpdateOutcome::Updated => Ok(None),
-                    UpdateOutcome::NotFound => Err(FeedbackDraftOpError::NotFound),
-                },
-            )
+            super::to_raw_response(&serde_json::json!({
+                "updated": matches!(updated, UpdateOutcome::Updated),
+            }))
         },
     )
     .await
 }
 
-async fn delete_feedback_draft(
-    args: &acp::ExtRequest,
-    store: FeedbackDraftStore,
-    telemetry_enabled: bool,
-) -> ExtResult {
+async fn delete_feedback_draft(args: &acp::ExtRequest, store: FeedbackDraftStore) -> ExtResult {
     let request: FeedbackDraftRequest = parse_params(args)?;
     let draft_id = request.draft_id;
     draft_op(
-        telemetry_enabled,
-        &request.session_id,
-        FeedbackDraftOpKind::Delete,
         move || store.delete(&draft_id),
         |deleted| {
-            (
-                super::to_raw_response(&serde_json::json!({
-                    "deleted": matches!(deleted, DeleteOutcome::Deleted),
-                })),
-                match deleted {
-                    DeleteOutcome::Deleted => Ok(None),
-                    DeleteOutcome::NotFound => Err(FeedbackDraftOpError::NotFound),
-                },
-            )
+            super::to_raw_response(&serde_json::json!({
+                "deleted": matches!(deleted, DeleteOutcome::Deleted),
+            }))
         },
     )
     .await

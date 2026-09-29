@@ -1481,10 +1481,10 @@ async fn status_ungated(
     include_patches: bool,
 ) -> Result<GitStatusData> {
     let start = std::time::Instant::now();
-    let region = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
+    let region = tracing::info_span!(
         "git.status",
         elapsed_ms = tracing::field::Empty,
-    ));
+    );
     let cwd = git_root.to_path_buf();
     let (branch, upstream, remote_url) =
         tokio::join!(get_branch(&cwd), get_upstream(&cwd), get_remote_url(&cwd));
@@ -1604,7 +1604,6 @@ async fn status_ungated(
     let libgit2_err = match &result {
         Ok(data) => {
             region
-                .span()
                 .record("elapsed_ms", start.elapsed().as_millis() as i64);
             tracing::debug!(
                 root = ?data.root,
@@ -1767,10 +1766,10 @@ async fn diffs_ungated(
     merge_base: bool,
 ) -> Result<GitDiffsData> {
     let start = std::time::Instant::now();
-    let region = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
+    let region = tracing::info_span!(
         "git.diffs",
         elapsed_ms = tracing::field::Empty,
-    ));
+    );
     let cwd = git_root.to_path_buf();
     let paths = paths.map(|p| p.to_vec());
     let from = from.to_string();
@@ -1869,7 +1868,6 @@ async fn diffs_ungated(
     match &result {
         Ok(data) => {
             region
-                .span()
                 .record("elapsed_ms", start.elapsed().as_millis() as i64);
             tracing::debug!(files = data.files.len(), elapsed = ?start.elapsed(), "git.diffs")
         }

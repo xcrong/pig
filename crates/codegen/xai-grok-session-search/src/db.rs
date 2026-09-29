@@ -57,12 +57,6 @@ impl HealAwareLogCounter {
         let error_text = error.map(|e| e.to_string());
         if self.should_warn(kind) {
             tracing::warn!(error = error_text.as_deref(), session_id, "{message}");
-            xai_grok_telemetry::unified_log::emit(
-                xai_grok_telemetry::unified_log::LogLevel::Warn,
-                message,
-                session_id,
-                error_text.map(|e| serde_json::json!({ "error": e })),
-            );
         } else {
             tracing::debug!(error = error_text.as_deref(), session_id, "{message}");
         }

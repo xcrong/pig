@@ -469,7 +469,7 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         result => result,
     };
     if result.ends_startup() {
-        app.finish_startup(xai_grok_telemetry::startup::StartupOutcome::Ok);
+        app.finish_startup(crate::acp::startup::StartupOutcome::Ok);
     }
     if !matches!(
         &result,

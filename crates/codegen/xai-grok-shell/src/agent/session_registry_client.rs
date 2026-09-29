@@ -28,7 +28,7 @@ pub struct RegisterRequest {
     pub repo_head_at_start: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hostname: Option<String>,
-    /// Opaque id for this machine (telemetry's `agent_id()`), so the server can tell machines apart.
+    /// Opaque per-process id, so the server can tell sessions apart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -195,7 +195,7 @@ impl SessionRegistryClient {
         reqwest::Response,
         Option<xai_grok_auth::StampedBearerSuffix>,
     )> {
-        let builder = xai_grok_otel::inject_trace_context_into_request(builder);
+        let builder = builder;
         let request = builder.build().context(op)?;
         xai_grok_auth::execute_with_stamp(&self.client, request)
             .await
