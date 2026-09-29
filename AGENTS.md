@@ -6,6 +6,7 @@
   - `scripts/sync-pi-vendors.sh` 及其 `manifest.json`
   - `session_header` / `session_id` 全链路（sampler、模型配置、会话重建）
   - `.gitignore` 中 `vendors/data/opencode.json` 的白名单（全局 ignore 会吞掉它）
+  - 无第一方遥测出口的现状：`pig` TUI 不调 `init_fastrace`（唯一调用点在 `xai-grok-workspace/src/bin/workspace_server.rs`）、workspace 无 `sentry` 依赖；上游若新增第一方 sink，合并时不要顺手带进来
 - 上游 `CONTRIBUTING.md` 声明不接受外部 PR——那是上游政策，本 fork 的改动直接提交到本仓库分支即可。
 
 ## 品牌映射约定（pig fork）
