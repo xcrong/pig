@@ -207,18 +207,13 @@ async fn send_active_message_freezes_parent_turn_before_first_poll() {
             command = child_cmd_rx.recv() => command.expect("parent-message command"),
         };
         let SessionCommand::ParentAgentMessage {
-            parent_telemetry_ctx,
-            respond_to,
-            ..
+            delivery, respond_to, ..
         } = command
         else {
             panic!("expected parent-message command");
         };
-        assert_eq!(parent_telemetry_ctx.session_id, "parent");
-        assert_eq!(
-            *await_with_timeout(parent_telemetry_ctx.prompt_index.lock()).await,
-            7,
-        );
+        assert_eq!(delivery.message().sender_session_id, "parent");
+        assert_eq!(delivery.message().text.to_string(), "follow up");
         respond_to
             .send(ActiveMessageAdmission::Rejected)
             .expect("admission future remains open");

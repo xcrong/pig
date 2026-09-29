@@ -1005,8 +1005,6 @@ async fn failed_preparations_preserve_order_and_known_byte_counts() {
                             )
                         ));
                     }
-                })
-                .await;
                 assert!(remote.calls.lock().is_empty());
                 assert_eq!(
                     usize::from(stage != "source-deny"),

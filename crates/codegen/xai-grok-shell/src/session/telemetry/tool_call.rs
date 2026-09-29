@@ -928,42 +928,20 @@ mod tests {
             true,
         );
         assert_eq!(projection.path_scope, Some(PathScope::Workspace));
-        let event = completed_event(CompletedTool {
-            tool_name: "read_file",
-            projection: &projection,
-            outcome: ToolOutcome::Success,
-            hook_rewrote: false,
-            duration_ms: 3,
-            tool_result_size_bytes: Some(8),
-            file_path: Some("/opt/repo/src/a.rs".into()),
-            parameters: None,
-            tool_use_id: Some("provider-call".into()),
-            tool_output: Some("CANARY_BODY".into()),
-            error_message: None,
-        });
-        let json = serde_json::to_value(&event).unwrap();
         assert_eq!(
-            json.get("path_scope").and_then(serde_json::Value::as_str),
-            Some("workspace")
-        );
-        assert_eq!(
-            json.get("model_id").and_then(serde_json::Value::as_str),
+            projection.model_id.as_ref().map(ProductModelId::as_str),
             Some("grok-4.6")
         );
+        assert_eq!(projection.tool_id.as_str(), read_id);
         assert_eq!(
-            json.get("tool_id").and_then(serde_json::Value::as_str),
-            Some("GrokBuild:read_file")
+            projection.invocation_id.as_str(),
+            "018f6b6c-7b3a-7c3a-8c3a-000000000001"
         );
         assert_eq!(
-            json.get("invocation_id")
-                .and_then(serde_json::Value::as_str),
-            Some("018f6b6c-7b3a-7c3a-8c3a-000000000001")
+            projection.tool_version.map(ToolContractVersion::as_str),
+            Some("current")
         );
-        assert_eq!(json.get("tool_use_id"), None);
-        let rendered = json.to_string();
-        assert!(!rendered.contains("/opt/repo"));
-        assert!(!rendered.contains("CANARY_BODY"));
-        assert!(!rendered.contains("provider-call"));
+        assert_eq!(projection.requested_model.as_deref(), Some("grok-4.6"));
         let (renamed, _) = projected(
             Some("grok-4.6"),
             read_id,
@@ -995,27 +973,15 @@ mod tests {
             cwd,
             true,
         );
-        let custom = completed_event(CompletedTool {
-            tool_name: "read_file",
-            projection: &custom_projection,
-            outcome: ToolOutcome::Success,
-            hook_rewrote: false,
-            duration_ms: 3,
-            tool_result_size_bytes: None,
-            file_path: Some("/tmp/secret-project/main.rs".into()),
-            parameters: None,
-            tool_use_id: None,
-            tool_output: None,
-            error_message: None,
-        });
-        assert_eq!(custom.model_id, None);
-        assert_eq!(custom.tool_id.as_str(), CanonicalToolId::OPAQUE);
-        assert_eq!(custom.tool_version, None);
-        assert_eq!(custom.external_model_id, "/tmp/secret-project");
-        assert!(
-            !serde_json::to_string(&custom)
-                .unwrap()
-                .contains("secret-project")
+        assert_eq!(custom_projection.model_id, None);
+        assert_eq!(
+            custom_projection.tool_id.as_str(),
+            CanonicalToolId::OPAQUE
+        );
+        assert_eq!(custom_projection.tool_version, None);
+        assert_eq!(
+            custom_projection.requested_model.as_deref(),
+            Some("/tmp/secret-project")
         );
     }
 }

@@ -879,8 +879,6 @@ mod tests {
     }
 
 
-    #[tokio::test]
-
     /// Empty upload queue uses the short worker-exit budget.
     #[tokio::test]
     async fn test_shutdown_empty_queue_uses_short_drain_budget() {
@@ -1093,56 +1091,6 @@ mod tests {
         assert!(with_am.has_token_refresher());
     }
 
-    /// Outcome × envelope matrix: existing props keep their names, `outcome` is always present,
-    /// and `source`/taxonomy ride only when the envelope is present.
-    #[test]
-    fn user_feedback_event_matrix() {
-        let envelope = serde_json::json!({
-            "structured_feedback": {
-                "schema_version": 1,
-                "source": "draft",
-                "type": "bug",
-                "task_category": "debug",
-                "failure_mode": "sloppy_code",
-            }
-        });
-        let outcomes = [
-            (SubmitOutcome::Submitted, "submitted"),
-            (SubmitOutcome::LocalOnly, "local_only"),
-            (SubmitOutcome::Failed(anyhow::anyhow!("offline")), "failed"),
-        ];
-        for (outcome, wire) in &outcomes {
-            for enveloped in [false, true] {
-                let mut expected = serde_json::json!({
-                    "session_id": "sess-1",
-                    "has_feedback_text": true,
-                    "model_id": "grok-4",
-                    "is_solicited": false,
-                    "outcome": wire,
-                });
-                if enveloped {
-                    expected.as_object_mut().unwrap().extend([
-                        ("source".to_owned(), "draft".into()),
-                        ("feedback_type".to_owned(), "bug".into()),
-                        ("task_category".to_owned(), "debug".into()),
-                        ("failure_mode".to_owned(), "sloppy_code".into()),
-                    ]);
-                }
-                let mut submission = new_submission(
-                    "sess-1".to_owned(),
-                    ClientType::Tui,
-                    FeedbackContent::Text("great session".to_owned()),
-                );
-                submission.model_id = Some("grok-4".to_owned());
-                submission.metadata = enveloped.then(|| envelope.clone());
-                assert_eq!(
-                    serde_json::to_value(user_feedback_event(&submission, outcome, false)).unwrap(),
-                    expected,
-                    "{wire} enveloped={enveloped}"
-                );
-            }
-        }
-    }
 }
 
 #[allow(clippy::disallowed_methods)] // test clients hit localhost mocks

@@ -436,11 +436,6 @@ async fn first_subagent_turn_allocation_does_not_walk_the_sessions_index() {
 #[tokio::test(flavor = "current_thread")]
 async fn upload_harness_trace_turns_numbers_siblings_and_persists_counter() {
     let agent = build_minimal_agent_for_tests();
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-        cfg.endpoints.trace_upload_bucket = Some("gs://harness-trace-test".to_string());
-    }
     let sid = acp::SessionId::new("harness-upload-sess");
     let info = crate::session::info::Info {
         id: sid.clone(),
@@ -546,11 +541,6 @@ async fn upload_harness_trace_turns_uploads_disabled_does_not_burn_counter() {
 #[tokio::test(flavor = "current_thread")]
 async fn upload_harness_trace_turns_build_per_turn_manifest() {
     let agent = build_minimal_agent_for_tests();
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-        cfg.endpoints.trace_upload_bucket = Some("gs://harness-trace-test".to_string());
-    }
     let sid = acp::SessionId::new("harness-manifest-sess");
     let info = crate::session::info::Info {
         id: sid.clone(),
@@ -2168,7 +2158,6 @@ fn make_trace_card_eligible(agent: &MvpAgent) {
     let mut cfg = agent.cfg.borrow_mut();
     cfg.feature_values
         .insert(crate::agent::config::Feature::FeedbackTraceCard, true);
-    cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
 }
 fn personal_xai_oauth_auth() -> xai_grok_login::GrokAuth {
     xai_grok_login::GrokAuth {
@@ -2327,10 +2316,6 @@ async fn upload_trace_missing_intent_with_global_consent_stays_compatible() {
     let tmp = tempfile::tempdir().unwrap();
     let _env = trace_gate_env(tmp.path());
     let agent = build_agent_with_auth(personal_xai_oauth_auth());
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-    }
     insert_resident_session(&agent, "sess", tmp.path());
     assert!(!agent.feedback_trace_offer());
     let err = upload_trace_error(&agent, serde_json::json!({ "sessionId": "sess" }), None).await;
@@ -2344,7 +2329,6 @@ async fn upload_trace_exact_intent_cannot_bypass_the_offer_gate() {
     let agent = build_agent_with_auth(personal_xai_oauth_auth());
     insert_resident_session(&agent, "sess", tmp.path());
     assert!(!agent.feedback_trace_offer());
-    assert!(!agent.cfg.borrow().is_trace_upload_enabled());
     let err = upload_trace_error(
         &agent,
         serde_json::json!({ "sessionId": "sess", "intent": "send_this_session" }),
@@ -2603,100 +2587,11 @@ async fn one_shot_rejects_zdr_teams() {
 }
 #[tokio::test]
 #[serial_test::serial]
-async fn one_shot_requires_telemetry_enabled() {
+async fn one_shot_stays_closed_without_first_party_pipeline() {
     let tmp = tempfile::tempdir().unwrap();
     let _env = trace_gate_env(tmp.path());
     let agent = build_agent_with_auth(personal_xai_oauth_auth());
     make_trace_card_eligible(&agent);
-    agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
-    assert!(
-        agent
-            .one_shot_feedback_gcs_config("sid".into())
-            .await
-            .is_none()
-    );
-}
-#[tokio::test]
-#[serial_test::serial]
-async fn one_shot_respects_a_requirements_trace_upload_pin() {
-    let tmp = tempfile::tempdir().unwrap();
-    let _env = trace_gate_env(tmp.path());
-    let agent = build_agent_with_auth(personal_xai_oauth_auth());
-    make_trace_card_eligible(&agent);
-    agent
-        .cfg
-        .borrow_mut()
-        .requirements
-        .trace_upload
-        .pin(false, crate::config::RequirementSource::Unknown);
-    assert!(
-        agent
-            .one_shot_feedback_gcs_config("sid".into())
-            .await
-            .is_none()
-    );
-}
-#[tokio::test]
-#[serial_test::serial]
-async fn one_shot_rejects_every_custom_trace_destination() {
-    let tmp = tempfile::tempdir().unwrap();
-    let _env = trace_gate_env(tmp.path());
-    type EndpointMutation = fn(&mut crate::agent::config::EndpointsConfig);
-    let cases: [(&str, EndpointMutation); 3] = [
-        ("custom trace_upload_url", |e| {
-            e.trace_upload_url = Some("https://exfil.example/upload".into());
-        }),
-        ("custom trace_upload_bucket", |e| {
-            e.trace_upload_bucket = Some("gs://exfil-bucket".into());
-        }),
-        ("custom trace_upload_endpoint_url", |e| {
-            e.trace_upload_endpoint_url = Some("https://exfil.example".into());
-        }),
-    ];
-    for (label, mutate) in cases {
-        let agent = build_agent_with_auth(personal_xai_oauth_auth());
-        make_trace_card_eligible(&agent);
-        mutate(&mut agent.cfg.borrow_mut().endpoints);
-        assert!(
-            agent
-                .one_shot_feedback_gcs_config("sid".into())
-                .await
-                .is_none(),
-            "{label} must close the one-shot upload path"
-        );
-    }
-}
-#[tokio::test]
-#[serial_test::serial]
-async fn one_shot_requires_a_resolvable_upload_method() {
-    let tmp = tempfile::tempdir().unwrap();
-    let _env = trace_gate_env(tmp.path());
-    assert!(
-        crate::agent::config::EndpointsConfig::default()
-            .resolve_upload_method(None)
-            .is_none()
-    );
-}
-#[tokio::test]
-#[serial_test::serial]
-async fn one_shot_rejects_non_proxy_upload_methods() {
-    let tmp = tempfile::tempdir().unwrap();
-    let _env = trace_gate_env(tmp.path());
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth {
-        auth_mode: xai_grok_login::AuthMode::ApiKey,
-        expires_at: Some(chrono::Utc::now() - chrono::Duration::days(1)),
-        ..xai_grok_login::GrokAuth::test_default()
-    });
-    make_trace_card_eligible(&agent);
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.endpoints.trace_upload_bucket = Some("gs://test-bucket".to_string());
-        cfg.endpoints.trace_upload_credentials = Some("{}".to_string());
-    }
-    assert!(matches!(
-        agent.cfg.borrow().endpoints.resolve_upload_method(None),
-        Some(crate::session::repo_changes::UploadMethod::Direct { .. })
-    ));
     assert!(
         agent
             .one_shot_feedback_gcs_config("sid".into())
@@ -3747,10 +3642,6 @@ async fn data_collection_disabled_for_zdr_team() {
         agent.is_data_collection_disabled(),
         "ZDR team must have data collection disabled"
     );
-    assert!(
-        agent.trace_upload_config_snapshot().is_none(),
-        "trace uploads must be disabled for ZDR team"
-    );
 }
 #[tokio::test]
 async fn data_collection_disabled_for_zdr_moderated_team() {
@@ -3772,10 +3663,6 @@ async fn data_collection_disabled_for_opted_out_team() {
     assert!(
         agent.is_data_collection_disabled(),
         "opted-out team must have data collection disabled"
-    );
-    assert!(
-        agent.trace_upload_config_snapshot().is_none(),
-        "trace uploads must be disabled for opted-out team"
     );
 }
 #[tokio::test]
@@ -3802,149 +3689,6 @@ async fn data_collection_enabled_for_non_zdr_team_with_unrelated_blocks() {
     assert!(
         !agent.is_data_collection_disabled(),
         "non-ZDR blocked reasons must not disable data collection"
-    );
-}
-fn enable_product_telemetry(agent: &MvpAgent) {
-    agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-}
-/// Enable telemetry mode in config; trace uploads stay off (no first-party pipeline).
-fn enable_trace_upload_config(agent: &MvpAgent) {
-    let mut cfg = agent.cfg.borrow_mut();
-    cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
-}
-#[tokio::test]
-async fn product_analytics_enabled_for_normal_user_with_telemetry_on() {
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth::test_default());
-    enable_product_telemetry(&agent);
-    assert!(agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_enabled_despite_coding_retention_opt_out() {
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth {
-        coding_data_retention_opt_out: true,
-        ..xai_grok_login::GrokAuth::test_default()
-    });
-    enable_product_telemetry(&agent);
-    assert!(agent.is_data_collection_disabled());
-    assert!(agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_disabled_for_zdr_team() {
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth {
-        team_blocked_reasons: vec!["BLOCKED_REASON_NO_LOGS".into()],
-        ..xai_grok_login::GrokAuth::test_default()
-    });
-    enable_product_telemetry(&agent);
-    assert!(!agent.product_analytics_enabled());
-}
-#[tokio::test]
-async fn product_analytics_disabled_when_telemetry_off() {
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth::test_default());
-    agent.cfg.borrow_mut().features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
-    assert!(!agent.product_analytics_enabled());
-}
-/// Counting HTTP stub: any request increments the counter and gets a storage-proxy-shaped 200 so the client does not retry.
-async fn spawn_counting_storage_stub() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let count_clone = count.clone();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let app = axum::Router::new().fallback(move || {
-        let count = count_clone.clone();
-        async move {
-            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            (
-                [("content-type", "application/json")],
-                r#"{"bucket":"test-bucket","path":"auth-diagnostics/test.jsonl"}"#,
-            )
-        }
-    });
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    (format!("http://127.0.0.1:{port}"), count)
-}
-/// Regression: the auth-diagnostics uploader was gated only on the trace-upload config switch.
-/// It must also honor ZDR / retention opt-out, checked at invocation time.
-/// No first-party pipeline exists, so the uploader is never wired either way.
-#[tokio::test]
-async fn diagnostic_upload_skipped_for_opted_out_user() {
-    let (stub_url, count) = spawn_counting_storage_stub().await;
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth {
-        coding_data_retention_opt_out: true,
-        ..xai_grok_login::GrokAuth::test_default()
-    });
-    enable_trace_upload_config(&agent);
-    agent.cfg.borrow_mut().endpoints.trace_upload_url = Some(stub_url);
-    assert!(
-        agent.diagnostic_upload_config().is_none(),
-        "no first-party pipeline: diagnostics uploader is never wired"
-    );
-    assert_eq!(
-        count.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "no diagnostics request may leave the machine after opt-out"
-    );
-}
-#[tokio::test]
-async fn diagnostic_upload_never_wired_without_first_party_pipeline() {
-    let (stub_url, count) = spawn_counting_storage_stub().await;
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth::test_default());
-    enable_trace_upload_config(&agent);
-    agent.cfg.borrow_mut().endpoints.trace_upload_url = Some(stub_url);
-    assert!(
-        agent.diagnostic_upload_config().is_none(),
-        "no first-party pipeline: diagnostics uploader is never wired"
-    );
-    assert_eq!(
-        count.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "nothing may leave the machine"
-    );
-}
-/// The diagnostics privacy gate fails closed: with no credential in the `AuthManager`, nothing may leave the machine.
-/// The credential can be missing when a mid-session `/logout` raced the refresh failure that triggers the upload.
-/// No first-party pipeline exists, so the uploader is never wired either way.
-#[tokio::test]
-async fn diagnostic_upload_skipped_without_credentials() {
-    let (stub_url, count) = spawn_counting_storage_stub().await;
-    let agent = build_minimal_agent_for_tests();
-    enable_trace_upload_config(&agent);
-    agent.cfg.borrow_mut().endpoints.trace_upload_url = Some(stub_url);
-    assert!(
-        agent.diagnostic_upload_config().is_none(),
-        "missing credentials must fail closed for diagnostics uploads"
-    );
-    assert_eq!(
-        count.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "missing credentials must fail closed for diagnostics uploads"
-    );
-}
-/// The diagnostics uploader is never wired without a first-party pipeline.
-/// A mid-session config change keeps it unwired.
-#[tokio::test]
-async fn diagnostic_upload_skipped_after_mid_session_trace_upload_kill_switch() {
-    let (stub_url, count) = spawn_counting_storage_stub().await;
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth::test_default());
-    enable_trace_upload_config(&agent);
-    agent.cfg.borrow_mut().endpoints.trace_upload_url = Some(stub_url);
-    agent.sync_collection_config_gate();
-    assert!(
-        agent.diagnostic_upload_config().is_none(),
-        "no first-party pipeline: uploader stays unwired"
-    );
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
-    }
-    agent.sync_collection_config_gate();
-    assert!(
-        agent.diagnostic_upload_config().is_none(),
-        "an already-unwired diagnostics uploader stays unwired"
-    );
-    assert_eq!(
-        count.load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "nothing may leave the machine"
     );
 }
 use crate::session::storage::search::IndexDecision;
@@ -4146,32 +3890,6 @@ async fn session_opened_before_the_decision_sees_it_land() {
     assert!(
         matches!(held_by_a_session.decision(), IndexDecision::On(_)),
         "the session indexes as soon as the decision lands"
-    );
-}
-/// The live collection gate mirrors the config-level trace-upload switch.
-/// `sync_collection_config_gate` must keep that mirror current.
-/// No first-party pipeline exists, so the mirror stays off.
-#[tokio::test]
-async fn collection_config_gate_mirror_follows_trace_upload_flip() {
-    let agent = build_agent_with_auth(xai_grok_login::GrokAuth::test_default());
-    enable_trace_upload_config(&agent);
-    agent.sync_collection_config_gate();
-    assert!(
-        !agent
-            .trace_upload_live
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "no first-party pipeline: mirror stays off"
-    );
-    {
-        let mut cfg = agent.cfg.borrow_mut();
-        cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Disabled);
-    }
-    agent.sync_collection_config_gate();
-    assert!(
-        !agent
-            .trace_upload_live
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "mirror stays off after a mid-session config change"
     );
 }
 /// `parse_session_kind` routes `session/load` to the gateway Chat path vs. the disk-backed Build path.
@@ -5442,7 +5160,7 @@ async fn spawn_seeds_root_conversation_group_in_turn_config() {
                     .terminal(false),
             );
             agent
-                .spawn_and_register_session(&init, options, None)
+                .spawn_and_register_session(&init, options)
                 .await
                 .expect("root session spawns");
             let handle = agent

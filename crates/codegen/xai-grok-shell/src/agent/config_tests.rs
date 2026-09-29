@@ -2790,96 +2790,7 @@ fn inference_idle_timeout_propagates_to_model_info() {
     let info = ModelInfo::from_config(&entry);
     assert_eq!(info.inference_idle_timeout_secs, Some(120));
 }
-#[test]
-fn telemetry_config_ignores_removed_first_party_keys() {
-    let raw: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            events_url     = "https://custom.example.com/events"
-            events_api_key = "custom-key"
-            mixpanel_token = "custom-token"
-            mixpanel_enabled = false
-            trace_upload = true
-            otel_endpoint = "https://collector.example:4318"
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
-    assert_eq!(
-        cfg.telemetry.otel_endpoint.as_deref(),
-        Some("https://collector.example:4318")
-    );
-}
-#[test]
-fn telemetry_otel_timeout_accepts_toml_integer_and_string() {
-    let as_int: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            otel_timeout = 10000
-            otel_metric_export_interval = 60000
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&as_int).expect("integer otel_timeout must parse");
-    assert_eq!(cfg.telemetry.otel_timeout.as_deref(), Some("10000"));
-    assert_eq!(
-        cfg.telemetry.otel_metric_export_interval.as_deref(),
-        Some("60000")
-    );
-    let as_str: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            otel_timeout = "10000"
-            otel_metric_export_interval = "60000"
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&as_str).expect("string otel_timeout must parse");
-    assert_eq!(cfg.telemetry.otel_timeout.as_deref(), Some("10000"));
-    assert_eq!(
-        cfg.telemetry.otel_metric_export_interval.as_deref(),
-        Some("60000")
-    );
-}
 /// Removed first-party keys must parse without effect, not reach any client.
-#[test]
-fn telemetry_removed_keys_parse_without_effect() {
-    let raw: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            events_url     = ""
-            events_api_key = "  "
-            mixpanel_token = "\t"
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
-    assert_eq!(
-        cfg.telemetry.otel_endpoint, None,
-        "no first-party sink may be configured"
-    );
-}
-#[test]
-fn telemetry_partial_override_retains_defaults() {
-    let raw: toml::Value = toml::from_str(
-        r#"
-            [telemetry]
-            otel_endpoint = "https://my-collector/events"
-            "#,
-    )
-    .unwrap();
-    let cfg = Config::new_from_toml_cfg(&raw).expect("should parse");
-    assert_eq!(
-        cfg.telemetry.otel_endpoint.as_deref(),
-        Some("https://my-collector/events")
-    );
-    let defaults = TelemetryConfig::default();
-    assert_eq!(
-        cfg.telemetry.otel_metrics_exporter,
-        defaults.otel_metrics_exporter
-    );
-    assert_eq!(cfg.telemetry.otel_timeout, defaults.otel_timeout);
-}
 #[test]
 fn auth_alias_maps_to_grok_com_config() {
     let raw: toml::Value = toml::from_str(
@@ -4342,79 +4253,6 @@ fn resolve_doom_loop_recovery_clamps_tunables() {
 }
 #[test]
 #[serial]
-fn resolve_trace_upload_disabled_when_telemetry_off_despite_remote_flag() {
-    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Disabled);
-    cfg.remote_settings = Some(crate::util::config::RemoteSettings {
-        trace_upload_enabled: Some(true),
-        ..Default::default()
-    });
-    let r = cfg.resolve_trace_upload();
-    assert!(
-        !r.value,
-        "trace upload is always off (no first-party pipeline)"
-    );
-    assert!(!cfg.is_trace_upload_enabled());
-}
-#[test]
-#[serial]
-fn resolve_trace_upload_always_off_despite_config_and_pins() {
-    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Disabled);
-    let r = cfg.resolve_trace_upload();
-    assert!(
-        !r.value,
-        "trace upload stays off without a first-party pipeline"
-    );
-    assert_eq!(r.source, ConfigSource::Default);
-    cfg.requirements
-        .trace_upload
-        .pin(true, crate::config::RequirementSource::Unknown);
-    assert!(!cfg.resolve_trace_upload().value);
-}
-#[test]
-#[serial]
-fn trace_upload_decision_debug_reports_always_off() {
-    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Disabled);
-    cfg.remote_settings = Some(crate::util::config::RemoteSettings {
-        trace_upload_enabled: Some(true),
-        ..Default::default()
-    });
-    let d = cfg.trace_upload_decision_debug();
-    assert_eq!(
-        d.get("trace_upload"),
-        Some(&serde_json::json!(serde_json::json!(false)))
-    );
-    assert_eq!(
-        d.get("trace_upload_source"),
-        Some(&serde_json::json!(serde_json::json!("default")))
-    );
-    assert_eq!(
-        d.get("telemetry_mode"),
-        Some(&serde_json::json!(serde_json::json!("false")))
-    );
-    assert_eq!(
-        d.get("has_remote_settings"),
-        Some(&serde_json::json!(serde_json::json!(true)))
-    );
-}
-#[test]
-#[serial]
-fn resolve_trace_upload_stays_off_when_telemetry_on() {
-    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
-    let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Enabled);
-    let r = cfg.resolve_trace_upload();
-    assert!(!r.value);
-    assert_eq!(r.source, ConfigSource::Default);
-}
-#[test]
-#[serial]
 fn resolve_goal_defaults_to_true_when_unset() {
     unsafe { std::env::remove_var("GROK_GOAL") };
     let cfg = Config::default();
@@ -5434,9 +5272,6 @@ fn config_accepts_all_known_sections() {
             approval_mode = "ask"
             [session]
             auto_compact_threshold_percent = 85
-            [telemetry]
-            enabled = true
-            otel_enabled = true
             [agent]
             name = "custom"
             [skills]
@@ -5602,25 +5437,6 @@ fn unknown_key_still_warns_next_to_exempt_sections() {
     );
 }
 /// Regression: a deployment key with no OAuth token must resolve to Proxy.
-#[test]
-fn resolve_upload_method_accepts_deployment_key_without_oauth() {
-    use crate::session::repo_changes::UploadMethod;
-    let endpoints = EndpointsConfig {
-        deployment_key: Some("enterprise-key".to_string()),
-        ..Default::default()
-    };
-    match endpoints.resolve_upload_method(None) {
-        Some(UploadMethod::Proxy {
-            deployment_key,
-            user_token,
-            ..
-        }) => {
-            assert_eq!(deployment_key.as_deref(), Some("enterprise-key"));
-            assert_eq!(user_token, "");
-        }
-        other => panic!("expected Proxy upload method, got {other:?}"),
-    }
-}
 fn empty_config() -> toml::Value {
     toml::Value::Table(toml::map::Map::new())
 }
@@ -6188,85 +6004,6 @@ fn resolve_runtime_fields_idempotent() {
     assert_eq!(cfg.respect_gitignore, first_gitignore);
     assert_eq!(cfg.managed_mcps_enabled, first_mcps);
     assert_eq!(cfg.web_search_model, first_ws);
-}
-#[test]
-fn telemetry_mode_toml_roundtrip() {
-    let cfg: Features = toml::from_str("telemetry = true").unwrap();
-    assert_eq!(cfg.telemetry, Some(TelemetryMode::Enabled));
-    let cfg: Features = toml::from_str("telemetry = false").unwrap();
-    assert_eq!(cfg.telemetry, Some(TelemetryMode::Disabled));
-    let cfg: Features = toml::from_str(r#"telemetry = "session_metrics""#).unwrap();
-    assert_eq!(cfg.telemetry, Some(TelemetryMode::SessionMetrics));
-    let cfg: Features =
-        toml::from_str(r#"telemetry = "metrics_v3""#).expect("unknown string must not error");
-    assert_eq!(cfg.telemetry, Some(TelemetryMode::Disabled));
-    assert!(toml::from_str::<Features>("telemetry = 42").is_err());
-}
-#[test]
-fn telemetry_enabled_from_toml_recognizes_modes() {
-    let on: toml::Value = toml::from_str("[features]\ntelemetry = true\n").unwrap();
-    assert_eq!(telemetry_enabled_from_toml(&on), Some(true));
-    let session: toml::Value = toml::from_str(
-        r#"[features]
-telemetry = "session_metrics"
-"#,
-    )
-    .unwrap();
-    assert_eq!(telemetry_enabled_from_toml(&session), Some(true));
-    let unknown: toml::Value = toml::from_str(
-        r#"[features]
-telemetry = "garbage"
-"#,
-    )
-    .unwrap();
-    assert_eq!(telemetry_enabled_from_toml(&unknown), None);
-}
-#[test]
-#[serial]
-fn is_telemetry_explicitly_disabled_sync_env_signals() {
-    unsafe { std::env::set_var("GROK_TELEMETRY_ENABLED", "0") };
-    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
-    assert!(is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::set_var("GROK_TELEMETRY_ENABLED", "1") };
-    assert!(!is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::remove_var("GROK_TELEMETRY_ENABLED") };
-    unsafe { std::env::set_var("DISABLE_TELEMETRY", "1") };
-    assert!(is_telemetry_explicitly_disabled_sync());
-    unsafe { std::env::remove_var("DISABLE_TELEMETRY") };
-}
-#[test]
-#[serial]
-fn resolve_telemetry_mode_disable_env_beats_opt_in_but_not_requirements_pin() {
-    let home = tempfile::tempdir().unwrap();
-    let _home = EnvGuard::set("GROK_HOME", home.path());
-    let _enable = EnvGuard::set("GROK_TELEMETRY_ENABLED", "true");
-    let mut cfg = Config::default();
-    cfg.features.telemetry = Some(TelemetryMode::Enabled);
-    let _falsy = EnvGuard::set("DISABLE_TELEMETRY", "0");
-    let resolved = cfg.resolve_telemetry_mode();
-    assert_eq!(
-        (resolved.value, resolved.source),
-        (TelemetryMode::Enabled, ConfigSource::Env)
-    );
-    let _truthy = EnvGuard::set("DISABLE_TELEMETRY", "1");
-    let resolved = cfg.resolve_telemetry_mode();
-    assert_eq!(
-        (resolved.value, resolved.source),
-        (TelemetryMode::Disabled, ConfigSource::Env)
-    );
-    assert!(
-        is_telemetry_disabled_sync(),
-        "sync gate must agree with resolve_telemetry_mode"
-    );
-    cfg.requirements.telemetry.pin(
-        TelemetryMode::Enabled,
-        crate::config::RequirementSource::Unknown,
-    );
-    let resolved = cfg.resolve_telemetry_mode();
-    assert_eq!(
-        (resolved.value, resolved.source),
-        (TelemetryMode::Enabled, ConfigSource::Requirement)
-    );
 }
 #[test]
 fn version_overrides_apply_into_typed_config() {

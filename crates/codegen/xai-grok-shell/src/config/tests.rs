@@ -3271,20 +3271,19 @@ fn config_layers_system_managed_lowest_priority() {
 #[test]
 fn apply_requirements_value_overrides_user_settings() {
     let raw_config: toml::Value = toml::from_str(
-            "[cli]\nauto_update = true\nchannel = \"beta\"\n\n[features]\nsupport_permission = true\nfeedback = true\nlsp_tools = true\nweb_fetch = true\nwrite_file = true\n\n[ui]\nyolo = true\n\n[models]\ndefault = \"user-model\"\nweb_search = \"user-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://user-proxy.example/v1\"\nxai_api_base_url = \"https://user-api.example/v1\"\nmodels_base_url = \"https://user-models.example/v1\"\nmodels_list_url = \"https://user-models.example/v1/models\"\n",
+            "[cli]\nauto_update = true\nchannel = \"beta\"\n\n[features]\nfeedback = true\nlsp_tools = true\nweb_fetch = true\nwrite_file = true\n\n[ui]\nyolo = true\n\n[models]\ndefault = \"user-model\"\nweb_search = \"user-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://user-proxy.example/v1\"\nxai_api_base_url = \"https://user-api.example/v1\"\nmodels_base_url = \"https://user-models.example/v1\"\nmodels_list_url = \"https://user-models.example/v1/models\"\n",
         )
         .unwrap();
     let mut cfg = crate::agent::config::Config::new_from_toml_cfg(&raw_config).unwrap();
     cfg.default_yolo_mode = true;
     let requirements: toml::Value = toml::from_str(
-            "[cli]\nauto_update = false\nchannel = \"stable\"\n\n[features]\nsupport_permission = false\nfeedback = false\nlsp_tools = false\nweb_fetch = false\nwrite_file = false\nremote_fetch = false\n\n[ui]\nyolo = false\n\n[models]\ndefault = \"managed-model\"\nweb_search = \"managed-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://managed-proxy.example/v1\"\nxai_api_base_url = \"https://managed-api.example/v1\"\nmodels_base_url = \"https://managed-models.example/v1\"\nmodels_list_url = \"https://managed-models.example/v1/models\"\ndeployment_key = \"enterprise-deploy-key-should-not-log\"\n",
+            "[cli]\nauto_update = false\nchannel = \"stable\"\n\n[features]\nfeedback = false\nlsp_tools = false\nweb_fetch = false\nwrite_file = false\nremote_fetch = false\n\n[ui]\nyolo = false\n\n[models]\ndefault = \"managed-model\"\nweb_search = \"managed-ws-model\"\n\n[endpoints]\ncli_chat_proxy_base_url = \"https://managed-proxy.example/v1\"\nxai_api_base_url = \"https://managed-api.example/v1\"\nmodels_base_url = \"https://managed-models.example/v1\"\nmodels_list_url = \"https://managed-models.example/v1/models\"\ndeployment_key = \"enterprise-deploy-key-should-not-log\"\n",
         )
         .unwrap();
     let source = RequirementSource::Requirements {
         path: std::path::PathBuf::from("/test/requirements.toml"),
     };
     let enforced = apply_requirements_inner(&mut cfg, &requirements, &source);
-    assert!(!cfg.features.support_permission);
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::Feedback));
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::LspTools));
     assert!(!cfg.is_feature_enabled(crate::agent::config::Feature::WebFetch));
@@ -3300,7 +3299,6 @@ fn apply_requirements_value_overrides_user_settings() {
                 .iter()
                 .any(|e| e.path == "features.remote_fetch" && e.value == "false")
         );
-    assert_eq!(Some(false), cfg.requirements.trace_upload.pinned());
     assert_eq!(Some(false), cfg.cli.auto_update);
     assert!(!cfg.ui.yolo);
     assert!(!cfg.default_yolo_mode);
@@ -3780,7 +3778,6 @@ fn managed_settings_disables_features_and_requirements_overrides() {
     use crate::agent::config::Feature;
     use xai_grok_workspace::permission::resolution::ManagedSettingsFeatures;
     let mut cfg = crate::agent::config::Config::default();
-    cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
     cfg.feature_values.insert(Feature::Feedback, true);
     cfg.default_yolo_mode = true;
     let features = ManagedSettingsFeatures {
@@ -3790,26 +3787,18 @@ fn managed_settings_disables_features_and_requirements_overrides() {
         source_path: Some(std::path::PathBuf::from("/etc/managed-settings.json")),
     };
     let enforced = apply_managed_settings_features_inner(&mut cfg, &features);
-    assert_eq!(
-            cfg.features.telemetry,
-            Some(crate::agent::config::TelemetryMode::Disabled)
-        );
     assert_eq!(cfg.feature_values.get(&Feature::Feedback), Some(&false));
     assert!(cfg.default_yolo_mode);
-    assert_eq!(enforced.len(), 2);
+    assert_eq!(enforced.len(), 1);
     assert!(!enforced.iter().any(|e| e.path == "ui.yolo"));
     let req: toml::Value = toml::from_str(
-            "[features]\ntelemetry = true\nfeedback = true\n\n[ui]\nyolo = true\n",
+            "[features]\nfeedback = true\n\n[ui]\nyolo = true\n",
         )
         .unwrap();
     let source = RequirementSource::Requirements {
         path: std::path::PathBuf::from("/test/requirements.toml"),
     };
     apply_requirements_inner(&mut cfg, &req, &source);
-    assert_eq!(
-            cfg.features.telemetry,
-            Some(crate::agent::config::TelemetryMode::Enabled)
-        );
     assert!(cfg.is_feature_enabled(Feature::Feedback));
     assert!(cfg.ui.yolo);
 }
@@ -3820,7 +3809,6 @@ fn managed_settings_does_not_override_user_yolo() {
     use crate::agent::config::Feature;
     use xai_grok_workspace::permission::resolution::ManagedSettingsFeatures;
     let mut cfg = crate::agent::config::Config::default();
-    cfg.features.telemetry = Some(crate::agent::config::TelemetryMode::Enabled);
     cfg.feature_values.insert(Feature::Feedback, true);
     cfg.ui.yolo = true;
     cfg.default_yolo_mode = true;
@@ -3833,14 +3821,10 @@ fn managed_settings_does_not_override_user_yolo() {
         ),
     };
     let enforced = apply_managed_settings_features_inner(&mut cfg, &features);
-    assert_eq!(
-            cfg.features.telemetry,
-            Some(crate::agent::config::TelemetryMode::Disabled)
-        );
     assert_eq!(cfg.feature_values.get(&Feature::Feedback), Some(&false));
     assert!(cfg.ui.yolo);
     assert!(cfg.default_yolo_mode);
-    assert_eq!(enforced.len(), 2);
+    assert_eq!(enforced.len(), 1);
     assert!(!enforced.iter().any(|e| e.path == "ui.yolo"));
 }
 /// Simulate a release-stamped build so the folder-trust gate engages (a local/dev build auto-trusts).
