@@ -1896,7 +1896,7 @@ fn install_heap_profile_hooks() {
 }
 fn version_text(channel_label: &str) -> String {
     format!(
-        "grok {}\n",
+        "pig {}\n",
         xai_grok_version::display_version_with_commit(
             xai_grok_version::full_version(),
             channel_label,
@@ -2231,12 +2231,11 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 version,
                 alpha,
                 stable,
-                enterprise,
                 trigger,
                 auto,
             } => {
                 init_tracing_simple("cli");
-                let channel_switch = get_channel_switch(alpha, stable, enterprise);
+                let channel_switch = get_channel_switch(alpha, stable);
                 let trigger = resolve_update_trigger(trigger.as_deref(), auto);
                 return run_update_command(
                     check,
@@ -2469,12 +2468,7 @@ fn build_update_config() -> UpdateConfig {
     if let Ok(root) = xai_grok_shell::config::load_effective_config_disk_only()
         && let Some(ch) = xai_grok_shell::util::config::channel_from_toml_opt(&root)
     {
-        if ch == "enterprise" {
-            eprintln!("enterprise channel has no pig equivalent; falling back to stable.");
-            config.channel = "stable".to_string();
-        } else {
-            config.channel = ch;
-        }
+        config.channel = ch;
     }
     config
 }
@@ -2517,21 +2511,16 @@ fn is_managed_install(exe: Option<std::path::PathBuf>, grok_home: &std::path::Pa
 }
 /// Map the mutually-exclusive channel flags to a channel name.
 /// clap enforces that at most one is set, so the order is irrelevant.
-/// `--enterprise` has no pig equivalent: warn and fall back to stable.
-fn get_channel_switch(alpha: bool, stable: bool, enterprise: bool) -> Option<&'static str> {
+fn get_channel_switch(alpha: bool, stable: bool) -> Option<&'static str> {
     if alpha {
         Some("alpha")
     } else if stable {
-        Some("stable")
-    } else if enterprise {
-        eprintln!("enterprise channel has no pig equivalent; falling back to stable.");
         Some("stable")
     } else {
         None
     }
 }
 /// Handle `pig update [--check] [--json] [--force-reinstall] [--version X] [--alpha|--stable]`.
-/// `--enterprise` is accepted for compat and falls back to stable (see [`get_channel_switch`]).
 /// --trigger is the one representation; --auto is the compat alias from older parents.
 /// Unknown values fall back to user_command (a human is the only caller that can produce them).
 fn resolve_update_trigger(flag: Option<&str>, auto: bool) -> auto_update::CliUpdateTrigger {
@@ -2776,7 +2765,7 @@ mod tests {
             let mut output = Vec::new();
             write_version(&mut output, label).unwrap();
             let output = String::from_utf8(output).unwrap();
-            assert!(output.starts_with("grok "));
+            assert!(output.starts_with("pig "));
             assert!(output.contains(env!("VERSION_WITH_COMMIT")));
             assert!(output.ends_with(expected_suffix), "{output:?}");
         }

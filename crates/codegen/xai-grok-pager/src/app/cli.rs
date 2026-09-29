@@ -100,14 +100,11 @@ See ~/.grok/README.md for more information.
         #[arg(long)]
         version: Option<String>,
         /// Switch to the alpha release channel (faster updates, may have bugs).
-        #[arg(long, conflicts_with_all = ["stable", "enterprise"])]
+        #[arg(long, conflicts_with_all = ["stable"])]
         alpha: bool,
         /// Switch to the stable release channel (default).
-        #[arg(long, conflicts_with_all = ["alpha", "enterprise"])]
+        #[arg(long, conflicts_with_all = ["alpha"])]
         stable: bool,
-        /// Deprecated: no pig enterprise channel; falls back to stable with a notice.
-        #[arg(long, conflicts_with_all = ["alpha", "stable"], hide = true)]
-        enterprise: bool,
         /// Internal: what spawned this `pig update` (`user_command`, `auto_background`, `leader_converge`). Hidden.
         #[arg(long, hide = true)]
         trigger: Option<String>,

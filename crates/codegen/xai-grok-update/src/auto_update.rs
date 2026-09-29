@@ -12,8 +12,8 @@ use tokio::io::AsyncWriteExt;
 
 use crate::cleanup_downloads::cleanup_old_downloads;
 use crate::version::{
-    UpdateConfig, effective_channel, fetch_latest_version, get_installed_grok_version,
-    get_latest_version, is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
+    UpdateConfig, fetch_latest_version, get_installed_grok_version, get_latest_version,
+    is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
 };
 use crate::winget::{UPGRADE_COMMAND, WINGET};
 use xai_grok_shell::util::config;
@@ -83,7 +83,7 @@ fn managed_bin_name() -> &'static str {
 
 fn reinstall_hint(installer: &str, _channel: &str) -> String {
     match installer {
-        "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
+        "npm" => "Please reinstall via npm:\n  npm i -g @xcrong/pig".to_string(),
         WINGET => format!("Update with WinGet:\n  {UPGRADE_COMMAND}"),
         GITHUB => format!(
             "Please reinstall from the pig GitHub Release page:\n  {}",
@@ -245,11 +245,10 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     let current_config = config::load_config().await;
     let auto_update = current_config.cli.auto_update;
     // The WinGet package ships only stable releases, whatever channel is configured.
-    // A stale "enterprise" channel falls back to stable (no pig equivalent).
     let channel = if installer.as_deref() == Some(WINGET) {
         "stable".to_owned()
     } else {
-        effective_channel(&update_config.channel).to_owned()
+        update_config.channel.clone()
     };
 
     let Some(ref inst) = installer else {
@@ -590,7 +589,7 @@ fn is_managed_bin_path(exe: &std::path::Path) -> bool {
 fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: bool) -> Option<bool> {
     let current = semver::Version::parse(current).ok()?;
     let target = semver::Version::parse(target).ok()?;
-    match effective_channel(channel) {
+    match channel {
         "stable" => {
             if !target.pre.is_empty() {
                 tracing::warn!(
@@ -1568,9 +1567,7 @@ async fn download_verified_github(
                 .map_err(|_| anyhow::anyhow!("invalid version format: '{}'", v))?;
             v.to_string()
         }
-        None => {
-            crate::version::fetch_github_version(effective_channel(&update_config.channel)).await?
-        }
+        None => crate::version::fetch_github_version(&update_config.channel).await?,
     };
 
     let asset = crate::version::asset_for_platform(os, arch)?;
@@ -2216,7 +2213,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
     warn_if_other_grok_processes_running();
 
     let version_arg = match target {
-        Some(ver) => format!("@xai-official/grok@{ver}"),
+        Some(ver) => format!("@xcrong/pig@{ver}"),
         None => {
             // All current callers resolve the version via get_latest_version (max(stable, alpha) for the alpha channel) before reaching here
             // Falling back to a raw dist-tag would bypass that logic, so warn loudly if this path is ever hit
@@ -2225,7 +2222,7 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
                 "install_npm called without a resolved version, falling back to dist-tag"
             );
             format!(
-                "@xai-official/grok@{}",
+                "@xcrong/pig@{}",
                 if channel == "alpha" {
                     "alpha"
                 } else {
@@ -2278,11 +2275,6 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
 }
 
 pub async fn apply_channel_switch(channel_switch: Option<&str>, update_config: &mut UpdateConfig) {
-    let mut channel_switch = channel_switch;
-    if channel_switch == Some("enterprise") {
-        eprintln!("enterprise channel has no pig equivalent; falling back to stable.");
-        channel_switch = Some("stable");
-    }
     if let Some(ch) = channel_switch
         && update_config.channel != ch
     {

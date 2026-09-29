@@ -10,7 +10,7 @@ use xai_grok_shell::env::GrokBuildEnvironment;
 use xai_grok_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
-const NPM_PACKAGE: &str = "@xai-official/grok";
+const NPM_PACKAGE: &str = "@xcrong/pig";
 /// Pig releases live here; tags are `v<version>` (`-` suffix means prerelease).
 pub const PIG_GITHUB_REPO: &str = "xcrong/pig";
 const GITHUB_API_DEFAULT: &str = "https://api.github.com";
@@ -83,7 +83,6 @@ pub struct UpdateConfig {
     /// Optional extra auth material forwarded with requests when present.
     pub alpha_test_key: Option<String>,
     /// Release channel: "stable" or "alpha". Loaded from config.
-    /// A stale "enterprise" value falls back to stable (no pig equivalent).
     pub channel: String,
     /// Custom npm registry URL. When set, passed as `--registry=` to npm CLI.
     pub npm_registry: Option<String>,
@@ -99,17 +98,6 @@ impl UpdateConfig {
             channel: "stable".to_string(),
             npm_registry: None,
         }
-    }
-}
-
-/// Treat a stale "enterprise" channel as stable: pig has no enterprise
-/// releases. Callers log the fallback where user-visible.
-pub(crate) fn effective_channel(channel: &str) -> &str {
-    if channel == "enterprise" {
-        tracing::warn!("enterprise channel has no pig equivalent; falling back to stable");
-        "stable"
-    } else {
-        channel
     }
 }
 
@@ -159,7 +147,6 @@ fn semver_max(a: &str, b: &str) -> Result<String> {
 /// For alpha channel, fetches both `@alpha` and `@latest` dist-tags and returns the semver-greater.
 /// This keeps alpha users from getting stuck when a newer stable ships without updating the alpha dist-tag.
 async fn fetch_npm_version(channel: &str, npm_registry: Option<&str>) -> Result<String> {
-    let channel = effective_channel(channel);
     if channel == "alpha" {
         let (alpha_v, stable_v) = tokio::try_join!(
             fetch_npm_tag("alpha", npm_registry),
@@ -256,7 +243,6 @@ pub async fn fetch_github_version(channel: &str) -> Result<String> {
 /// explicit API base (wiremock in tests).
 #[doc(hidden)]
 pub async fn fetch_github_version_from_api(channel: &str, api_base: &str) -> Result<String> {
-    let channel = effective_channel(channel);
     let url = format!(
         "{}/repos/{}/releases?per_page=100",
         api_base.trim_end_matches('/'),
@@ -554,14 +540,6 @@ mod tests {
         );
         assert!(asset_for_platform("linux", "aarch64").is_err());
         assert!(asset_for_platform("windows", "x86_64").is_err());
-    }
-
-    #[test]
-    fn effective_channel_falls_back_enterprise_to_stable() {
-        use super::effective_channel;
-        assert_eq!(effective_channel("stable"), "stable");
-        assert_eq!(effective_channel("alpha"), "alpha");
-        assert_eq!(effective_channel("enterprise"), "stable");
     }
 
     use super::*;

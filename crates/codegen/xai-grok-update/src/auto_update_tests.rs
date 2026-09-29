@@ -40,36 +40,6 @@ fn test_needs_update_invalid_versions() {
     );
     assert_eq!(needs_update("0.1.141", "garbage", "stable", false), None);
 }
-#[test]
-fn test_needs_update_enterprise_channel_behaves_like_stable() {
-    // Enterprise uses the same conservative pre-release rules as stable.
-    // Same version: no update.
-    assert_eq!(
-        needs_update("0.1.206", "0.1.206", "enterprise", false),
-        Some(false)
-    );
-    // Newer stable: update.
-    assert_eq!(
-        needs_update("0.1.205", "0.1.206", "enterprise", false),
-        Some(true)
-    );
-    // Older stable: no downgrade (allow_downgrade=false).
-    assert_eq!(
-        needs_update("0.1.207", "0.1.206", "enterprise", false),
-        Some(false)
-    );
-    // Pre-release candidate rejected on enterprise channel.
-    assert_eq!(
-        needs_update("0.1.205", "0.1.206-alpha.1", "enterprise", false),
-        Some(false)
-    );
-    // Current pre-release on enterprise forces upgrade (even to equal base).
-    assert_eq!(
-        needs_update("0.1.206-alpha.3", "0.1.206", "enterprise", false),
-        Some(true)
-    );
-}
-
 #[cfg(unix)]
 #[tokio::test]
 async fn test_atomic_symlink_swap_creates_new_symlink() {
@@ -824,7 +794,7 @@ fn test_reinstall_hint_npm_mentions_npm_command() {
     let hint = reinstall_hint("npm", "stable");
     assert!(hint.contains("npm i -g"), "should suggest npm i -g: {hint}");
     assert!(
-        hint.contains("@xai-official/grok"),
+        hint.contains("@xcrong/pig"),
         "should name the package: {hint}"
     );
 }
@@ -1033,14 +1003,13 @@ fn test_needs_update_channel_is_case_sensitive() {
 #[test]
 fn test_needs_update_unknown_channels_return_none() {
     // Unknown channels (not stable/alpha) return None.
-    // A stale "enterprise" value falls back to stable via effective_channel.
     assert_eq!(needs_update("0.1.140", "0.1.141", "beta", false), None);
     assert_eq!(needs_update("0.1.140", "0.1.141", "nightly", false), None);
     assert_eq!(needs_update("0.1.140", "0.1.141", "", false), None);
     assert_eq!(needs_update("0.1.140", "0.1.141", "rc", false), None);
     assert_eq!(
         needs_update("0.1.140", "0.1.141", "enterprise", false),
-        Some(true)
+        None
     );
     // Unknown channels return None regardless of allow_downgrade.
     assert_eq!(needs_update("0.1.140", "0.1.141", "beta", true), None);
@@ -1157,15 +1126,6 @@ fn test_needs_update_downgrade_alpha_when_allowed() {
     // Alpha pre-release downgrade.
     assert_eq!(
         needs_update("0.1.148-alpha.3", "0.1.148-alpha.2", "alpha", true),
-        Some(true)
-    );
-}
-
-#[test]
-fn test_needs_update_downgrade_enterprise_falls_back_to_stable() {
-    // Stale enterprise channel falls back to stable via effective_channel.
-    assert_eq!(
-        needs_update("0.1.207", "0.1.206", "enterprise", true),
         Some(true)
     );
 }
@@ -2239,7 +2199,7 @@ async fn download_tarball_and_unpack_errs_on_corrupt() {
 fn npm_entry_is_recognized_by_the_binary_location() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
-    let native = root.join("lib/node_modules/@xai-official/grok/bin/grok-native");
+    let native = root.join("lib/node_modules/@xcrong/pig/bin/pig-native");
     std::fs::create_dir_all(native.parent().unwrap()).unwrap();
     std::fs::write(&native, "bin").unwrap();
     let path_entry = root.join("prefix-bin/grok");

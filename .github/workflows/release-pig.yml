@@ -127,3 +127,43 @@ jobs:
           generate_release_notes: true
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: pig-*
+
+  # npm publish for `@xcrong/pig` (scaffold in `npm/pig/`).
+  #
+  # OIDC trusted publishing: the npm package trusts this repo + workflow + environment
+  # (configured on the npm website), so no long-lived token/secret is used here.
+  # `id-token: write` mints the OIDC token; `npm publish --provenance` attaches it.
+  # Runs after `release` so a published npm version never points at a tag whose
+  # binaries failed to attach.
+  publish-npm:
+    name: publish npm @xcrong/pig
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Use npm with OIDC support
+        # Trusted publishing needs npm >= 11.5.1; the Node 20 bundle ships npm 10.
+        run: npm install -g npm@latest
+
+      - name: Align package version with tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          test "$(node -p "require('./npm/pig/package.json').name")" = "@xcrong/pig"
+          npm version --no-git-tag-version --allow-same-version "$VERSION" --prefix npm/pig
+          test "$(node -p "require('./npm/pig/package.json').version")" = "$VERSION"
+
+      - name: Publish to npm (OIDC trusted publisher)
+        run: npm publish --provenance --access public
+        working-directory: npm/pig
