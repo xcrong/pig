@@ -1,0 +1,23 @@
+{
+  "name": "@xcrong/pig",
+  "version": "1.0.1",
+  "description": "Pig Agent: a general-purpose agent harness (terminal UI). Installs the prebuilt pig binary from GitHub Releases on postinstall.",
+  "license": "Apache-2.0",
+  "bin": {
+    "pig": "bin/pig.js"
+  },
+  "scripts": {
+    "postinstall": "node bin/postinstall.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xcrong/pig.git"
+  },
+  "homepage": "https://github.com/xcrong/pig"
+}
