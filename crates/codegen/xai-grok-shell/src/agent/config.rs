@@ -950,10 +950,6 @@ pub struct Config {
     #[serde(skip)]
     pub config_warnings: Vec<super::config_model_override_parse::ConfigWarning>,
     pub grok_com_config: GrokComConfig,
-    /// `[grok_com_config] login_device_flow` (or its `[auth]` alias), read from the raw merged toml.
-    /// Not a `GrokComConfig` field (that struct is public and exhaustive); passed into the login flow by callers.
-    #[serde(skip)]
-    pub login_device_flow: Option<bool>,
     /// `[auth_provider.<name>]` tables, populated by [`parse_auth_providers`] from trusted config layers only.
     #[serde(skip)]
     pub auth_providers: IndexMap<String, xai_grok_config_types::AuthProviderConfig>,
@@ -1325,7 +1321,6 @@ impl Default for Config {
             config_models: IndexMap::new(),
             config_warnings: Vec::new(),
             grok_com_config: GrokComConfig::default(),
-            login_device_flow: None,
             auth_providers: IndexMap::new(),
             model_providers: IndexMap::new(),
             vendors: IndexMap::new(),
@@ -1448,7 +1443,6 @@ fn non_boolean_feature_error(path: &str, value: &toml::Value) -> String {
 /// Config paths read by raw-layer resolvers, not [`Config`] serde fields, so `serde_ignored` must not report them as unrecognized keys.
 const NON_SERDE_CONFIG_PATHS: &[&str] = &[
     crate::util::config::SLASH_COMMAND_TAGS_CONFIG_PATH,
-    "grok_com_config.login_device_flow",
     "cli.grove",
     "cli.grove_worktree",
     "cli.nfs_worktree",
@@ -1785,24 +1779,6 @@ impl Config {
         if config.grok_com_config.oidc.is_none() && config.grok_com_config.oauth2.is_none() {
             config.grok_com_config.oauth2 = xai_grok_login::OAuth2ProviderConfig::from_env();
         }
-        config.login_device_flow = match raw_config
-            .get("grok_com_config")
-            .and_then(toml::Value::as_table)
-            .and_then(|t| t.get("login_device_flow"))
-        {
-            None => None,
-            Some(toml::Value::Boolean(value)) => Some(*value),
-            Some(other) => {
-                config.config_warnings.push(
-                    super::config_model_override_parse::ConfigWarning::config_key(
-                        "grok_com_config.login_device_flow".to_string(),
-                        super::config_model_override_parse::ConfigWarningKind::InvalidValue,
-                        format!("expected a boolean, got {}", other.type_str()),
-                    ),
-                );
-                None
-            }
-        };
         if config.client_version.is_none() {
             config.client_version = Self::default().client_version;
         }

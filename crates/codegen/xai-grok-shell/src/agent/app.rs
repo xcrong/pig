@@ -311,8 +311,7 @@ pub async fn run_headless(
     crate::http::set_process_client_mode_headless();
     use crate::agent::relay::spawn_relay_connection_with_callback;
     use tokio_util::sync::CancellationToken;
-    const HEADLESS_NO_SESSION: &str = "Headless mode requires a grok.com session. \
-        Run `grok login` to sign in, or use `grok agent stdio` for API-key access.";
+    const HEADLESS_NO_SESSION: &str = "Headless mode requires credentials. Configure a model provider: set `[vendors.<id>] enabled = true` with its `env_key`, or add `[model_providers.*]` (see docs/user-guide/11-custom-models.md).";
     xai_file_utils::queue::cleanup_orphaned_uploads(
         &grok_home::grok_home(),
         xai_file_utils::queue::DEFAULT_MAX_AGE,
@@ -326,17 +325,7 @@ pub async fn run_headless(
             ctx.clone(),
             crate::agent::config::EndpointsConfig::from_effective_config().proxy_url(),
         ));
-        run_auth_flow(
-            &auth_manager,
-            ctx,
-            agent_config.login_device_flow,
-            true,
-            None,
-            None,
-            None,
-            xai_grok_login::LoginTransportOverride::None,
-        )
-        .await?
+        run_auth_flow(&auth_manager, ctx, true, None, None, None).await?
     } else {
         let auth_manager = Arc::new(AuthManager::new_with_proxy_base_url(
             &grok_home::grok_home(),
@@ -351,17 +340,7 @@ pub async fn run_headless(
         {
             anyhow::bail!("{HEADLESS_NO_SESSION}");
         }
-        run_auth_flow(
-            &auth_manager,
-            ctx,
-            agent_config.login_device_flow,
-            false,
-            None,
-            None,
-            None,
-            xai_grok_login::LoginTransportOverride::None,
-        )
-        .await?
+        run_auth_flow(&auth_manager, ctx, false, None, None, None).await?
     };
     if auth.user_id.is_empty() || auth.email.is_none() {
         auth = Arc::new(agent_config.create_auth_manager())

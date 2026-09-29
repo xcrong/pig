@@ -36,13 +36,13 @@ pub(super) fn ensure_login_method(app: &mut AppView) {
     // No interactive method: leave login_method_id unset (fail-closed).
 }
 
-/// Error when no interactive login method is available (empty auth_methods, e.g. `preferred_method=api_key` with no credentials).
-/// When the list is empty, prefer the shell's `PREFERRED_API_KEY_UNAVAILABLE` copy.
+/// Error when no interactive login method is available (empty auth_methods).
+/// Points at vendor/provider configuration instead of a browser login.
 fn no_login_method_error(app: &AppView) -> String {
     if app.auth_methods.is_empty() {
-        xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string()
+        "No credentials configured. Configure a model provider: set `[vendors.<id>] enabled = true` with its `env_key`, or add `[model_providers.*]` (see docs/user-guide/11-custom-models.md).".to_string()
     } else {
-        "No login method available".to_string()
+        "No login method available. Configure a model provider (see docs/user-guide/11-custom-models.md).".to_string()
     }
 }
 

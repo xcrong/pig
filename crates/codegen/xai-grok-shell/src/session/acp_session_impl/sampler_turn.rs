@@ -1303,8 +1303,7 @@ impl SessionActor {
         if !matches!(error.kind, SamplingErrorKind::Auth)
             && error.status_code == Some(401)
             && auth_provider.is_none()
-        {
-        }
+        {}
 
         // Last-resort recovery used to short-circuit on whatever is in memory, so it reported success with the bearer the server had just rejected.
         // That bearer was resubmitted until the turn's retry budget ran out. Recovery already walks disk adoption and the authority first.
@@ -1315,10 +1314,7 @@ impl SessionActor {
             if park.is_parked() && self.uncharged_401_park_eligible(am, error.credential) {
                 return Ok(self.park_uncharged_401(error.credential, true));
             }
-            if am
-                .try_recover_unauthorized()
-                .await
-            {
+            if am.try_recover_unauthorized().await {
                 tracing::info!(session_id = %self.session_info.id.0, "auth recovery: sampler 401, recovered, retrying");
                 self.prepare_sampler_for_turn().await;
                 return Ok(SamplerFailureRecovery::RefreshAuthAndResubmit {
@@ -1416,7 +1412,7 @@ impl SessionActor {
                 "{detailed_message}\n\n\
                  You are using a deprecated authentication method (WebLogin).\n\
                  This auth method is no longer supported and will cause errors.\n\n\
-                 To fix: run `grok update`, then `grok logout`, then `grok login` to re-authenticate with OAuth2.\n\n\
+                 To fix: configure a model provider (see docs/user-guide/11-custom-models.md).\n\n\
                  Version: {client_version}"
             );
             self.log_terminal_failure("legacy_auth", error.status_code, &msg);

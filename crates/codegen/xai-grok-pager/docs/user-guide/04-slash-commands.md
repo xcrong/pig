@@ -391,7 +391,7 @@ Create, edit, and delete personas. A subagent can apply a persona to shape how i
 
 ### `/login`
 
-Log in or re-authenticate without leaving the session.
+Show how to configure a model provider (browser login removed).
 
 ### `/logout`
 

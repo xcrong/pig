@@ -5436,10 +5436,10 @@ fn format_auth_lines(is_api_key_auth: bool, api_key_env_set: bool) -> String {
             "  Auth method: API key\n"
         };
         return format!(
-            "{method}  Run `grok login` to use your SuperGrok subscription instead.\n"
+            "{method}  Configure a vendor/provider for more models (see docs/user-guide/11-custom-models.md).\n"
         );
     }
-    String::from("  Auth method: OAuth\n")
+    String::from("  Auth method: provider\n")
 }
 /// Session replay then restyles the echo exactly like the composer highlighted it at submit time.
 /// This producer never combines them with a `displayText` override, and the tracker ignores them when one is present.

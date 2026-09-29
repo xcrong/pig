@@ -9,12 +9,12 @@ use agent_client_protocol as acp;
 use super::{ExtResult, parse_params, to_raw_response};
 use crate::agent::MvpAgent;
 use crate::remote::client::BackendClient;
+use crate::remote::client::ephemeral_agent_id;
 use crate::session::export::{ExportedMessage, ExportedSession};
 use crate::session::info::Info as SessionInfo;
 use crate::session::persistence::list_summaries;
 use crate::session::share::{ShareSessionRequest, ShareSessionResponse};
 use crate::upload::trace::{SessionMetadataType, upload_session_metadata};
-use crate::remote::client::ephemeral_agent_id;
 
 #[tracing::instrument(skip_all, fields(method = %args.method))]
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
@@ -164,7 +164,7 @@ fn require_xai_auth_for_share(
     super::auth_gate::require_xai_auth(
         auth_manager,
         "Authentication required to share session",
-        "Share session is disabled. Run `grok login` to authenticate.",
+        "Share session is disabled. Configure a model provider (see docs/user-guide/11-custom-models.md).",
     )
 }
 
@@ -268,7 +268,7 @@ mod tests {
 
         assert_eq!(
             data,
-            "Share session is disabled. Run `grok login` to authenticate."
+            "Share session is disabled. Configure a model provider (see docs/user-guide/11-custom-models.md)."
         );
     }
 }

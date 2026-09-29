@@ -14,14 +14,12 @@
 pub fn deployment_id_from_key(key: &str) -> String {
     uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, key.as_bytes()).to_string()
 }
-pub mod api_key_probe;
 pub mod attribution;
 pub mod auth_method;
 pub mod auth_provider;
 pub mod backend;
 pub mod config;
 pub mod credential_provider;
-pub mod device_code;
 pub mod error;
 pub mod external_auth;
 pub mod flow;
@@ -38,9 +36,6 @@ pub mod single_flight;
 pub mod storage;
 pub mod token_output;
 pub mod token_type;
-pub use api_key_probe::{
-    DEFAULT_PROBE_TIMEOUT, first_party_env_key_allows_advertise, should_probe_first_party_env_key,
-};
 pub use auth_provider::AuthProviderRef;
 pub use auth_provider::{
     PROVIDER_TIMEOUT_CEILING_SECS, PROVIDER_TOKEN_EXPIRY_SKEW_SECS, ProviderRefreshOutcome,
@@ -60,11 +55,7 @@ pub use flow::{
     AuthChannels, mint_session_noninteractive, run_auth_flow, run_auth_flow_with_stderr_bridge,
     try_noninteractive_auth_no_mint,
 };
-pub use flow::{
-    AuthUrlInfo, AuthUrlMode, LoginTransportOverride, LogoutResult, ensure_authenticated,
-    ensure_authenticated_or_noninteractive, ensure_authenticated_with_override, perform_logout,
-    run_cli_login, try_ensure_fresh_auth,
-};
+pub use flow::{AuthUrlInfo, AuthUrlMode, LogoutResult, perform_logout, try_ensure_fresh_auth};
 pub use jwt::{is_jwt_expired_or_near, parse_jwt_expiration, parse_jwt_subject};
 pub use pre_tui::{PreTuiLoginOutcome, maybe_run_pre_tui_external_login};
 pub use xai_grok_config_types::AuthProviderConfig;

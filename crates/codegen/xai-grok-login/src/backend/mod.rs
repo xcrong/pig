@@ -3,7 +3,7 @@
 //! One implementation compiles, so the trait is a checklist: a backend that forgets a decision fails to build.
 use crate::flow::StderrCallback;
 use crate::refresh::TokenRefresher;
-use crate::{AuthManager, AuthUrlInfo, GrokAuth, GrokComConfig, LoginTransportOverride};
+use crate::{AuthManager, AuthUrlInfo, GrokAuth, GrokComConfig};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -13,14 +13,11 @@ mod grok;
 pub struct LoginRequest<'a> {
     pub auth_manager: &'a Arc<AuthManager>,
     pub grok_com_config: &'a GrokComConfig,
-    /// `[grok_com_config] login_device_flow` config tier, resolved by the caller (no longer a `GrokComConfig` field).
-    pub config_device_flow: Option<bool>,
     pub reauth: bool,
     pub force_interactive: bool,
     pub on_stderr: Option<StderrCallback>,
     pub url_tx: Option<Rc<RefCell<Option<oneshot::Sender<AuthUrlInfo>>>>>,
     pub code_rx: Option<mpsc::Receiver<String>>,
-    pub login_override: LoginTransportOverride,
 }
 /// `?Send`: `url_tx` is an `Rc`, so a login future can never cross threads.
 #[async_trait::async_trait(?Send)]

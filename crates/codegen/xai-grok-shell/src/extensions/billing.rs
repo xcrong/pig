@@ -183,7 +183,7 @@ async fn handle_get_billing(agent: &MvpAgent) -> ExtResult {
     let auth = super::auth_gate::require_xai_auth(
         &agent.auth_manager,
         "Authentication required to fetch billing data",
-        "Billing data requires auth with grok.com. Run `grok login` to authenticate.",
+        "Billing data requires auth with grok.com. Configure a model provider (see docs/user-guide/11-custom-models.md).",
     )?;
 
     let proxy_base = agent.cli_chat_proxy_base_url();
@@ -222,7 +222,6 @@ async fn handle_get_billing(agent: &MvpAgent) -> ExtResult {
             .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
             .unwrap_or_else(|| format!("HTTP {status}"));
 
-
         return Err(acp::Error::internal_error().data(format!("Billing service error: {detail}")));
     }
 
@@ -250,7 +249,7 @@ async fn handle_get_auto_topup_rule(agent: &MvpAgent) -> ExtResult {
     let auth = super::auth_gate::require_xai_auth(
         &agent.auth_manager,
         "Authentication required to fetch auto top-up rule",
-        "Auto top-up data requires auth with grok.com. Run `grok login` to authenticate.",
+        "Auto top-up data requires auth with grok.com. Configure a model provider (see docs/user-guide/11-custom-models.md).",
     )?;
 
     let proxy_base = agent.cli_chat_proxy_base_url();

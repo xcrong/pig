@@ -4,6 +4,7 @@
 //! Streams to stdout and exits via `CancellationToken`.
 use crate::acp::model_state::{EffortTokenError, ModelState};
 use crate::acp::spawn::{AgentShutdownGuard, SpawnedAgent, spawn_grok_shell};
+use crate::acp::startup::PendingStartup;
 use crate::app::prompt_ack::{PromptAckDeadlines, PromptAckWatch};
 use crate::app::subagent::{
     SubagentLifecycleEffect, SubagentLifecycleReduction, SubagentLifecycleState,
@@ -36,7 +37,6 @@ use xai_grok_shell::sampling::types::{
     REASONING_EFFORT_META_KEY, parse_canonical_effort_token, reasoning_effort_meta_value,
 };
 use xai_grok_shell::util::config as cli_config;
-use crate::acp::startup::PendingStartup;
 mod ext_protocol;
 mod mcp_init;
 mod prompt_ack;
@@ -409,19 +409,9 @@ fn auto_respond_to_permissions(
     }
     None
 }
-/// "Not signed in" error message, tailored to the session type.
-fn auth_required_message(interactive: bool) -> String {
-    if interactive {
-        "Not signed in. Run `grok login` to authenticate \
-         (or `grok login --device-code` if no browser is available)."
-            .to_string()
-    } else {
-        "Not signed in. To authenticate without a browser, run:\n  \
-         grok login --device-code\n\n\
-         Alternatively, set the XAI_API_KEY environment variable \
-         or run `grok login` on a machine with a browser."
-            .to_string()
-    }
+/// "Not signed in" error message: point at vendor/provider configuration.
+fn auth_required_message(_interactive: bool) -> String {
+    "Not signed in. Configure a model provider: set `[vendors.<id>] enabled = true` with its `env_key`, or add `[model_providers.*]` (see docs/user-guide/11-custom-models.md).".to_string()
 }
 /// The same backend switch the TUI applies; the shell unless another backend is enabled.
 async fn spawn_agent(

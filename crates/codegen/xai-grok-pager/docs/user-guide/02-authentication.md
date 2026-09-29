@@ -1,18 +1,24 @@
 # Authentication
 
-Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
+Pig Agent is a generic harness: it never opens a browser for sign-in. Configure a model provider instead — a `[vendors.<id>]` opt-in with its `env_key`, or a hand-written `[model_providers.*]` entry (see [Custom models](11-custom-models.md)).
 
 ---
 
-## Browser Login (Default)
+## Vendor / provider setup (default)
 
-On first launch, Grok opens your browser to authenticate with grok.com:
-
-```bash
-grok
+```toml
+# ~/.config/pig/config.toml
+[vendors.opencode]
+enabled = true
+env_key = "OPENCODE_API_KEY"
 ```
 
-Grok stores credentials in `~/.grok/auth.json` and reuses them across sessions. Grok refreshes access tokens automatically in the background. When a token can't be refreshed, Grok prompts you to sign in again. Credentials without a server-provided expiry fall back to a 30-day lifetime.
+```bash
+export OPENCODE_API_KEY="..."
+pig
+```
+
+No credentials on a fresh machine means the TUI starts directly with vendor guidance instead of a browser popup. `~/.grok/auth.json` still stores API-key and external-provider credentials with owner-only permissions (`0600` on Unix).
 
 ### Credential storage
 
@@ -24,20 +30,7 @@ Tokens in `~/.grok/auth.json` (and MCP OAuth tokens in `~/.grok/mcp_credentials.
 
 ### Re-authenticate
 
-To switch accounts or resolve an authentication problem, run:
-
-```bash
-grok login
-```
-
-Running `grok login` starts the sign-in flow again, replacing your cached session. By default, it opens your browser and signs in through SpaceXAI OAuth at `auth.x.ai`. Pass a flag to select a different flow:
-
-| Flag | Description |
-|------|-------------|
-| `--oauth` | Sign in through SpaceXAI OAuth at `auth.x.ai`. This is the default, so the flag is optional. |
-| `--device-auth` (alias `--device-code`) | Sign in with the device-code flow for headless or remote environments. |
-
-To sign out, run `grok logout`. It takes no flags and clears your cached credentials.
+To switch accounts or resolve an authentication problem, update your provider credentials and restart. To sign out, run `pig logout`. It clears cached credentials.
 
 ---
 
@@ -88,9 +81,9 @@ You can also override the API endpoint to point at your own proxy:
 export GROK_CLI_CHAT_PROXY_BASE_URL="https://grok-proxy.acme.com/v1"
 ```
 
-### 3. Run `grok`
+### 3. Run `pig`
 
-The CLI discovers endpoints via `{issuer}/.well-known/openid-configuration`, opens the IdP login page, and stores tokens in `~/.grok/auth.json`. Tokens auto-refresh silently via the stored `refresh_token`.
+The CLI uses your vendor/provider credentials directly. Tokens auto-refresh silently when the provider supports it.
 
 ### Optional fields
 
@@ -188,10 +181,9 @@ same JSON fields (such as `issuer`) on every invocation, including refreshes.
   rejected. Nobody is watching. stdin is closed, your stderr is swallowed, and
   the binary is given a few seconds before it is killed. Mint silently or exit
   non-zero — never block.
-- **Unset — a sign-in.** `grok login`, the sign-in screen, or the escalation
+- **Unset — a provider run.** The welcome empty state, or the escalation
   Grok performs when a headless run couldn't mint. A user is waiting, your
-  stderr reaches them, and you have 300 seconds — enough for a browser round
-  trip or a device code.
+  stderr reaches them, and you have 300 seconds.
 
 ```bash
 #!/bin/sh
@@ -214,12 +206,12 @@ echo "{\"access_token\": \"$TOKEN\", \"expires_in\": 3600}"
 ```
 
 When the headless run can't produce a token, Grok stops treating the stored
-credential as usable and starts the sign-in flow instead — the same one you get
-on a machine that has never signed in, with your binary's stderr shown, so a
-device-code URL or a browser prompt reaches you. Exiting promptly on
+credential as usable and shows vendor/provider guidance instead — the same one you get
+on a machine that has never been configured, with your binary's stderr shown, so a
+device-code URL or helper prompt reaches you. Exiting promptly on
 `GROK_AUTH_EXPIRED=1` is what makes that handover fast; a binary that blocks
 instead makes you wait out the refresh timeout on every start. Mid-session, the
-turn fails with a re-auth prompt and `/login` re-runs the binary interactively.
+turn fails with a re-auth prompt and the provider re-runs interactively.
 
 One case stays ambiguous, and only in **leader mode** (`--leader`, or
 `[cli] use_leader = true`; off by default): with no credential at all, the
@@ -242,17 +234,9 @@ goes to `~/.grok/leader.log` rather than to you.
 
 ---
 
-## Device Code Flow
+## No browser / device-code flow
 
-For headless environments (SSH sessions, Docker containers, remote VMs) where no browser is available locally:
-
-```bash
-grok login --device-auth    # or: grok login --device-code
-```
-
-This prints a URL and code to the terminal. Open the URL on any device, enter the code, and complete authentication. Grok polls until the login is confirmed.
-
-You can also implement the device-code flow through an [External Auth Provider](#external-auth-provider) for full control.
+Browser OAuth and the device-code flow were removed. For headless environments use a vendor `env_key`, a `[model_providers.*]` entry, or an [External Auth Provider](#external-auth-provider).
 
 ---
 
@@ -262,7 +246,6 @@ Grok automatically refreshes expired credentials:
 
 - **Before expiry:** If your auth provider returned `expires_in` (JSON output) or you set `auth_token_ttl`, Grok re-runs the auth binary ~5 minutes before expiry.
 - **On auth error:** If the server returns 401 Unauthorized, Grok refreshes the credentials and retries the request.
-- **OIDC:** If a `refresh_token` is available, Grok silently refreshes via your IdP without re-opening the browser.
 
 Tune the refresh buffer:
 
@@ -287,23 +270,22 @@ Grok picks up changes to `~/.grok/auth.json` automatically. If you update creden
 Grok resolves credentials for each request in this order, highest to lowest:
 
 1. **Per-model `api_key` or `env_key`** -- set under `[model.<name>]` in `config.toml`. Wins whenever present.
-2. **Active session token** -- obtained through browser, OIDC/OAuth2, or external-provider login and stored in `~/.grok/auth.json`.
+2. **Active session token** -- obtained through an external provider and stored in `~/.grok/auth.json`.
 3. **`XAI_API_KEY`** -- fallback when no session token is active.
 
 When more than one login flow is configured, Grok populates the session token from the first available source, highest to lowest:
 
 1. **External auth provider** (`auth_provider_command`)
-2. **Enterprise OIDC** -- when OIDC is configured, through `[grok_com_config.oidc]` in `config.toml` or the `GROK_OIDC_ISSUER` and `GROK_OIDC_CLIENT_ID` environment variables
-3. **SpaceXAI OAuth2 browser login** -- the default
+2. **Vendor snapshots** -- `[vendors.<id>] enabled = true` with `env_key`
 
 During a session, the active method handles all mid-session refreshes.
 
 ---
 
-## Grove Git credentials (not this page's `grok login`)
+## Grove Git credentials (not this page's provider setup)
 
 
-**`~/.grok/auth.json` is never read for Git.** `grok login` does not create a Git credential and `grok logout` does not revoke one; the daemon builds its own credential cell from `auth_mode` in Grove config. Those credentials are managed with `grove status` and `grove reload-credentials` -- see [grok clone](27-grok-clone.md#authentication) for the failure classes and their next steps.
+**`~/.grok/auth.json` is never read for Git.** Provider setup does not create a Git credential and `pig logout` does not revoke one; the daemon builds its own credential cell from `auth_mode` in Grove config. Those credentials are managed with `grove status` and `grove reload-credentials` -- see [grok clone](27-grok-clone.md#authentication) for the failure classes and their next steps.
 
 ---
 
@@ -361,7 +343,6 @@ RUST_LOG=debug grok -p "hello" 2> /tmp/grok.log
 
 ### Common fixes
 
-- **"Authentication failed"** -- Run `grok logout` to clear cached credentials, then `grok login` to sign in again.
+- **"Authentication failed"** -- Run `pig logout` to clear cached credentials, then reconfigure your vendor/provider.
 - **Token expires too quickly** -- Set `auth_token_ttl` or return `expires_in` in your auth provider's JSON output.
-- **OIDC redirect fails** -- Ensure your IdP allows loopback redirect URIs (`http://127.0.0.1/callback`).
 - **External auth provider not found** -- Check that the `auth_provider_command` path is correct and the binary is executable.

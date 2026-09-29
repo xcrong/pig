@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use super::{AuthBackend, LoginRequest};
 use crate::refresh::{
-    AuthSnapshot, ExternalBinaryRefresher, ExternalCommandRunner,
-    OidcRefresher, TokenRefresher,
+    AuthSnapshot, ExternalBinaryRefresher, ExternalCommandRunner, OidcRefresher, TokenRefresher,
 };
 use crate::{AuthManager, GrokAuth, GrokComConfig};
 
@@ -47,13 +46,11 @@ impl AuthBackend for GrokAuthBackend {
         crate::flow::run_auth_flow_steps(
             req.auth_manager,
             req.grok_com_config,
-            req.config_device_flow,
             req.reauth,
             req.force_interactive,
             req.on_stderr,
             req.url_tx,
             req.code_rx,
-            req.login_override,
         )
         .await
     }

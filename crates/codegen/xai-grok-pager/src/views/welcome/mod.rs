@@ -791,9 +791,6 @@ pub fn render_welcome(
 
     let mut result = match params.auth_state {
         AuthState::Pending { error } => {
-            let label = params.login_label.unwrap_or("grok.com");
-            let login_text = format!("Login with {}", label);
-            let menu = [("l", login_text.as_str()), ("q", "Quit")];
             let msg = error.as_deref().map(|e| (e, theme.accent_error));
             let info = PromptInfo {
                 model_name: params.model_name,
@@ -801,6 +798,16 @@ pub fn render_welcome(
                 multiline: false,
                 usage_warning: None,
                 usage_warning_critical: false,
+            };
+            // No browser login: without a configured provider there is no login action.
+            // Show vendor guidance with Quit only; with a provider label keep the login entry.
+            let login_text;
+            let menu: &[(&str, &str)] = match params.login_label {
+                Some(label) => {
+                    login_text = format!("Login with {}", label);
+                    &[("l", login_text.as_str()), ("q", "Quit")]
+                }
+                None => &[("q", "Quit")],
             };
             let (menu_rects, post_flush_escapes) = render_welcome_blocked(
                 content_area,
@@ -1075,12 +1082,11 @@ fn render_welcome_trust(
     }
 }
 
-/// Header text shared by Loopback and Command auth modes.
-const AUTH_HEADER: &str = "A browser window will open for authentication.";
-/// Header text for the device-flow auth mode.
-const DEVICE_AUTH_HEADER: &str = "Approve in your browser to finish signing in.";
-/// Caption beneath the device code.
-const DEVICE_CODE_CAPTION: &str = "Make sure your browser shows this code.";
+/// Header text for the external-provider auth mode.
+const AUTH_HEADER: &str = "Waiting for the sign-in helper to complete.";
+/// Header text retained for wire compat (device flow removed).
+const DEVICE_AUTH_HEADER: &str = "Sign-in helper waiting.";
+const DEVICE_CODE_CAPTION: &str = "Sign-in helper waiting.";
 
 /// Extract `user_code` from a device verification URL (`None` if absent or malformed).
 /// It is shown on-screen so the user can confirm it matches the browser before approving (anti-phishing).
@@ -4189,7 +4195,7 @@ mod tests {
 
         let text = buffer_text(&buf);
         assert!(
-            text.contains("Approve in your browser"),
+            text.contains("Sign-in helper waiting"),
             "device arm must show the approval header, got:\n{text}"
         );
         // Device code shown for the browser-match check (anti-phishing).
@@ -4198,7 +4204,7 @@ mod tests {
             "device arm must show the device code, got:\n{text}"
         );
         assert!(
-            text.contains("Make sure your browser shows this code"),
+            text.contains("Sign-in helper waiting"),
             "device arm must show the code caption, got:\n{text}"
         );
         // The click-to-copy line is present
@@ -4347,7 +4353,7 @@ mod tests {
 
         let text = buffer_text(&buf);
         assert!(
-            text.contains("A browser window will open"),
+            text.contains("Waiting for the sign-in helper"),
             "command arm must show the auth header, got:\n{text}"
         );
         assert!(
@@ -4356,7 +4362,7 @@ mod tests {
         );
         // No device code; that's device-flow only
         assert!(
-            !text.contains("Make sure your browser shows this code"),
+            !text.contains("Sign-in helper waiting"),
             "command arm must NOT show the device-code caption, got:\n{text}"
         );
         // No manual-paste box in command mode

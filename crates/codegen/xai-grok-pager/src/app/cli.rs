@@ -20,26 +20,6 @@ pub enum Command {
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
     Logout,
-    /// Sign in to Grok
-    Login {
-        /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
-        #[arg(long, hide = true)]
-        legacy: bool,
-        /// Use Grok OAuth via auth.x.ai.
-        #[arg(long = "oauth", alias = "oidc", conflicts_with_all = ["device_auth"])]
-        oauth: bool,
-        /// Use device-code authentication for headless/remote environments.
-        #[arg(
-            long = "device-auth",
-            visible_alias = "device-code",
-            conflicts_with_all = ["oauth"]
-        )]
-        device_auth: bool,
-        /// Authenticate for remote development environments (hidden).
-        /// Field is always present so match arms stay feature-unification-safe; clap registers `--devbox` only when that feature is enabled (`arg(skip)` otherwise → always false).
-        #[arg(skip)]
-        devbox: bool,
-    },
     /// Manage MCP server configurations
     Mcp(crate::mcp_cmd::McpArgs),
     /// Manage plugins and marketplace sources
@@ -745,9 +725,6 @@ pub struct PagerArgs {
     /// Show the login screen even when credentials are already available.
     #[arg(long = "force-login", hide = true)]
     pub force_login: bool,
-    /// Use OAuth when the welcome screen starts authentication.
-    #[arg(long = "oauth")]
-    pub oauth: bool,
     /// Connect to a shared leader process.
     #[arg(long, conflicts_with = "no_leader", hide = true)]
     pub leader: bool,

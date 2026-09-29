@@ -1149,20 +1149,17 @@ async fn restore_session_from_remote(
     );
     let agent_config = xai_grok_shell::agent::config::Config::new_from_toml_cfg(&raw_config)
         .map_err(|e| anyhow::anyhow!("Failed to create agent config: {}", e))?;
-    use xai_grok_login::{AuthManager, ensure_authenticated_or_noninteractive};
+    use xai_grok_login::AuthManager;
     use xai_grok_shell::agent::session_registry_client::SessionRegistryClient;
     use xai_grok_shell::session::restore::{RestoreSessionOpts, restore_session_with_storage};
     use xai_grok_shell::util::grok_home::grok_home;
     let deployment_key = agent_config.endpoints.deployment_key.clone();
-    ensure_authenticated_or_noninteractive(
+    // No forced browser login: restore proceeds with whatever credentials exist.
+    let _ = xai_grok_login::try_ensure_fresh_auth(
         &agent_config.grok_com_config,
-        agent_config.login_device_flow,
         agent_config.endpoints.proxy_url(),
-        deployment_key.is_some(),
-        None,
     )
-    .await
-    .map_err(|e| anyhow::anyhow!("Failed to authenticate for session restore: {}", e))?;
+    .await;
     let auth_manager = std::sync::Arc::new(AuthManager::new_with_proxy_base_url(
         &grok_home(),
         agent_config.grok_com_config.clone(),

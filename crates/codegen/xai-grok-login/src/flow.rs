@@ -8,8 +8,10 @@ use tokio::io::AsyncBufReadExt as _;
 use tokio::sync::{mpsc, oneshot};
 use xai_grok_shell_base::util::grok_home;
 pub type StderrCallback = Box<dyn Fn(&str)>;
+/// Guidance shown when no non-interactive credential is available.
+/// The generic harness never opens a browser; users configure a vendor or provider instead.
+pub const VENDOR_AUTH_GUIDANCE: &str = "Configure a model provider: set `[vendors.<id>] enabled = true` with its `env_key`, or add `[model_providers.*]` (see docs/user-guide/11-custom-models.md).";
 /// Reject a cached credential that lacks `oidc_issuer`, has a mismatched issuer, or whose team principal violates the `force_login_team_uuid` pin.
-/// Interactive login then starts fresh instead of reusing a stale or wrong-team session.
 fn is_cached_credential_compatible(auth: &GrokAuth, grok_com_config: &GrokComConfig) -> bool {
     let expected_issuer = grok_com_config
         .oidc
@@ -31,104 +33,6 @@ fn is_cached_credential_compatible(auth: &GrokAuth, grok_com_config: &GrokComCon
         }
     }
     true
-}
-/// CLI-flag override for the interactive login transport.
-/// `--oauth` forces the loopback-callback flow; `--device-auth` forces the device flow.
-/// `None` falls through to env / config / default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LoginTransportOverride {
-    /// No CLI override; resolve from env / config / default.
-    #[default]
-    None,
-    /// `--oauth`: force the loopback-callback flow.
-    ForceLoopback,
-    /// `--device-auth`: force the RFC 8628 device flow.
-    ForceDevice,
-    /// Transport already resolved (and logged) upstream; `true` means device, `false` means loopback.
-    /// The inner flow honors the carried value without re-resolving, so it's never re-logged or mis-attributed to `cli`.
-    Preresolved(bool),
-}
-impl LoginTransportOverride {
-    /// Resolve from the `--oauth` / `--device-auth` flags; `--oauth` wins if both are somehow set.
-    /// Both the CLI (`run_cli_login`) and ACP (`AuthRequestMeta`) entry points resolve through here.
-    pub fn from_flags(force_loopback: bool, force_device: bool) -> Self {
-        if force_loopback {
-            Self::ForceLoopback
-        } else if force_device {
-            Self::ForceDevice
-        } else {
-            Self::None
-        }
-    }
-    /// Map to a `BoolFlag` CLI value: `Some(true)` means device, `Some(false)` means loopback, `None` means no override.
-    fn as_cli_bool(self) -> Option<bool> {
-        match self {
-            Self::None => None,
-            Self::ForceLoopback => Some(false),
-            Self::ForceDevice => Some(true),
-            Self::Preresolved(_) => None,
-        }
-    }
-}
-/// Device-flow precedence, highest first: CLI, env, config, remote feature flag, then the loopback default.
-/// Returns the deciding tier so the caller can log which one chose the transport.
-fn resolve_device_flow(
-    login_override: LoginTransportOverride,
-    config: Option<bool>,
-    remote: Option<bool>,
-) -> xai_grok_config_types::Resolved<bool> {
-    xai_grok_config_types::BoolFlag::env("GROK_LOGIN_DEVICE_FLOW")
-        .cli(login_override.as_cli_bool())
-        .config(config)
-        .feature_flag(remote)
-        .default(false)
-        .resolve()
-}
-/// Whether `run_cli_login` should use the device flow for `config`: only the xAI OAuth2 provider supports it.
-/// Enterprise OIDC (`oidc=Some`) always uses the loopback flow, mirroring `run_auth_flow_inner`'s precedence.
-async fn cli_should_use_device(
-    config: &GrokComConfig,
-    config_device_flow: Option<bool>,
-    login_override: LoginTransportOverride,
-    proxy_base_url: &str,
-) -> bool {
-    !crate::oidc::is_configured(config)
-        && should_use_device_flow(login_override, config_device_flow, proxy_base_url).await
-}
-/// Whether interactive OAuth2 login uses the RFC 8628 device flow (vs loopback).
-/// Precedence: CLI flags, then the device-flow env, then config, then the remote flag; loopback is the default.
-/// The caller supplies `proxy_base_url` so this stays off the effective-config load.
-async fn should_use_device_flow(
-    login_override: LoginTransportOverride,
-    config_device_flow: Option<bool>,
-    proxy_base_url: &str,
-) -> bool {
-    if let LoginTransportOverride::Preresolved(use_device) = login_override {
-        return use_device;
-    }
-    let resolved = if login_override.as_cli_bool().is_some() {
-        resolve_device_flow(login_override, None, None)
-    } else {
-        let env = xai_grok_config::env_bool("GROK_LOGIN_DEVICE_FLOW");
-        let remote = if env.is_none() && config_device_flow.is_none() {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                fetch_login_device_flow(proxy_base_url),
-            )
-            .await
-            .ok()
-            .flatten()
-        } else {
-            None
-        };
-        resolve_device_flow(login_override, config_device_flow, remote)
-    };
-    tracing::info!(
-        transport = if resolved.value { "device" } else { "loopback" },
-        source = %resolved.source,
-        "login: resolved interactive transport",
-    );
-    resolved.value
 }
 /// How login presents itself; sent to the TUI via `x.ai/auth/get_url`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,11 +157,9 @@ pub async fn run_external_auth_provider(
 pub async fn run_auth_flow_with_stderr_bridge(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
     channels: AuthChannels,
     reauth: bool,
     force_interactive: bool,
-    login_override: LoginTransportOverride,
 ) -> anyhow::Result<(GrokAuth, bool)> {
     let url_tx = Rc::new(RefCell::new(channels.url_tx));
     let stderr_lines: Rc<RefCell<Vec<String>>> = Rc::new(RefCell::new(Vec::new()));
@@ -298,11 +200,9 @@ pub async fn run_auth_flow_with_stderr_bridge(
         let auth = run_auth_flow_interactive(
             auth_manager,
             grok_com_config,
-            config_device_flow,
             Some(on_stderr),
             Some(url_tx),
             Some(channels.code_rx),
-            login_override,
         );
         tokio::select! {
             r = auth => r,
@@ -315,12 +215,10 @@ pub async fn run_auth_flow_with_stderr_bridge(
         let auth = run_auth_flow(
             auth_manager,
             grok_com_config,
-            config_device_flow,
             reauth,
             Some(on_stderr),
             Some(url_tx),
             Some(channels.code_rx),
-            login_override,
         );
         tokio::select! {
             r = auth => r,
@@ -331,52 +229,43 @@ pub async fn run_auth_flow_with_stderr_bridge(
         }
     }
 }
-/// Full auth chain: cache, then refresh, then external provider, then interactive (OIDC/OAuth2/legacy).
-/// When `url_tx` and `code_rx` are `None`, falls back to stderr/stdin (CLI mode).
+/// Full auth chain: cache, then refresh, then external provider.
+/// Browser-based OAuth was removed; without a provider the caller gets vendor guidance.
 pub async fn run_auth_flow(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
     reauth: bool,
     on_stderr: Option<StderrCallback>,
     url_tx: Option<Rc<RefCell<Option<oneshot::Sender<AuthUrlInfo>>>>>,
     code_rx: Option<mpsc::Receiver<String>>,
-    login_override: LoginTransportOverride,
 ) -> anyhow::Result<(GrokAuth, bool)> {
     run_auth_flow_inner(
         auth_manager,
         grok_com_config,
-        config_device_flow,
         reauth,
         false,
         on_stderr,
         url_tx,
         code_rx,
-        login_override,
     )
     .await
 }
 /// Like [`run_auth_flow`] but with `force_interactive`: skip cached credentials without clearing them.
-/// Used by `/login` for mid-session re-auth where abandoning the flow must not disrupt the session.
 pub async fn run_auth_flow_interactive(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
     on_stderr: Option<StderrCallback>,
     url_tx: Option<Rc<RefCell<Option<oneshot::Sender<AuthUrlInfo>>>>>,
     code_rx: Option<mpsc::Receiver<String>>,
-    login_override: LoginTransportOverride,
 ) -> anyhow::Result<(GrokAuth, bool)> {
     run_auth_flow_inner(
         auth_manager,
         grok_com_config,
-        config_device_flow,
         false,
         true,
         on_stderr,
         url_tx,
         code_rx,
-        login_override,
     )
     .await
 }
@@ -386,25 +275,21 @@ pub async fn run_auth_flow_interactive(
 async fn run_auth_flow_inner(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
     reauth: bool,
     force_interactive: bool,
     on_stderr: Option<StderrCallback>,
     url_tx: Option<Rc<RefCell<Option<oneshot::Sender<AuthUrlInfo>>>>>,
     code_rx: Option<mpsc::Receiver<String>>,
-    login_override: LoginTransportOverride,
 ) -> anyhow::Result<(GrokAuth, bool)> {
     let result = ActiveAuthBackend::default()
         .login(LoginRequest {
             auth_manager,
             grok_com_config,
-            config_device_flow,
             reauth,
             force_interactive,
             on_stderr,
             url_tx,
             code_rx,
-            login_override,
         })
         .await;
     result
@@ -412,13 +297,11 @@ async fn run_auth_flow_inner(
 pub(super) async fn run_auth_flow_steps(
     auth_manager: &Arc<AuthManager>,
     grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
     reauth: bool,
     force_interactive: bool,
     on_stderr: Option<StderrCallback>,
     url_tx: Option<Rc<RefCell<Option<oneshot::Sender<AuthUrlInfo>>>>>,
     code_rx: Option<mpsc::Receiver<String>>,
-    login_override: LoginTransportOverride,
 ) -> anyhow::Result<(GrokAuth, bool)> {
     tracing::info!(
         has_oidc = grok_com_config.oidc.is_some(),
@@ -491,60 +374,14 @@ pub(super) async fn run_auth_flow_steps(
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "auth: external auth provider failed, falling through to interactive login"
+                    "auth: external auth provider failed"
                 );
-                eprintln!("Signing in with browser instead...");
+                anyhow::bail!("{e:#}. {VENDOR_AUTH_GUIDANCE}");
             }
         }
     }
-    let url_tx = url_tx.and_then(|rc| rc.borrow_mut().take());
-    let mut channels = code_rx.map(|code_rx| AuthChannels { url_tx, code_rx });
-    if crate::oidc::is_configured(grok_com_config) {
-        return crate::oidc::run_login_flow(grok_com_config, auth_manager, channels).await;
-    }
-    if let Some(ref oauth2_cfg) = grok_com_config.oauth2 {
-        if should_use_device_flow(
-            login_override,
-            config_device_flow,
-            auth_manager.proxy_base_url(),
-        )
-        .await
-        {
-            match crate::device_code::run_device_code_login_channels(
-                &oauth2_cfg.issuer,
-                &oauth2_cfg.client_id,
-                &oauth2_cfg.scopes,
-                auth_manager,
-                &mut channels,
-            )
-            .await
-            {
-                Err(e)
-                    if matches!(
-                        e.downcast_ref::<crate::device_code::DeviceCodeError>(),
-                        Some(crate::device_code::DeviceCodeError::NotEnabled)
-                    ) =>
-                {
-                    tracing::warn!(
-                        "auth: device flow unavailable (404), falling back to loopback login"
-                    );
-                }
-                other => return other,
-            }
-        }
-        return crate::oidc::run_login_flow_with_config(
-            &oauth2_cfg.as_oidc(),
-            auth_manager,
-            channels,
-        )
-        .await;
-    }
-    tracing::error!(
-        "auth: no OAuth2 configuration available (neither enterprise OIDC nor xAI OAuth2 configured)"
-    );
-    anyhow::bail!(
-        "No OAuth2 configuration available. Run `grok login` to authenticate, or contact your administrator if you use enterprise SSO."
-    )
+    let _ = (url_tx, code_rx);
+    anyhow::bail!(VENDOR_AUTH_GUIDANCE)
 }
 /// Non-interactive auth refresh: returns valid credentials if available without ever triggering interactive login (browser, device code, etc.).
 /// Tries cached non-expired credentials, then OIDC silent refresh (needs a refresh_token), then the external auth provider command (if configured).
@@ -661,174 +498,6 @@ pub fn report_signed_in(auth: &GrokAuth) {
         None => eprintln!("✓ Signed in"),
     }
 }
-/// CLI auth entrypoint. For GUI, use `run_auth_flow_with_stderr_bridge`.
-pub async fn ensure_authenticated(
-    grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
-    proxy_base_url: String,
-    reauth: bool,
-    message_prefix: Option<&str>,
-) -> anyhow::Result<GrokAuth> {
-    ensure_authenticated_with_override(
-        grok_com_config,
-        config_device_flow,
-        proxy_base_url,
-        reauth,
-        message_prefix,
-        LoginTransportOverride::None,
-    )
-    .await
-}
-/// Like [`ensure_authenticated`] but with an explicit login-transport override (from `--oauth` / `--device-auth`).
-/// Used by `run_cli_login`.
-pub async fn ensure_authenticated_with_override(
-    grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
-    proxy_base_url: String,
-    reauth: bool,
-    message_prefix: Option<&str>,
-    login_override: LoginTransportOverride,
-) -> anyhow::Result<GrokAuth> {
-    let grok_home = grok_home::grok_home();
-    let auth_manager = Arc::new(AuthManager::new_with_proxy_base_url(
-        &grok_home,
-        grok_com_config.clone(),
-        proxy_base_url,
-    ));
-    if !reauth && let Some(auth) = auth_manager.current() {
-        if auth.auth_mode != super::AuthMode::WebLogin {
-            return Ok(auth);
-        }
-        tracing::info!("auth: skipping cached WebLogin credential, will migrate to OIDC");
-        auth_manager.clear_in_memory();
-        let _ = auth_manager.remove_scope(LEGACY_AUTH_SCOPE);
-    }
-    if let Some(msg) = message_prefix {
-        eprintln!("{msg}");
-    }
-    let (auth, did_auth) = run_auth_flow(
-        &auth_manager,
-        grok_com_config,
-        config_device_flow,
-        reauth,
-        None,
-        None,
-        None,
-        login_override,
-    )
-    .await?;
-    if did_auth {
-        report_signed_in(&auth);
-    }
-    Ok(auth)
-}
-/// Decides *whether to prompt* for an interactive login (the wire credential is chosen separately by `ShellAuthCredentialProvider`).
-/// With `has_noninteractive_auth`, only refresh a cached token best-effort (no browser, no cold mint); otherwise require an interactive login.
-pub async fn ensure_authenticated_or_noninteractive(
-    grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
-    proxy_base_url: String,
-    has_noninteractive_auth: bool,
-    message_prefix: Option<&str>,
-) -> anyhow::Result<Option<GrokAuth>> {
-    if has_noninteractive_auth {
-        Ok(try_ensure_fresh_auth(grok_com_config, proxy_base_url).await)
-    } else {
-        ensure_authenticated(
-            grok_com_config,
-            config_device_flow,
-            proxy_base_url,
-            false,
-            message_prefix,
-        )
-        .await
-        .map(Some)
-    }
-}
-/// Unified `grok login` handler for CLI entry points (tui, pager). Precedence: `--oauth` forces loopback, `--device-auth` forces device.
-/// Otherwise `GROK_LOGIN_DEVICE_FLOW` env, then `[auth] login_device_flow` config, then the loopback default.
-/// Both transports run through `run_auth_flow_inner` so the external auth provider and devbox auto-migration are tried first.
-pub async fn run_cli_login(
-    grok_com_config: GrokComConfig,
-    config_device_flow: Option<bool>,
-    proxy_base_url: String,
-    oauth: bool,
-    device_auth: bool,
-    devbox: bool,
-) -> anyhow::Result<GrokAuth> {
-    let _ = devbox;
-    let auth_manager = Arc::new(AuthManager::new_with_proxy_base_url(
-        &grok_home::grok_home(),
-        grok_com_config.clone(),
-        proxy_base_url,
-    ));
-    let result = run_cli_login_steps(
-        &grok_com_config,
-        config_device_flow,
-        &auth_manager,
-        oauth,
-        device_auth,
-    )
-    .await;
-    result
-}
-async fn run_cli_login_steps(
-    grok_com_config: &GrokComConfig,
-    config_device_flow: Option<bool>,
-    auth_manager: &Arc<AuthManager>,
-    oauth: bool,
-    device_auth: bool,
-) -> anyhow::Result<GrokAuth> {
-    let login_override = LoginTransportOverride::from_flags(oauth, device_auth);
-    let authenticated = if cli_should_use_device(
-        grok_com_config,
-        config_device_flow,
-        login_override,
-        auth_manager.proxy_base_url(),
-    )
-    .await
-    {
-        if grok_com_config.oauth2.is_none() {
-            anyhow::bail!("Sign-in is not available for this deployment. Set XAI_API_KEY instead.");
-        }
-        let (auth, did_auth) = run_auth_flow_interactive(
-            auth_manager,
-            grok_com_config,
-            config_device_flow,
-            None,
-            None,
-            None,
-            LoginTransportOverride::Preresolved(true),
-        )
-        .await?;
-        if did_auth {
-            report_signed_in(&auth);
-        }
-        auth
-    } else {
-        if device_auth && crate::oidc::is_configured(grok_com_config) {
-            eprintln!(
-                "Device-code login isn't available for your SSO provider; using browser sign-in."
-            );
-        }
-        let (auth, did_auth) = run_auth_flow(
-            auth_manager,
-            grok_com_config,
-            config_device_flow,
-            true,
-            None,
-            None,
-            None,
-            LoginTransportOverride::Preresolved(false),
-        )
-        .await?;
-        if did_auth {
-            report_signed_in(&auth);
-        }
-        auth
-    };
-    Ok(authenticated)
-}
 /// Result of a logout operation.
 /// Both the CLI subcommand and the ACP `/logout` slash command use it, so the presentation layer formats the outcome without duplicating auth logic.
 pub struct LogoutResult {
@@ -864,54 +533,6 @@ pub fn perform_logout(
         api_key_still_set: crate::auth_method::has_xai_api_key_env(),
     })
 }
-#[derive(serde::Deserialize)]
-struct LoginConfigResponse {
-    /// Tri-state: `Some` forces a transport; `None` or an absent flag keeps the client default.
-    #[serde(default)]
-    device_flow: Option<bool>,
-}
-/// Fetch the remote device-flow flag from unauthenticated `GET /v1/login-config`.
-/// Best-effort: any error or unset flag returns `None` so the caller keeps the loopback default.
-/// Caps at 1.5s with no retries since it's on the login path.
-async fn fetch_login_device_flow(cli_chat_proxy_base_url: &str) -> Option<bool> {
-    let client = xai_grok_http::shared_client();
-    let url = format!("{}/login-config", cli_chat_proxy_base_url);
-    let response = client
-        .get(&url)
-        .timeout(std::time::Duration::from_millis(1500))
-        .header("x-grok-client-version", xai_grok_version::VERSION)
-        .header(
-            "x-grok-client-identifier",
-            xai_grok_http::process_client_identifier(),
-        )
-        .header(
-            xai_grok_http::CLIENT_MODE_HEADER,
-            xai_grok_http::process_client_mode(),
-        )
-        .send()
-        .await;
-    let resp = match response {
-        Ok(resp) if resp.status().is_success() => resp,
-        Ok(resp) => {
-            tracing::debug!(status = resp.status().as_u16(), "login-config fetch failed");
-            return None;
-        }
-        Err(e) => {
-            tracing::debug!("login-config fetch error: {e}");
-            return None;
-        }
-    };
-    match resp.json::<LoginConfigResponse>().await {
-        Ok(cfg) => {
-            tracing::debug!(device_flow = ?cfg.device_flow, "Fetched remote login-config");
-            cfg.device_flow
-        }
-        Err(e) => {
-            tracing::debug!("Failed to parse login-config response: {e}");
-            None
-        }
-    }
-}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -919,17 +540,6 @@ mod tests {
     use crate::config::XAI_OAUTH2_ISSUER;
     use chrono::Utc;
     use std::path::Path;
-    use xai_grok_shell_base::env::EnvVarGuard;
-    /// Run `f` with `GROK_LOGIN_DEVICE_FLOW` set to `value` (unset for `None`).
-    /// `EnvVarGuard` serializes the process env and restores it on drop, so `resolve_device_flow` reads the env tier from a known state.
-    fn with_device_flow_env<T>(value: Option<bool>, f: impl FnOnce() -> T) -> T {
-        let _guard = match value {
-            Some(true) => EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "true"),
-            Some(false) => EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "false"),
-            None => EnvVarGuard::remove("GROK_LOGIN_DEVICE_FLOW"),
-        };
-        f()
-    }
     fn oidc_session(key: &str, refresh: Option<&str>) -> GrokAuth {
         GrokAuth {
             key: key.into(),
@@ -1144,251 +754,23 @@ mod tests {
         assert_eq!(auth.organization_id.as_deref(), Some("org-1"));
     }
     #[tokio::test]
-    async fn device_flow_still_runs_external_provider() {
+    async fn external_provider_still_runs_without_browser() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = GrokComConfig {
             auth_provider_command: Some("printf '%s' xai-ext-token".to_string()),
             ..GrokComConfig::default()
         };
-        assert!(
-            cli_should_use_device(
-                &cfg,
-                None,
-                LoginTransportOverride::ForceDevice,
-                &dead_proxy_url()
-            )
-            .await,
-            "precondition: --device-auth resolves to the device flow"
-        );
         let mgr = Arc::new(
             AuthManager::new(dir.path(), cfg.clone()).with_proxy_base_url(&dead_proxy_url()),
         );
-        let (auth, did_auth) = run_auth_flow_interactive(
-            &mgr,
-            &cfg,
-            None,
-            None,
-            None,
-            None,
-            LoginTransportOverride::ForceDevice,
-        )
-        .await
-        .expect("external provider should satisfy login without device flow");
+        let (auth, did_auth) = run_auth_flow_interactive(&mgr, &cfg, None, None, None)
+            .await
+            .expect("external provider should satisfy login without browser");
         assert_eq!(
             auth.key, "xai-ext-token",
             "external provider token must win"
         );
         assert!(did_auth);
-    }
-    #[test]
-    fn login_transport_override_maps_to_cli_bool() {
-        assert_eq!(LoginTransportOverride::None.as_cli_bool(), None);
-        assert_eq!(
-            LoginTransportOverride::ForceLoopback.as_cli_bool(),
-            Some(false)
-        );
-        assert_eq!(
-            LoginTransportOverride::ForceDevice.as_cli_bool(),
-            Some(true)
-        );
-        assert_eq!(
-            LoginTransportOverride::Preresolved(true).as_cli_bool(),
-            None
-        );
-        assert_eq!(
-            LoginTransportOverride::Preresolved(false).as_cli_bool(),
-            None
-        );
-    }
-    #[tokio::test]
-    async fn preresolved_bypasses_resolver_and_is_never_cli() {
-        {
-            let _guard = EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "false");
-            assert!(
-                should_use_device_flow(LoginTransportOverride::Preresolved(true), None, "").await,
-                "Preresolved(true) honors device without re-resolving"
-            );
-        }
-        {
-            let _guard = EnvVarGuard::set("GROK_LOGIN_DEVICE_FLOW", "true");
-            assert!(
-                !should_use_device_flow(LoginTransportOverride::Preresolved(false), None, "").await,
-                "Preresolved(false) honors loopback without re-resolving"
-            );
-            assert!(
-                should_use_device_flow(LoginTransportOverride::None, None, "").await,
-                "the resolver path still honors env (sole resolution)"
-            );
-        }
-        with_device_flow_env(None, || {
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::Preresolved(true), None, Some(true))
-                    .source,
-                xai_grok_config_types::ConfigSource::Remote,
-                "Preresolved must never resolve as the cli tier"
-            );
-        });
-    }
-    #[test]
-    fn from_flags_prefers_oauth_over_device() {
-        assert_eq!(
-            LoginTransportOverride::from_flags(true, true),
-            LoginTransportOverride::ForceLoopback
-        );
-        assert_eq!(
-            LoginTransportOverride::from_flags(true, false),
-            LoginTransportOverride::ForceLoopback
-        );
-        assert_eq!(
-            LoginTransportOverride::from_flags(false, true),
-            LoginTransportOverride::ForceDevice
-        );
-        assert_eq!(
-            LoginTransportOverride::from_flags(false, false),
-            LoginTransportOverride::None
-        );
-    }
-    #[tokio::test]
-    async fn enterprise_oidc_never_uses_device_flow() {
-        let cfg = GrokComConfig {
-            oidc: Some(crate::OidcAuthConfig {
-                issuer: "https://idp.example".into(),
-                client_id: "client".into(),
-                scopes: vec!["openid".into()],
-                audience: None,
-            }),
-            oauth2: None,
-            ..GrokComConfig::default()
-        };
-        assert!(
-            !cli_should_use_device(&cfg, None, LoginTransportOverride::ForceDevice, "").await,
-            "enterprise OIDC must stay on loopback"
-        );
-        let xai = GrokComConfig::default();
-        assert!(xai.oauth2.is_some() && xai.oidc.is_none());
-        assert!(cli_should_use_device(&xai, None, LoginTransportOverride::ForceDevice, "").await);
-    }
-    #[test]
-    fn device_flow_precedence_cli_beats_env_config_remote() {
-        with_device_flow_env(Some(true), || {
-            assert!(
-                !resolve_device_flow(
-                    LoginTransportOverride::ForceLoopback,
-                    Some(true),
-                    Some(true)
-                )
-                .value,
-                "--oauth must force loopback even when env+config+remote say device"
-            );
-        });
-        with_device_flow_env(Some(false), || {
-            assert!(
-                resolve_device_flow(
-                    LoginTransportOverride::ForceDevice,
-                    Some(false),
-                    Some(false)
-                )
-                .value,
-                "--device-auth must force device even when env+config+remote say loopback"
-            );
-        });
-    }
-    #[test]
-    fn device_flow_precedence_env_beats_config() {
-        with_device_flow_env(Some(false), || {
-            assert!(!resolve_device_flow(LoginTransportOverride::None, Some(true), None).value);
-        });
-        with_device_flow_env(Some(true), || {
-            assert!(resolve_device_flow(LoginTransportOverride::None, Some(false), None).value);
-        });
-    }
-    #[test]
-    fn device_flow_env_beats_remote() {
-        with_device_flow_env(Some(false), || {
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
-                "env=loopback must win over remote=device"
-            );
-        });
-        with_device_flow_env(Some(true), || {
-            assert!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(false)).value,
-                "env=device must win over remote=loopback"
-            );
-        });
-    }
-    #[test]
-    fn device_flow_config_beats_remote() {
-        with_device_flow_env(None, || {
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, Some(false), Some(true)).value,
-                "config=loopback must win over remote=device"
-            );
-            assert!(
-                resolve_device_flow(LoginTransportOverride::None, Some(true), Some(false)).value,
-                "config=device must win over remote=loopback"
-            );
-        });
-    }
-    #[test]
-    fn device_flow_precedence_config_then_default() {
-        with_device_flow_env(None, || {
-            assert!(!resolve_device_flow(LoginTransportOverride::None, Some(false), None).value);
-            assert!(resolve_device_flow(LoginTransportOverride::None, Some(true), None).value);
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, None, None).value,
-                "default is loopback"
-            );
-        });
-    }
-    #[test]
-    fn device_flow_remote_then_default() {
-        with_device_flow_env(None, || {
-            assert!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(true)).value,
-                "remote=device rolls device-auth in when nothing local is set"
-            );
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, None, Some(false)).value,
-                "remote=loopback keeps loopback when nothing local is set"
-            );
-            assert!(
-                !resolve_device_flow(LoginTransportOverride::None, None, None).value,
-                "remote settings unavailable falls back to the loopback default"
-            );
-        });
-    }
-    #[test]
-    fn device_flow_records_deciding_tier() {
-        use xai_grok_config_types::ConfigSource;
-        with_device_flow_env(Some(false), || {
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::ForceDevice, Some(false), None).source,
-                ConfigSource::Cli,
-                "an explicit CLI flag is reported as the cli tier"
-            );
-        });
-        with_device_flow_env(Some(true), || {
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(false)).source,
-                ConfigSource::Env
-            );
-        });
-        with_device_flow_env(None, || {
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::None, Some(true), Some(false)).source,
-                ConfigSource::Config
-            );
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::None, None, Some(true)).source,
-                ConfigSource::Remote,
-                "the remote feature flag is reported as the remote tier"
-            );
-            assert_eq!(
-                resolve_device_flow(LoginTransportOverride::None, None, None).source,
-                ConfigSource::Default
-            );
-        });
     }
     fn legacy_auth() -> GrokAuth {
         GrokAuth {
@@ -1515,18 +897,9 @@ mod tests {
         };
         mgr.hot_swap(expired);
         assert!(mgr.is_expired());
-        let (auth, is_new_login) = run_auth_flow(
-            &mgr,
-            &cfg,
-            None,
-            false,
-            None,
-            None,
-            None,
-            LoginTransportOverride::None,
-        )
-        .await
-        .unwrap();
+        let (auth, is_new_login) = run_auth_flow(&mgr, &cfg, false, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(auth.key, "fresh-token-from-disk");
         assert!(!is_new_login, "should not be a new login");
         assert_eq!(mgr.current().unwrap().key, "fresh-token-from-disk");
@@ -1546,18 +919,9 @@ mod tests {
             ..GrokAuth::test_default()
         };
         mgr.hot_swap(valid);
-        let (auth, is_new_login) = run_auth_flow(
-            &mgr,
-            &cfg,
-            None,
-            false,
-            None,
-            None,
-            None,
-            LoginTransportOverride::None,
-        )
-        .await
-        .unwrap();
+        let (auth, is_new_login) = run_auth_flow(&mgr, &cfg, false, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(auth.key, "still-valid");
         assert!(!is_new_login);
     }
@@ -1582,18 +946,9 @@ mod tests {
         mgr.hot_swap(expired_with_rt);
         assert!(mgr.is_expired());
         mgr.set_refresher(std::sync::Arc::new(AlwaysTransientRefresher));
-        let (auth, is_new_login) = run_auth_flow(
-            &mgr,
-            &cfg,
-            None,
-            false,
-            None,
-            None,
-            None,
-            LoginTransportOverride::None,
-        )
-        .await
-        .unwrap();
+        let (auth, is_new_login) = run_auth_flow(&mgr, &cfg, false, None, None, None)
+            .await
+            .unwrap();
         assert_eq!(auth.key, "expired-access-token");
         assert!(auth.refresh_token.is_some());
         assert!(!is_new_login);
@@ -1618,21 +973,11 @@ mod tests {
         mgr.hot_swap(expired_no_rt);
         assert!(mgr.is_expired());
         mgr.set_refresher(std::sync::Arc::new(AlwaysTransientRefresher));
-        let result = run_auth_flow(
-            &mgr,
-            &cfg,
-            None,
-            false,
-            None,
-            None,
-            None,
-            LoginTransportOverride::ForceDevice,
-        )
-        .await;
+        let result = run_auth_flow(&mgr, &cfg, false, None, None, None).await;
         let err = result.unwrap_err();
         assert!(
-            err.to_string().contains("/oauth2/device/code"),
-            "expected device-code request error (proves flow fell through to interactive login), got: {err}"
+            err.to_string().contains("Configure a model provider"),
+            "expected vendor guidance (browser login removed), got: {err}"
         );
     }
     #[test]
@@ -1832,152 +1177,5 @@ mod tests {
             fs2::FileExt::try_lock_exclusive(&probe).is_err(),
             "the flock must still be held exclusively after the bounded refresh"
         );
-    }
-    mod login_config {
-        use super::super::{LoginConfigResponse, fetch_login_device_flow};
-        use axum::{
-            Router,
-            extract::State,
-            http::{HeaderMap, StatusCode},
-            routing::get,
-        };
-        use std::sync::{Arc, Mutex};
-        #[test]
-        fn login_config_response_parses_tristate() {
-            let parse = |s: &str| {
-                serde_json::from_str::<LoginConfigResponse>(s)
-                    .unwrap()
-                    .device_flow
-            };
-            assert_eq!(parse(r#"{"device_flow": true}"#), Some(true));
-            assert_eq!(parse(r#"{"device_flow": false}"#), Some(false));
-            assert_eq!(parse(r#"{"device_flow": null}"#), None);
-            assert_eq!(parse("{}"), None, "absent flag must parse as unset");
-        }
-        fn header_str(headers: &HeaderMap, name: &str) -> Option<String> {
-            headers
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_owned)
-        }
-        #[derive(Debug, Default, Clone)]
-        struct LoginConfigHeaders {
-            authorization: Option<String>,
-            user_id: Option<String>,
-            email: Option<String>,
-            client_identifier: Option<String>,
-            client_version: Option<String>,
-        }
-        #[derive(Clone)]
-        struct LoginConfigServerState {
-            status_code: StatusCode,
-            body: String,
-            seen: Arc<Mutex<Vec<LoginConfigHeaders>>>,
-        }
-        /// Mock cli-chat-proxy serving `GET /v1/login-config` with a fixed status and raw body, recording the request headers it saw.
-        async fn start_login_config_server(
-            status_code: StatusCode,
-            body: String,
-        ) -> (
-            String,
-            Arc<Mutex<Vec<LoginConfigHeaders>>>,
-            tokio::task::JoinHandle<()>,
-        ) {
-            let seen = Arc::new(Mutex::new(Vec::new()));
-            let state = LoginConfigServerState {
-                status_code,
-                body,
-                seen: seen.clone(),
-            };
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let base = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
-            let app = Router::new()
-                .route(
-                    "/v1/login-config",
-                    get(|
-                        State(state): State<LoginConfigServerState>,
-                        headers: HeaderMap|
-                    async move {
-                        state
-                            .seen
-                            .lock()
-                            .unwrap()
-                            .push(LoginConfigHeaders {
-                                authorization: header_str(&headers, "authorization"),
-                                user_id: header_str(&headers, "x-userid"),
-                                email: header_str(&headers, "x-email"),
-                                client_identifier: header_str(
-                                    &headers,
-                                    "x-grok-client-identifier",
-                                ),
-                                client_version: header_str(
-                                    &headers,
-                                    "x-grok-client-version",
-                                ),
-                            });
-                        (state.status_code, state.body)
-                    }),
-                )
-                .with_state(state);
-            let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            (format!("{base}/v1"), seen, handle)
-        }
-        #[tokio::test]
-        async fn fetch_login_device_flow_parses_2xx_bodies() {
-            for (body, expected) in [
-                (r#"{"device_flow": true}"#, Some(true)),
-                (r#"{"device_flow": false}"#, Some(false)),
-                (r#"{"device_flow": null}"#, None),
-                (r#"{}"#, None),
-                (r#"{"other": 1}"#, None),
-            ] {
-                let (base, _seen, server) =
-                    start_login_config_server(StatusCode::OK, body.to_string()).await;
-                let got = fetch_login_device_flow(&base).await;
-                server.abort();
-                assert_eq!(got, expected, "body {body:?}");
-            }
-        }
-        #[tokio::test]
-        async fn fetch_login_device_flow_errors_return_none() {
-            for (status, body) in [
-                (StatusCode::NOT_FOUND, r#"{"device_flow": true}"#),
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    r#"{"device_flow": true}"#,
-                ),
-                (StatusCode::OK, "not json"),
-            ] {
-                let (base, _seen, server) =
-                    start_login_config_server(status, body.to_string()).await;
-                let got = fetch_login_device_flow(&base).await;
-                server.abort();
-                assert_eq!(got, None, "status {status}, body {body:?}");
-            }
-        }
-        #[tokio::test]
-        async fn fetch_login_device_flow_sends_only_unauthenticated_headers() {
-            let (base, seen, server) =
-                start_login_config_server(StatusCode::OK, r#"{"device_flow": true}"#.to_string())
-                    .await;
-            let got = fetch_login_device_flow(&base).await;
-            server.abort();
-            assert_eq!(got, Some(true));
-            let seen = seen.lock().unwrap();
-            let h = seen
-                .last()
-                .expect("server should have received one request");
-            assert!(
-                h.client_identifier.is_some(),
-                "must send x-grok-client-identifier"
-            );
-            assert!(
-                h.client_version.is_some(),
-                "must send x-grok-client-version"
-            );
-            assert_eq!(h.authorization, None, "must not send Authorization");
-            assert_eq!(h.user_id, None, "must not send x-userid");
-            assert_eq!(h.email, None, "must not send x-email");
-        }
     }
 }

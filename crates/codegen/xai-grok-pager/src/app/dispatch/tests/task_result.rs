@@ -3062,8 +3062,10 @@ fn session_list_partial_no_oauth_surfaces_login_hint() {
         &mut app,
     );
     assert!(
-        read_toast(&app).contains("/login"),
-        "no_oauth must point at /login"
+        read_toast(&app)
+            .to_lowercase()
+            .contains("configure a vendor/provider"),
+        "no_oauth must point at vendor/provider config"
     );
 }
 

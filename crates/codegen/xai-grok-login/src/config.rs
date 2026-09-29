@@ -120,52 +120,14 @@ pub struct OAuth2ProviderConfig {
     pub referrer: Option<String>,
 }
 pub const XAI_OAUTH2_ISSUER: &str = "https://auth.x.ai";
-/// A separate const so the frozen contract test pins the production allowlist even when the non-production feature adds staging and local origins.
-const PROD_ACCOUNTS_APP_ORIGINS: &[&str] = &["https://accounts.x.ai"];
-/// Production build: accepts only the production accounts app.
-pub fn allowed_accounts_app_origins() -> Vec<String> {
-    PROD_ACCOUNTS_APP_ORIGINS
-        .iter()
-        .map(|o| o.to_string())
-        .collect()
-}
-/// Builds a CORS layer accepting requests from the deployments in [`allowed_accounts_app_origins`] for the given HTTP method.
-pub fn accounts_app_cors_layer(method: axum::http::Method) -> tower_http::cors::CorsLayer {
-    tower_http::cors::CorsLayer::new()
-        .allow_origin(tower_http::cors::AllowOrigin::list(
-            allowed_accounts_app_origins()
-                .iter()
-                .filter_map(|origin| match origin.parse() {
-                    Ok(value) => Some(value),
-                    Err(_) => {
-                        tracing::warn!(origin, "skipping malformed accounts-app CORS origin");
-                        None
-                    }
-                }),
-        ))
-        .allow_methods([method])
-}
-/// Local-dev OAuth2 issuer (accounts-app running on localhost).
-const XAI_OAUTH2_LOCAL_ISSUER: &str = "http://localhost:22255";
 const DEFAULT_OAUTH2_REFERRER: &str = "grok-build";
-/// Returns `true` when `GROK_LOCAL_AUTH=1` is set, indicating the local accounts-app should be used as the OAuth2 issuer.
-pub fn use_local_auth() -> bool {
-    std::env::var("GROK_LOCAL_AUTH")
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false)
-}
-/// Returns the active xAI OAuth2 issuer: the local-dev issuer when `GROK_LOCAL_AUTH=1` is set, otherwise the production issuer.
+/// Returns the active xAI OAuth2 issuer.
 pub fn xai_oauth2_issuer() -> &'static str {
-    if use_local_auth() {
-        XAI_OAUTH2_LOCAL_ISSUER
-    } else {
-        XAI_OAUTH2_ISSUER
-    }
+    XAI_OAUTH2_ISSUER
 }
-/// Whether `issuer` is a recognised xAI OAuth2 issuer (production or local-dev).
-/// Use this instead of comparing to [`XAI_OAUTH2_ISSUER`] so local-dev counts as first-party xAI auth.
+/// Whether `issuer` is the xAI OAuth2 issuer.
 pub fn is_xai_oauth2_issuer(issuer: &str) -> bool {
-    issuer == XAI_OAUTH2_ISSUER || issuer == XAI_OAUTH2_LOCAL_ISSUER
+    issuer == XAI_OAUTH2_ISSUER
 }
 /// auth.json scope key used by the pre-OIDC `grok login --legacy` flow.
 /// Matches the key format produced by the original `accounts.x.ai` relay auth.
@@ -407,13 +369,6 @@ mod tests {
             referrer: Some("grok-build".into()),
         };
         assert_eq!(cfg.auth_scope(), "https://auth.x.ai::client-123");
-    }
-    /// FROZEN loopback contract: the accounts-app origins the CLI's loopback callback server accepts cross-origin requests from. The consent page (served from accounts.x.ai) delivers the code via `fetch(..., cors)`.
-    /// Removing an origin therefore breaks loopback delivery for already-installed CLIs. Keep in sync with the oauth2-provider / accounts-app deployments. Non-production / local-dev origins are opt-in only.
-    #[test]
-    fn allowed_accounts_app_origins_are_frozen() {
-        assert_eq!(PROD_ACCOUNTS_APP_ORIGINS, &["https://accounts.x.ai"]);
-        assert_eq!(allowed_accounts_app_origins(), PROD_ACCOUNTS_APP_ORIGINS);
     }
     /// FROZEN client contract: the 10 scopes the xAI OAuth2 client requests.
     /// The server must keep accepting all of them; existing tokens carry exactly this set.

@@ -60,7 +60,6 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
             | Command::Doctor(_)
             | Command::Leader(_)
             | Command::Logout
-            | Command::Login { .. }
             | Command::Mcp(_)
             | Command::Plugin(_)
             | Command::Memory(_)
@@ -628,7 +627,6 @@ async fn spawn_and_connect_leader(
     remote_settings: Option<&xai_grok_shell::util::config::RemoteSettings>,
     door: &LeaderDoorCli,
 ) -> Result<LeaderClient> {
-    use xai_grok_login::ensure_authenticated;
     xai_grok_shell::util::config::set_remote_campaigns_from_settings(remote_settings);
     let raw_config = xai_grok_shell::config::load_effective_config()
         .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
@@ -650,14 +648,13 @@ async fn spawn_and_connect_leader(
             door.leader_mode_reason
         );
     }
-    ensure_authenticated(
+    // No forced browser login: proceed with whatever cached/API-key credentials exist.
+    // Missing credentials surface as vendor/provider guidance at request time.
+    let _ = xai_grok_login::try_ensure_fresh_auth(
         &agent_config.grok_com_config,
-        agent_config.login_device_flow,
         agent_config.endpoints.proxy_url(),
-        false,
-        Some("No cached credentials found. Run `grok login` first."),
     )
-    .await?;
+    .await;
     let env_urls = LeaderEnvUrls::from(&agent_config.grok_com_config);
     let capabilities = ClientCapabilities {
         client_version: Some(PAGER_CLIENT_VERSION.to_string()),
@@ -2073,9 +2070,8 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                         agent_cfg.grok_com_config.clone(),
                         agent_cfg.endpoints.proxy_url(),
                     ));
-                auth_manager.configure_refresher(
-                    agent_cfg.grok_com_config.auth_provider_command.clone(),
-                );
+                auth_manager
+                    .configure_refresher(agent_cfg.grok_com_config.auth_provider_command.clone());
                 xai_grok_shell::managed_config::ensure_managed_policy_present(&auth_manager).await;
             }
             Err(e) => {
@@ -2247,28 +2243,6 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                     &update_config,
                 )
                 .await;
-            }
-            Command::Login {
-                legacy: _,
-                oauth,
-                device_auth,
-                devbox,
-            } => {
-                init_tracing_simple("cli");
-                let config = xai_grok_shell::config::load_agent_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                let authenticated = xai_grok_login::run_cli_login(
-                    config.grok_com_config.clone(),
-                    config.login_device_flow,
-                    config.endpoints.proxy_url(),
-                    oauth,
-                    device_auth,
-                    devbox,
-                )
-                .await?;
-                xai_grok_shell::agent::init::apply_post_login_config(authenticated).await?;
-                println!();
-                std::process::exit(0);
             }
             Command::Logout => {
                 init_tracing_simple("cli");

@@ -1,9 +1,9 @@
 //! Interactive-pager external login that runs on the real TTY before raw mode.
 //!
-//! `auth_provider_command` already works via `grok login` because stderr is inherited.
+//! `auth_provider_command` already works headless because stderr is inherited.
 //! The TUI path instead pipes that stderr into the welcome copy-link overlay.
 //! That overlay is unusable in Docker (no host browser, mouse capture, wrapped URLs).
-//! This module is the first-launch equivalent of `grok login`.
+//! This module is the first-launch equivalent for external providers.
 //! It prints the provider URL on the real terminal, persists the token, then lets the pager start already authenticated.
 //!
 //! Deliberately does **not** call [`super::flow::run_auth_flow`]: on provider failure that falls through to browser OIDC.

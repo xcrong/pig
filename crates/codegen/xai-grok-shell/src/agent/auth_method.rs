@@ -83,7 +83,8 @@ pub struct BuiltAuthMethods {
 }
 
 /// REGRESSION GUARD: when unpinned and `has_external_api_key` is true, the **first** entry MUST be `xai.api_key`.
-/// Unpinned ordering (when each method is enabled): `xai.api_key` (if `has_external_api_key`) `cached_token` (if `has_cached_token`) exactly one of: `oidc` (if `has_enterprise_oidc`) `grok.com` (otherwise)
+/// Unpinned ordering (when each method is enabled): `xai.api_key` (if `has_external_api_key`) `cached_token` (if `has_cached_token`) interactive login only when explicitly configured (`oidc` if `has_enterprise_oidc`, `grok.com` only with an external provider command).
+/// Generic harness has no default browser login: fresh users with no credentials get an empty list and vendor guidance instead of `grok.com`.
 /// Unpinned `default_auth_method_id`: `cached_token` if `has_cached_token` `xai.api_key` else if `has_external_api_key` `None` otherwise Pinned (`preferred_method`): `ApiKey`: only `xai.api_key` if available; else an empty list and `None` (fail). `Oidc`: `cached_token` (if any) then interactive login; never `xai.api_key`.
 pub fn build_auth_methods(inputs: AuthMethodsBuildInputs<'_>) -> BuiltAuthMethods {
     let AuthMethodsBuildInputs {
@@ -180,8 +181,7 @@ fn build_unpinned(
         // cached_token wins over xai.api_key for default_auth_method_id so is_session_based_auth() returns true and OIDC refresh stays alive
         let overrode_api_key = default_auth_method_id.is_some();
         default_auth_method_id = Some(acp::AuthMethodId::new(CACHED_TOKEN_AUTH_METHOD_ID));
-        if overrode_api_key {
-        }
+        if overrode_api_key {}
     }
 
     push_interactive_login(
@@ -212,9 +212,11 @@ fn push_interactive_login(
         let issuer = enterprise_oidc_issuer
             .expect("enterprise_oidc_issuer is required when has_enterprise_oidc is true");
         methods.push(oidc_auth_method(issuer, login_label));
-    } else {
-        methods.push(grok_com_auth_method(login_label, has_auth_provider_command));
+    } else if has_auth_provider_command {
+        methods.push(grok_com_auth_method(login_label, true));
     }
+    // Otherwise no interactive login is advertised: the generic harness never
+    // opens a browser. Fresh users get vendor/provider guidance instead.
 }
 
 /// ACP session auth method. Use `is_session_based_method` for classification.
@@ -287,12 +289,12 @@ pub(crate) fn session_token_auth_gate(
 }
 
 pub const AUTH_ERROR_SESSION_EXPIRED: &str =
-    "Session expired. Run `grok login` to re-authenticate.";
+    "Session expired. Configure a model provider (see docs/user-guide/11-custom-models.md).";
 
-pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Run `grok login`, set XAI_API_KEY, or add api_key to ~/.grok/config.toml.";
+pub const AUTH_ERROR_API_KEY: &str = "Authentication failed. Configure a model provider: set `[vendors.<id>] enabled = true` with its `env_key`, or add `api_key` to ~/.grok/config.toml (see docs/user-guide/11-custom-models.md).";
 
 /// Next ACP method id when `cached_token` cannot proceed (missing / expired / legacy WebLogin), or `None` when fallthrough is forbidden.
-/// Unpinned: prefer non-interactive `xai.api_key` when advertiseable, else interactive `grok.com`. Pinned `oidc`: **no** fallthrough to api_key; return `None` so the caller fails auth.
+/// Unpinned: prefer non-interactive `xai.api_key` when advertiseable, else no fallthrough (generic harness has no browser login).
 /// Pinned `api_key` should not reach this path (cached_token is not advertised).
 pub(crate) fn method_id_after_cached_token_unavailable(
     has_external_api_key: bool,
@@ -300,11 +302,13 @@ pub(crate) fn method_id_after_cached_token_unavailable(
 ) -> Option<&'static str> {
     match preferred_method {
         Some(PreferredAuthMethod::Oidc) | Some(PreferredAuthMethod::ApiKey) => None,
-        None => Some(if has_external_api_key {
-            XAI_API_KEY_METHOD_ID
-        } else {
-            GROK_COM_METHOD_ID
-        }),
+        None => {
+            if has_external_api_key {
+                Some(XAI_API_KEY_METHOD_ID)
+            } else {
+                None
+            }
+        }
     }
 }
 
@@ -312,8 +316,7 @@ pub(crate) fn method_id_after_cached_token_unavailable(
 pub const PREFERRED_API_KEY_UNAVAILABLE: &str = "preferred_method=api_key but no API key is configured (set XAI_API_KEY or model api_key/env_key in config.toml).";
 
 /// Error when `preferred_method=oidc` but the session path cannot proceed.
-pub const PREFERRED_OIDC_UNAVAILABLE: &str =
-    "preferred_method=oidc but no session is available. Run `grok login` to authenticate.";
+pub const PREFERRED_OIDC_UNAVAILABLE: &str = "preferred_method=oidc but no session is available. Configure a model provider (see docs/user-guide/11-custom-models.md).";
 
 pub const XAI_API_KEY_METHOD_ID: &str = "xai.api_key";
 pub(crate) fn xai_api_key_auth_method() -> acp::AuthMethod {
@@ -390,13 +393,10 @@ mod tests {
         );
     }
 
-    /// With no advertiseable API-key credentials, fall to interactive `grok.com`.
+    /// With no advertiseable API-key credentials and no explicit provider, there is no fallthrough (generic harness has no browser login).
     #[test]
-    fn after_cached_token_unavailable_falls_to_grok_com_without_api_key() {
-        assert_eq!(
-            method_id_after_cached_token_unavailable(false, None),
-            Some(GROK_COM_METHOD_ID),
-        );
+    fn after_cached_token_unavailable_fails_closed_without_api_key() {
+        assert_eq!(method_id_after_cached_token_unavailable(false, None), None,);
     }
 
     /// Pinned methods never fall through between api_key and oidc.
@@ -570,15 +570,14 @@ mod tests {
         );
     }
 
-    /// Brand-new user (no API key, no cached token): only `grok.com` is advertised, and the pager will (correctly) show the login screen.
-    /// `default_auth_method_id` is None so the pager falls back to the advertised login method.
+    /// Brand-new user (no API key, no cached token, no provider): no interactive login is advertised.
+    /// The pager starts directly with vendor/provider guidance instead of a browser login.
     #[test]
-    fn fresh_user_only_advertises_grok_com_and_requires_login() {
+    fn fresh_user_advertises_nothing_and_gets_vendor_guidance() {
         let built = build_auth_methods(default_inputs());
 
-        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::GrokCom));
+        assert!(built.methods.is_empty());
         assert!(built.default_auth_method_id.is_none());
-        assert_eq!(built.methods.len(), 1);
     }
 
     /// Enterprise OIDC replaces `grok.com` (mutually exclusive).
@@ -762,11 +761,10 @@ mod tests {
                 .any(|m| AuthMethodKind::from_id(m.id()) == AuthMethodKind::XaiApiKey),
             "xai.api_key must not be advertised when disable_api_key_auth is set",
         );
-        assert_eq!(
-            first_kind(&built.methods),
-            Some(AuthMethodKind::GrokCom),
-            "with api-key auth disabled and no cached token, the login method \
-             must lead so the pager requires interactive login",
+        assert!(
+            built.methods.is_empty(),
+            "with api-key auth disabled and no cached token or provider, no login method \
+             is advertised; the pager shows vendor guidance",
         );
         assert!(built.default_auth_method_id.is_none());
     }
@@ -791,7 +789,7 @@ mod tests {
             has_external_api_key: false,
             ..default_inputs()
         });
-        assert_eq!(first_kind(&built.methods), Some(AuthMethodKind::GrokCom));
+        assert!(built.methods.is_empty());
     }
 
     #[test]
@@ -966,10 +964,9 @@ mod tests {
             has_cached_token: mgr.current().is_some(),
             ..default_inputs()
         });
-        assert_eq!(
-            first_kind(&built.methods),
-            Some(AuthMethodKind::GrokCom),
-            "no cached token AND no api key: pager must show login (grok.com first)",
+        assert!(
+            built.methods.is_empty(),
+            "no cached token AND no api key AND no provider: no login method is advertised",
         );
     }
 
@@ -1007,22 +1004,19 @@ mod tests {
             preferred_method: Some(PreferredAuthMethod::Oidc),
             ..default_inputs()
         });
-        assert_eq!(
-            method_ids(&built),
-            vec![CACHED_TOKEN_AUTH_METHOD_ID, GROK_COM_METHOD_ID]
-        );
+        assert_eq!(method_ids(&built), vec![CACHED_TOKEN_AUTH_METHOD_ID]);
         assert_eq!(default_id(&built), Some(CACHED_TOKEN_AUTH_METHOD_ID));
     }
 
     #[test]
-    fn pin_oidc_without_session_is_interactive_only() {
+    fn pin_oidc_without_session_is_empty_without_provider() {
         let built = build_auth_methods(AuthMethodsBuildInputs {
             has_external_api_key: true,
             has_cached_token: false,
             preferred_method: Some(PreferredAuthMethod::Oidc),
             ..default_inputs()
         });
-        assert_eq!(method_ids(&built), vec![GROK_COM_METHOD_ID]);
+        assert!(built.methods.is_empty());
         assert!(built.default_auth_method_id.is_none());
     }
 }

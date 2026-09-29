@@ -256,31 +256,9 @@ impl acp::Agent for MvpAgent {
             }
         }
         let preferred_method_early = self.cfg.borrow().grok_com_config.preferred_method;
-        let xai_api_base_url = self.cfg.borrow().endpoints.xai_api_base_url.clone();
-        let has_byok = self
-            .models_manager
-            .models()
-            .values()
-            .any(crate::agent::config::ModelEntry::has_own_credentials);
-        let first_party_env_ok = if xai_grok_login::should_probe_first_party_env_key(
-            disable_api_key_auth,
-            has_byok,
-            auth_method::has_xai_api_key_env(),
-            preferred_method_early.is_some(),
-        ) {
-            xai_grok_login::first_party_env_key_allows_advertise(
-                    &xai_api_base_url,
-                    xai_grok_login::DEFAULT_PROBE_TIMEOUT,
-                )
-                .await
-        } else {
-            true
-        };
-        self.auth_manager.set_first_party_env_api_key_ok(first_party_env_ok);
-        let has_external_api_key = auth_method::should_advertise_xai_api_key_with_env_ok(
+        let has_external_api_key = auth_method::should_advertise_xai_api_key(
             disable_api_key_auth,
             self.models_manager.models().values(),
-            first_party_env_ok,
         );
         let init_token_state = self.auth_manager.cached_token_state();
         let init_has_current = matches!(init_token_state, CachedTokenState::Valid(_));
@@ -622,17 +600,11 @@ impl acp::Agent for MvpAgent {
                     method = arguments.method_id.0.as_ref(),
                     headless = auth_meta.headless,
                     reauth = auth_meta.reauth,
-                    use_oauth = auth_meta.use_oauth,
                     "auth: inline auth flow",
                 );
                 if auth_meta.reauth {
                     let _ = self.auth_manager.clear();
                 }
-                let cli_oauth = auth_meta.use_oauth.then_some(true);
-                let use_oidc = self.cfg.borrow().resolve_grok_oauth(cli_oauth);
-                tracing::debug!(resolved = use_oidc.value, source = ?use_oidc.source, "auth: method resolved");
-                let login_override = auth_meta.login_override();
-                let config_device_flow = self.cfg.borrow().login_device_flow;
                 let mut cancelled = false;
                 let client_seq = auth_meta.request_seq;
                 let auth_result = if !auth_meta.headless {
@@ -658,14 +630,12 @@ impl acp::Agent for MvpAgent {
                         r = xai_grok_login::run_auth_flow_with_stderr_bridge(
                             &self.auth_manager,
                             grok_ctx,
-                            config_device_flow,
                             xai_grok_login::AuthChannels {
                                 url_tx: Some(url_tx),
                                 code_rx,
                             },
                             auth_meta.reauth,
                             auth_meta.force_interactive,
-                            login_override,
                         ) => r,
                     }
                 } else {
@@ -679,12 +649,10 @@ impl acp::Agent for MvpAgent {
                         r = xai_grok_login::run_auth_flow(
                             &self.auth_manager,
                             grok_ctx,
-                            config_device_flow,
                             auth_meta.reauth,
                             None,
                             None,
                             None,
-                            login_override,
                         ) => r,
                     }
                 };
@@ -1773,7 +1741,7 @@ impl acp::Agent for MvpAgent {
                 crate::extensions::auth_gate::require_xai_auth(
                     &self.auth_manager,
                     "Authentication required",
-                    "Run `grok login` to authenticate.",
+                    "Configure a model provider (see docs/user-guide/11-custom-models.md).",
                 )?;
                 let params: serde_json::Value = serde_json::from_str(args.params.get())
                     .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
@@ -1805,7 +1773,7 @@ impl acp::Agent for MvpAgent {
                 crate::extensions::auth_gate::require_xai_auth(
                     &self.auth_manager,
                     "Authentication required",
-                    "Run `grok login` to authenticate.",
+                    "Configure a model provider (see docs/user-guide/11-custom-models.md).",
                 )?;
                 let sandbox_client = crate::remote::SandboxClient::new(
                     self.cli_chat_proxy_base_url(),
@@ -1830,7 +1798,7 @@ impl acp::Agent for MvpAgent {
                 crate::extensions::auth_gate::require_xai_auth(
                     &self.auth_manager,
                     "Authentication required",
-                    "Run `grok login` to authenticate.",
+                    "Configure a model provider (see docs/user-guide/11-custom-models.md).",
                 )?;
                 let params: serde_json::Value = serde_json::from_str(args.params.get())
                     .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
@@ -1887,7 +1855,7 @@ impl acp::Agent for MvpAgent {
                 crate::extensions::auth_gate::require_xai_auth(
                     &self.auth_manager,
                     "Authentication required",
-                    "Run `grok login` to authenticate.",
+                    "Configure a model provider (see docs/user-guide/11-custom-models.md).",
                 )?;
                 let params: serde_json::Value = serde_json::from_str(args.params.get())
                     .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;
@@ -1947,7 +1915,7 @@ impl acp::Agent for MvpAgent {
                 crate::extensions::auth_gate::require_xai_auth(
                     &self.auth_manager,
                     "Authentication required",
-                    "Run `grok login` to authenticate.",
+                    "Configure a model provider (see docs/user-guide/11-custom-models.md).",
                 )?;
                 let params: serde_json::Value = serde_json::from_str(args.params.get())
                     .map_err(|e| acp::Error::invalid_params().data(e.to_string()))?;

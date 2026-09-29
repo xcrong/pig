@@ -1,7 +1,7 @@
 //! Single-flight guard for interactive login.
 //!
-//! At most one device-code or loopback wait runs at a time.
-//! Starting a new attempt (or an explicit `x.ai/auth/cancel`) cancels the previous one, so a remint or retry cannot stack device-code flows.
+//! At most one provider wait runs at a time.
+//! Starting a new attempt (or an explicit `x.ai/auth/cancel`) cancels the previous one, so a remint or retry cannot stack provider flows.
 //!
 //! The attempt owns **all** attempt-scoped state: the cancellation token and the code/url channels.
 //! Replacing an attempt therefore swaps everything atomically.

@@ -47,7 +47,7 @@ pub enum ManagedConfigError {
     )]
     DeploymentKeyRejected,
     #[error(
-        "Your team sign-in was rejected. It may have expired or lack access. Run `grok login` to sign in again."
+        "Your team sign-in was rejected. It may have expired or lack access. Configure a model provider (see docs/user-guide/11-custom-models.md)."
     )]
     TeamAuthRejected,
     #[error("The server returned an unexpected error (HTTP {status}). Try again in a few minutes.")]

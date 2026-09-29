@@ -1041,13 +1041,7 @@ struct AuthRequestMeta {
     headless: bool,
     #[serde(default)]
     reauth: bool,
-    /// `--oauth`: force loopback.
-    /// The only transport override sent over ACP (loopback is the default; device is opt-in via env/config).
-    #[serde(default)]
-    use_oauth: bool,
-    /// When true, skip cached tokens and force the interactive browser login flow.
-    /// Used by the `/login` slash command for mid-session re-auth.
-    /// Unlike `reauth`, this does NOT clear existing credentials: if the user abandons the browser flow, the current session continues.
+    /// When true, skip cached tokens and force the provider flow.
     #[serde(default)]
     force_interactive: bool,
     /// Pager auth `request_seq` for this attempt.
@@ -1056,14 +1050,6 @@ struct AuthRequestMeta {
     request_seq: Option<u64>,
 }
 impl AuthRequestMeta {
-    /// `--oauth` forces loopback; otherwise default (loopback).
-    fn login_override(&self) -> xai_grok_login::LoginTransportOverride {
-        if self.use_oauth {
-            xai_grok_login::LoginTransportOverride::ForceLoopback
-        } else {
-            xai_grok_login::LoginTransportOverride::None
-        }
-    }
     fn from_json(meta: Option<&acp::Meta>) -> Self {
         meta.cloned()
             .and_then(|value| {

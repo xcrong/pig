@@ -1372,24 +1372,23 @@ impl MvpAgent {
             xai_chat_state::AuthType::ApiKey
         }
     }
-    /// Fall through to `xai.api_key` if the startup probe still allows it, else `grok.com`.
-    /// `None` when `preferred_method` is pinned.
+    /// Fall through to `xai.api_key` when advertiseable, else no fallthrough.
+    /// `None` when `preferred_method` is pinned or no non-interactive credential exists.
     pub(super) fn cached_token_fallthrough_method_id(
         &self,
     ) -> Option<acp::AuthMethodId> {
         let preferred = self.cfg.borrow().grok_com_config.preferred_method;
         let id = auth_method::method_id_after_cached_token_unavailable(
-            auth_method::should_advertise_xai_api_key_with_env_ok(
+            auth_method::should_advertise_xai_api_key(
                 self.cfg.borrow().grok_com_config.api_key_auth_disabled(),
                 self.models_manager.models().values(),
-                self.auth_manager.first_party_env_api_key_ok(),
             ),
             preferred,
         )?;
         Some(acp::AuthMethodId::new(id))
     }
-    /// Shared exit for missing/expired/legacy `cached_token`: fall through with `use_oauth` only when the target is interactive `grok.com`.
-    /// When `preferred_method` is pinned, fail instead of falling through.
+    /// Shared exit for missing/expired/legacy `cached_token`.
+    /// When `preferred_method` is pinned or no fallthrough exists, fail with vendor guidance.
     pub(super) async fn authenticate_after_cached_token_unavailable(
         &self,
         arguments: acp::AuthenticateRequest,
@@ -1405,11 +1404,7 @@ impl MvpAgent {
             tracing::info!(%msg, "cached_token unavailable; preferred_method forbids fallthrough");
             return Err(acp::Error::auth_required().data(msg));
         };
-        let meta = if method_id.0.as_ref() == auth_method::GROK_COM_METHOD_ID {
-            serde_json::json!({ "use_oauth": true }).as_object().cloned()
-        } else {
-            arguments.meta
-        };
+        let meta = arguments.meta;
         tracing::info!(fallback = %method_id.0, "cached_token fallthrough");
         acp::Agent::authenticate(
                 self,
@@ -2162,7 +2157,7 @@ impl MvpAgent {
         if relay_sync_enabled {
             tracing::info!("[grok] Relay sync: ENABLED");
         } else if tui_mode && relay_config_enabled && !has_xai_auth {
-            tracing::info!("[grok] Relay sync: DISABLED (no auth - run 'grok login' first)");
+            tracing::info!("[grok] Relay sync: DISABLED (no auth - configure a vendor/provider first)");
         } else if tui_mode && !relay_config_enabled {
             tracing::debug!("Relay sync: DISABLED (not configured in config.toml or env)");
         } else {

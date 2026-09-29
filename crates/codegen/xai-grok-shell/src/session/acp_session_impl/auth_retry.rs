@@ -32,7 +32,7 @@ pub(crate) async fn pace_uncharged_resubmit(
                     break;
                 }
                 // Parked turns suppress the refresh dispatches that adopt disk, so
-                // poll for a token another process wrote (`grok login` elsewhere).
+                // poll for a token another process wrote (provider elsewhere).
                 if am.pick_up_sibling_token() {
                     continue;
                 }

@@ -2835,29 +2835,6 @@ fn disable_api_key_auth_parses_from_auth_alias() {
     let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
     assert_eq!(cfg.grok_com_config.disable_api_key_auth, Some(true));
 }
-/// `login_device_flow` reaches `Config::login_device_flow` via both `[grok_com_config]` and the `[auth]` alias, without warning as unrecognized.
-#[test]
-fn login_device_flow_reads_from_config() {
-    let absent = Config::new_from_toml_cfg(&toml::from_str("").unwrap()).unwrap();
-    assert_eq!(absent.login_device_flow, None);
-    for section in ["grok_com_config", "auth"] {
-        let raw: toml::Value =
-            toml::from_str(&format!("[{section}]\nlogin_device_flow = true\n")).unwrap();
-        let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
-        assert_eq!(
-            cfg.login_device_flow,
-            Some(true),
-            "`[{section}] login_device_flow` must reach Config::login_device_flow"
-        );
-        assert!(
-            !cfg.config_warnings
-                .iter()
-                .any(|w| w.target.label().contains("login_device_flow")),
-            "`[{section}] login_device_flow` must not warn as unrecognized: {:?}",
-            cfg.config_warnings
-        );
-    }
-}
 /// `force_login_team_uuid` parses a string (pin), array (any-of), or `[]` (fail closed); absent means None.
 #[test]
 fn force_login_team_uuid_parses_string_and_array() {

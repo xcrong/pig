@@ -70,7 +70,7 @@ The two are separate worlds:
 
 | World | Covers | Commands | Store |
 |-------|--------|----------|-------|
-| Grok | the model and API | `grok login`, `grok logout` | `~/.grok/auth.json` |
+| Grok | the model and API | `pig logout` + vendor config | `~/.grok/auth.json` |
 
 `grok clone` never reads `~/.grok/auth.json` for Git. Signing into Grok does not
 give the daemon a credential for the remote, and neither does

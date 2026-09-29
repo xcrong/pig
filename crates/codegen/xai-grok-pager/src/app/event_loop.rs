@@ -1090,9 +1090,7 @@ pub(crate) async fn run(
     if launch_auto {
         app.current_ui.permission_mode = Some("auto".into());
     }
-    let launch_effective_config = {
-        xai_grok_shell::config::load_effective_config().ok()
-    };
+    let launch_effective_config = { xai_grok_shell::config::load_effective_config().ok() };
     let launch_effective_ui = launch_effective_config
         .as_ref()
         .and_then(|root| root.get("ui").cloned());
@@ -1165,7 +1163,7 @@ pub(crate) async fn run(
         .as_deref()
         .map(agent_client_protocol::ModelId::new);
     app.cli_effort_token = args.reasoning_effort.clone();
-    app.auth_use_oauth = args.oauth;
+    app.auth_use_oauth = false;
     app.show_resolved_model = remote_settings
         .as_ref()
         .and_then(|s| s.show_resolved_model)
@@ -1274,7 +1272,7 @@ pub(crate) async fn run(
         if connection.auth_methods.is_empty() {
             app.auth_state = super::app_view::AuthState::Pending {
                 error: Some(
-                    xai_grok_shell::agent::auth_method::PREFERRED_API_KEY_UNAVAILABLE.to_string(),
+                    "No credentials configured. Configure a model provider: set `[vendors.<id>] enabled = true` with its `env_key`, or add `[model_providers.*]` (see docs/user-guide/11-custom-models.md).".to_string(),
                 ),
             };
             vec![]
@@ -3078,8 +3076,7 @@ fn sync_appearance_watcher(watcher: &mut Option<SystemAppearanceWatcher>) {
         *watcher = SystemAppearanceWatcher::start_if_auto(should_auto);
     }
 }
-fn emit_event_loop_stall(window: super::event_loop_stall::StallWindow) {
-}
+fn emit_event_loop_stall(window: super::event_loop_stall::StallWindow) {}
 fn flush_pending_stall(stall_rollup: &mut super::event_loop_stall::StallRollup) {
     if let Some(window) = stall_rollup.take() {
         emit_event_loop_stall(window);

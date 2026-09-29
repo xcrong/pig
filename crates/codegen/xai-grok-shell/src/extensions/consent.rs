@@ -32,7 +32,7 @@ async fn handle_record(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     agent.auth_manager.auth().await.map_err(|e| {
         tracing::warn!(error = %e, "consent: auth resolution failed");
         acp::Error::auth_required()
-            .data("Authentication required. Run `grok login` to re-authenticate.")
+            .data("Authentication required. Configure a model provider (see docs/user-guide/11-custom-models.md).")
     })?;
 
     let proxy_url = agent.cfg.borrow().endpoints.proxy_url();

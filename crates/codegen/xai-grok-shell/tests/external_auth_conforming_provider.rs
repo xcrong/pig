@@ -12,9 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
-use xai_grok_login::{
-    AuthMode, GrokAuth, GrokComConfig, ensure_authenticated, try_ensure_fresh_auth,
-};
+use xai_grok_login::{AuthMode, GrokAuth, GrokComConfig, run_auth_flow, try_ensure_fresh_auth};
 
 const STALE_TOKEN: &str = "stale-token-the-provider-will-not-renew";
 const SSO_TOKEN: &str = "token-minted-by-the-interactive-flow";
@@ -125,19 +123,19 @@ async fn a_provider_that_declines_the_headless_run_can_still_sign_the_user_in() 
     );
 
     let started = Instant::now();
+    let auth_manager = std::sync::Arc::new(xai_grok_login::AuthManager::new_with_proxy_base_url(
+        home.path(),
+        config.clone(),
+        xai_grok_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_string(),
+    ));
     let auth = tokio::time::timeout(
         LOGIN_BUDGET,
-        ensure_authenticated(
-            &config,
-            None,
-            xai_grok_shell::agent::config::CLI_CHAT_PROXY_BASE_URL_DEFAULT.to_string(),
-            false,
-            None,
-        ),
+        run_auth_flow(&auth_manager, &config, false, None, None, None),
     )
     .await
-    .expect("the sign-in must reach the provider's interactive branch, not the browser login")
-    .expect("the provider mints when it is allowed to prompt");
+    .expect("the sign-in must reach the provider's interactive branch")
+    .expect("the provider mints when it is allowed to prompt")
+    .0;
     let elapsed = started.elapsed();
 
     assert_eq!(
