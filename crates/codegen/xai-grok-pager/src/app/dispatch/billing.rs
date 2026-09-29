@@ -165,7 +165,7 @@ pub(super) fn open_free_usage_upsell(agent: &mut AgentView, auth_method: Option<
     open_supergrok_upsell(agent, UpsellReason::FreeUsageLimit, auth_method);
 }
 
-/// Open the SuperGrok upsell for a tier-restricted slash command (`/usage`, `/imagine`, …).
+/// Open the SuperGrok upsell for a tier-restricted slash command (`/usage`, …).
 /// Returns whether the modal opened (`false` when another question modal is already up).
 /// The caller uses that to decide whether to consume the input that triggered it.
 pub(super) fn open_restricted_command_upsell(

@@ -3018,9 +3018,9 @@ fn dashboard_slash_model_stages_pending_model() {
 #[test]
 fn dashboard_slash_restricted_command_upsells_via_toast() {
     let mut app = test_app();
-    app.tier_restricted_commands = vec!["imagine".to_string()];
+    app.tier_restricted_commands = vec!["usage".to_string()];
     open_dashboard(&mut app);
-    let effects = dispatch_dashboard_dispatch_slash(&mut app, "/imagine a sunset".into());
+    let effects = dispatch_dashboard_dispatch_slash(&mut app, "/usage a sunset".into());
     assert!(effects.is_empty(), "restricted command must not dispatch");
     assert!(
         app.agents.is_empty(),
@@ -3034,7 +3034,7 @@ fn dashboard_slash_restricted_command_upsells_via_toast() {
         .as_deref()
         .expect("restricted command must set the upsell toast");
     assert!(
-        toast.contains("/imagine") && toast.contains("SuperGrok"),
+        toast.contains("/usage") && toast.contains("SuperGrok"),
         "toast must carry the upsell: {toast}"
     );
 }

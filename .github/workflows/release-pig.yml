@@ -165,5 +165,12 @@ jobs:
           test "$(node -p "require('./npm/pig/package.json').version")" = "$VERSION"
 
       - name: Publish to npm (OIDC trusted publisher)
-        run: npm publish --provenance --access public
+        working-directory: npm/pig
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            npm publish --provenance --access public --tag alpha
+          else
+            npm publish --provenance --access public
+          fi
         working-directory: npm/pig
