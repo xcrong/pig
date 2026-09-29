@@ -12,12 +12,12 @@ use tokio::io::AsyncWriteExt;
 
 use crate::cleanup_downloads::cleanup_old_downloads;
 use crate::version::{
-    UpdateConfig, fetch_latest_version, get_installed_grok_version, get_latest_version,
-    is_stable_channel, is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
+    UpdateConfig, effective_channel, fetch_latest_version, get_installed_grok_version,
+    get_latest_version, is_version_cache_fresh, try_fetch_stable_pointer, write_version_cache,
 };
 use crate::winget::{UPGRADE_COMMAND, WINGET};
 use xai_grok_shell::util::config;
-use xai_grok_shell::util::grok_home::{grok_application, grok_home};
+use xai_grok_shell::util::grok_home::grok_home;
 pub use xai_grok_telemetry::events::CliUpdateTrigger;
 use xai_grok_telemetry::events::{
     CliUpdate, CliUpdateChannel, CliUpdateErrorKind, CliUpdateInstaller, CliUpdateOutcome,
@@ -31,47 +31,28 @@ pub enum UpdateRunMode {
 
 const PROMPT_UPDATE_NOW: &str = "Update now? [Y/n/d]";
 const MSG_AUTO_UPDATE_BACKGROUND: &str = "Auto-update running in background.";
-const MSG_RUN_UPDATE_MANUAL: &str = "Run `grok update` to get the latest version.";
+const MSG_RUN_UPDATE_MANUAL: &str = "Run `pig update` to get the latest version.";
 
-/// Manual-install one-liner for this platform's bootstrap installer. On Unix the variable must prefix `bash` (which runs
-/// install.sh), not `curl`. In `VAR=x curl … | bash` the assignment applies to `curl` only and install.sh would fall back
-/// to stable.
-fn manual_install_cmd(channel: &str) -> String {
-    // Only interpolate a well-formed channel ([A-Za-z0-9._-]) into the shell one-liner
-    // Anything else falls back to stable (a working installer beats a broken quoted command)
-    let channel = channel.trim();
-    let safe = !channel.is_empty()
-        && channel
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
-    if channel == "enterprise" {
-        // Enterprise has its own bootstrap script; it needs no channel env.
-        return if cfg!(windows) {
-            "irm https://x.ai/cli/enterprise-install.ps1 | iex".to_string()
-        } else {
-            "curl -fsSL https://x.ai/cli/enterprise-install.sh | bash".to_string()
-        };
-    }
-    if is_stable_channel(channel) || !safe {
-        return if cfg!(windows) {
-            "irm https://x.ai/cli/install.ps1 | iex".to_string()
-        } else {
-            "curl -fsSL https://x.ai/cli/install.sh | bash".to_string()
-        };
-    }
-    if cfg!(windows) {
-        format!("$env:GROK_CHANNEL='{channel}'; irm https://x.ai/cli/install.ps1 | iex")
-    } else {
-        format!("curl -fsSL https://x.ai/cli/install.sh | GROK_CHANNEL='{channel}' bash")
-    }
+/// Direct-binary installer: a `pig` binary unpacked from a pig GitHub Release
+/// tarball into the managed `downloads/` + `bin/pig` layout.
+pub(crate) const GITHUB: &str = "github";
+
+fn managed_bin_name() -> &'static str {
+    if cfg!(windows) { "pig.exe" } else { "pig" }
 }
 
-fn reinstall_hint(installer: &str, channel: &str) -> String {
+fn reinstall_hint(installer: &str, _channel: &str) -> String {
     match installer {
         "npm" => "Please reinstall via npm:\n  npm i -g @xai-official/grok".to_string(),
-        "gh-release" => "Please reinstall via GitHub Releases:\n  gh release download --repo xai-org-shared/grok-build --pattern 'grok-*' --output grok && chmod +x grok".to_string(),
         WINGET => format!("Update with WinGet:\n  {UPGRADE_COMMAND}"),
-        _ => format!("Please reinstall via:\n  {}", manual_install_cmd(channel)),
+        GITHUB => format!(
+            "Please reinstall from the pig GitHub Release page:\n  {}",
+            crate::version::PIG_RELEASES_URL
+        ),
+        _ => format!(
+            "Manual install detected: download a release tarball from\n  {}\nand replace your `pig` binary.",
+            crate::version::PIG_RELEASES_URL
+        ),
     }
 }
 
@@ -136,7 +117,7 @@ enum InstallPhaseError {
     Activate(anyhow::Error),
 }
 
-/// Smoke failures stay unwrapped: already typed, and the base-retry abort in [`install_internal_from_bases`] must still downcast them.
+/// Smoke failures stay unwrapped: already typed for telemetry classification.
 fn wrap_download_err(e: anyhow::Error) -> anyhow::Error {
     if e.is::<SmokeTestFailure>() {
         e
@@ -231,10 +212,11 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
     let current_config = config::load_config().await;
     let auto_update = current_config.cli.auto_update;
     // The WinGet package ships only stable releases, whatever channel is configured.
+    // A stale "enterprise" channel falls back to stable (no pig equivalent).
     let channel = if installer.as_deref() == Some(WINGET) {
         "stable".to_owned()
     } else {
-        update_config.channel.clone()
+        effective_channel(&update_config.channel).to_owned()
     };
 
     let Some(ref inst) = installer else {
@@ -268,7 +250,7 @@ pub async fn check_update_status(update_config: &UpdateConfig) -> UpdateStatus {
                         error = Some(if parse_ok {
                             format!(
                                 "Unsupported release channel '{channel}' (current={current_version}, latest={target}). \
-                                     Supported channels: stable, alpha, enterprise."
+                                     Supported channels: stable, alpha."
                             )
                         } else {
                             format!(
@@ -475,28 +457,30 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
     Ok(outcome)
 }
 
-/// Disk-version probe gated on the installer actually maintaining the managed `~/.grok/bin/grok` symlink. Only the
-/// internal (install.sh / CDN) and gh-release installers write that symlink. npm manages its own global install, so a
-/// symlink left over from a previous internal install would LIE about the npm install's version.
+/// Disk-version probe gated on the installer actually maintaining the managed `bin/pig` symlink. Only the
+/// direct-binary (`github`) installer writes that symlink. npm manages its own global install, so a
+/// symlink left over from a previous direct install would LIE about the npm install's version.
 fn disk_version_for_installer(installer: &str) -> Option<String> {
     match installer {
-        "internal" | "gh-release" => crate::version::installed_on_disk_version(),
+        GITHUB => crate::version::installed_on_disk_version(),
         _ => None,
     }
 }
 
-fn parse_grok_installer(value: &str) -> Option<&'static str> {
+fn parse_installer(value: &str) -> Option<&'static str> {
     match value.to_ascii_lowercase().as_str() {
         "npm" => Some("npm"),
-        "internal" => Some("internal"),
-        "gh-release" | "gh" => Some("gh-release"),
+        // Compat: pre-rework configs/env used "internal" (install.sh/CDN) and
+        // "gh-release"/"gh" (gh CLI). Both now mean the direct GitHub Release binary.
+        "github" | "direct" | "internal" => Some(GITHUB),
+        "gh-release" | "gh" => Some(GITHUB),
         _ => None,
     }
 }
 
 fn env_installer() -> Option<&'static str> {
     if let Ok(v) = std::env::var("GROK_INSTALLER") {
-        let installer = parse_grok_installer(&v);
+        let installer = parse_installer(&v);
         if installer.is_none() {
             tracing::debug!(value = %v, "unrecognized GROK_INSTALLER disables env installer hints");
         }
@@ -506,7 +490,7 @@ fn env_installer() -> Option<&'static str> {
         return Some("npm");
     }
     if std::env::var_os("GROK_MANAGED_BY_INTERNAL").is_some() {
-        return Some("internal");
+        return Some(GITHUB);
     }
     if std::env::var_os("npm_config_user_agent").is_some() {
         return Some("npm");
@@ -519,7 +503,7 @@ pub async fn get_installer() -> Option<&'static str> {
     if let Some(explicit) = std::env::var("GROK_INSTALLER")
         .ok()
         .as_deref()
-        .and_then(parse_grok_installer)
+        .and_then(parse_installer)
     {
         return Some(explicit);
     }
@@ -532,12 +516,16 @@ pub async fn get_installer() -> Option<&'static str> {
     let cfg = config::load_config().await;
     match cfg.cli.installer.as_deref() {
         Some("npm") => Some("npm"),
-        Some("gh-release") => Some("gh-release"),
-        Some(_) => Some("internal"),
-        // A wiped config must not reclassify an npm install as internal:
+        // Compat: "internal"/"gh-release" persisted by older builds.
+        Some("github") | Some("gh-release") | Some("internal") | Some("direct") => Some(GITHUB),
+        Some(_) => None,
+        // A wiped config must not reclassify an npm install as direct:
         // that re-enables downgrades and updates npm never sees.
         None if running_exe_matches(is_under_node_modules) => Some("npm"),
-        None => Some("internal"),
+        // A direct pig binary lives at the managed `bin/pig` path; anything
+        // else is an unknown/manual install (report version only, no download).
+        None if running_exe_is_managed() => Some(GITHUB),
+        None => None,
     }
 }
 
@@ -557,18 +545,35 @@ fn is_under_node_modules(exe: &std::path::Path) -> bool {
     exe.components().any(|c| c.as_os_str() == "node_modules")
 }
 
+/// True when the running executable resolves to the managed `bin/pig` entry
+/// point (or the legacy `bin/grok` left by upstream installs). Used to
+/// classify a direct-binary install when no explicit installer marker exists.
+fn running_exe_is_managed() -> bool {
+    running_exe_matches(is_managed_bin_path)
+}
+
+fn is_managed_bin_path(exe: &std::path::Path) -> bool {
+    let home = grok_home();
+    let pig = home.join("bin").join(managed_bin_name());
+    let legacy_grok = home
+        .join("bin")
+        .join(if cfg!(windows) { "grok.exe" } else { "grok" });
+    exe == pig
+        || exe == legacy_grok
+        || dunce::canonicalize(&pig).is_ok_and(|real| exe == real)
+        || dunce::canonicalize(&legacy_grok).is_ok_and(|real| exe == real)
+}
+
 fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: bool) -> Option<bool> {
     let current = semver::Version::parse(current).ok()?;
     let target = semver::Version::parse(target).ok()?;
-    match channel {
-        // NOTE: With the 0.2.X versioning scheme, all versions are plain semver (no pre-release suffix)
-        // The pre-release checks in this match are dead code but kept as a safety net
-        "stable" | "enterprise" => {
+    match effective_channel(channel) {
+        "stable" => {
             if !target.pre.is_empty() {
                 tracing::warn!(
                     %current, %target,
                     channel = %channel,
-                    "stable/enterprise channel received pre-release candidate, rejecting"
+                    "stable channel received pre-release candidate, rejecting"
                 );
                 return Some(false);
             }
@@ -586,12 +591,11 @@ fn needs_update(current: &str, target: &str, channel: &str, allow_downgrade: boo
     })
 }
 
-/// Returns `true` for installer backends whose version source is authoritative (managed by xAI directly). Returns `false`
-/// for backends like npm where stale corporate registries/proxies can return arbitrarily old versions. Users who
-/// installed via `install.sh` are classified as `"internal"` by `get_installer()`, so they also get rollback support.
+/// Returns `true` for installer backends whose version source is authoritative (pig GitHub Releases, managed directly).
+/// Returns `false` for backends like npm where stale corporate registries/proxies can return arbitrarily old versions.
 fn installer_allows_downgrade(installer: &str) -> bool {
     match installer {
-        "internal" | "gh-release" => true,
+        GITHUB => true,
         "npm" => false,
         _ => false,
     }
@@ -623,7 +627,7 @@ impl BackgroundUpdateCheck {
 
 /// Check for available updates without blocking the TUI startup. Sets [`BackgroundUpdateCheck::update`] when the running
 /// binary is older than the channel pointer. If `auto_update` is enabled and the on-disk install is also behind the
-/// pointer, kicks off a download (a detached `grok update` child). Only the restart hint is shown.
+/// pointer, kicks off a download (a detached `pig update` child). Only the restart hint is shown.
 pub async fn check_update_background(update_config: &UpdateConfig) -> BackgroundUpdateCheck {
     let Some(installer) = get_installer().await else {
         return BackgroundUpdateCheck::none();
@@ -862,7 +866,7 @@ pub async fn run_update_if_available(
     Ok(false)
 }
 
-/// Launch "grok update" in blocking or non-blocking mode. `NonBlocking` mode returns the spawned child's handle. The
+/// Launch "pig update" in blocking or non-blocking mode. `NonBlocking` mode returns the spawned child's handle. The
 /// TUI's quit-for-update path `wait()`s on that in-flight download instead of spawning a second downloader. Dropping the
 /// handle does not kill the child (`kill_on_drop` is off), so callers that don't care can ignore it.
 async fn run_update_subcommand(
@@ -895,7 +899,7 @@ async fn run_update_subcommand(
             // The atomic install protocol makes mid-download kills safe
             let status = cmd.status().await?;
             if !status.success() {
-                anyhow::bail!("grok update failed with {}", status);
+                anyhow::bail!("pig update failed with {}", status);
             }
             Ok(None)
         }
@@ -912,18 +916,18 @@ async fn run_update_subcommand(
     }
 }
 
-/// Resolve the grok binary path for re-execution after an update. `current_exe()` resolves symlinks via `/proc/self/exe`
-/// (see proc(5)), so it returns the old versioned target after a symlink swap. Prefer `~/.grok/bin/grok` which always
+/// Resolve the pig binary path for re-execution after an update. `current_exe()` resolves symlinks via `/proc/self/exe`
+/// (see proc(5)), so it returns the old versioned target after a symlink swap. Prefer the managed `bin/pig` which always
 /// points to the latest version.
 fn resolve_restart_exe() -> Result<std::path::PathBuf> {
-    let canonical = grok_application();
+    let canonical = grok_home().join("bin").join(managed_bin_name());
     if canonical.exists() {
         return Ok(canonical);
     }
     Ok(std::env::current_exe()?)
 }
 
-/// Restart grok with the original command-line arguments to pick up the update.
+/// Restart pig with the original command-line arguments to pick up the update.
 pub fn restart_grok() -> Result<()> {
     let exe = resolve_restart_exe()?;
     let mut cmd = Command::new(exe);
@@ -970,7 +974,7 @@ pub async fn run_install_script(
     let from_version =
         disk_version_for_installer(installer).unwrap_or_else(get_installed_grok_version);
     let started = Instant::now();
-    // Internal reports the version it actually activated; npm/gh-release resolve their own artifact, so the requested target stands in
+    // Direct-binary reports the version it actually activated; npm resolves its own artifact, so the requested target stands in
     let result: Result<Option<String>> = match installer {
         "npm" => install_npm(
             target,
@@ -978,9 +982,12 @@ pub async fn run_install_script(
             update_config.npm_registry.as_deref(),
         )
         .map(|()| None),
-        "gh-release" => install_gh_release(target).await.map(|()| None),
+        GITHUB => install_github(target, update_config).await.map(Some),
         WINGET => Err(anyhow::anyhow!("this install is managed by WinGet")),
-        _ => install_internal(target, update_config).await.map(Some),
+        _ => Err(anyhow::anyhow!(
+            "manual installations have no download source; download a release from {}",
+            crate::version::PIG_RELEASES_URL
+        )),
     };
     // Measured before the success-only cache sweep, so the sweep cannot inflate success durations
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -1333,7 +1340,7 @@ async fn remove_stale_models_cache() {
     }
 }
 
-/// Remove the stale `grok-pager` symlink/binary from `~/.grok/bin/` left by
+/// Remove the stale `grok-pager` symlink/binary from `bin/` left by
 /// older installations that shipped a separate pager binary.
 async fn remove_stale_pager(bin_dir: &std::path::Path) {
     let name = if cfg!(windows) {
@@ -1355,53 +1362,30 @@ async fn download_plain(url: &str, dest: &std::path::Path, with_progress: bool) 
     }
 }
 
-#[derive(Clone, Copy)]
-enum Codec {
-    Zstd,
-    Gzip,
-}
+// Cap extracted output so a crafted or corrupt tarball cannot expand unbounded and fill the disk.
+// A real pig binary is well under this; 512 MiB leaves wide headroom.
+const MAX_TARBALL_EXTRACT_BYTES: u64 = 512 * 1024 * 1024;
 
-// Cap decode output so a crafted or corrupt archive cannot expand unbounded and fill the disk
-// A real CLI binary is ~170 MiB; 512 MiB leaves 3x headroom
-const MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
-
-async fn download_and_decode(
+/// Download a pig release tarball (`pig-<os>-<arch>.tar.gz`, containing a bare
+/// `pig` binary) and unpack the binary to `dest`.
+async fn download_tarball_and_unpack(
     url: &str,
     dest: &std::path::Path,
-    codec: Codec,
     with_progress: bool,
 ) -> Result<()> {
-    let comp_tmp = tmp_download_path(dest);
-    if let Err(e) = download_plain(url, &comp_tmp, with_progress).await {
-        let _ = tokio::fs::remove_file(&comp_tmp).await;
+    let tar_tmp = tmp_download_path(dest);
+    if let Err(e) = download_plain(url, &tar_tmp, with_progress).await {
+        let _ = tokio::fs::remove_file(&tar_tmp).await;
         return Err(e);
     }
-
     let bin_tmp = tmp_download_path(dest);
-    let (comp_in, bin_out) = (comp_tmp.clone(), bin_tmp.clone());
-    let decoded = tokio::task::spawn_blocking(move || -> Result<()> {
-        use std::io::Read as _;
-        let src = std::fs::File::open(&comp_in)
-            .with_context(|| format!("open compressed download {}", comp_in.display()))?;
-        let decoder: Box<dyn std::io::Read> = match codec {
-            Codec::Zstd => {
-                Box::new(zstd::stream::read::Decoder::new(src).context("init zstd decoder")?)
-            }
-            Codec::Gzip => Box::new(flate2::read::GzDecoder::new(src)),
-        };
-        let mut out = std::fs::File::create(&bin_out)
-            .with_context(|| format!("create decoded binary {}", bin_out.display()))?;
-        let mut capped = decoder.take(MAX_DECODED_BYTES + 1);
-        let written = std::io::copy(&mut capped, &mut out).context("decode")?;
-        if written > MAX_DECODED_BYTES {
-            anyhow::bail!("decoded artifact exceeds the {MAX_DECODED_BYTES}-byte cap");
-        }
-        Ok(())
+    let (tar_in, bin_out) = (tar_tmp.clone(), bin_tmp.clone());
+    let extracted = tokio::task::spawn_blocking(move || -> Result<()> {
+        extract_pig_from_tarball(&tar_in, &bin_out)
     })
     .await;
-    let _ = tokio::fs::remove_file(&comp_tmp).await;
-
-    match decoded {
+    let _ = tokio::fs::remove_file(&tar_tmp).await;
+    match extracted {
         Ok(Ok(())) => publish_downloaded_artifact(&bin_tmp, dest).await,
         Ok(Err(e)) => {
             let _ = tokio::fs::remove_file(&bin_tmp).await;
@@ -1409,91 +1393,79 @@ async fn download_and_decode(
         }
         Err(e) => {
             let _ = tokio::fs::remove_file(&bin_tmp).await;
-            Err(anyhow::anyhow!("decode task panicked: {e}"))
+            Err(anyhow::anyhow!("tarball extract task panicked: {e}"))
         }
     }
 }
 
-/// Object-name candidates in fetch order; on Windows the `.exe` name comes first.
-fn cli_object_candidates(object_name: &str, windows: bool) -> Vec<String> {
-    if windows {
-        vec![format!("{object_name}.exe"), object_name.to_string()]
-    } else {
-        vec![object_name.to_string()]
-    }
-}
-
-/// Download a CLI object from GCS, preferring a `.zst`/`.gz` sidecar over the plain object.
-async fn download_cli_artifact_from_gcs(
-    gcs_base_url: &str,
-    object_name: &str,
-    dest: &std::path::Path,
-    with_progress: bool,
-) -> Result<()> {
-    let base = gcs_base_url.trim_end_matches('/');
-    let names = cli_object_candidates(object_name, cfg!(windows));
-
-    let mut last_err = None;
-    for name in &names {
-        for (suffix, codec) in [("zst", Codec::Zstd), ("gz", Codec::Gzip)] {
-            let url = format!("{base}/{name}.{suffix}");
-            match download_and_decode(&url, dest, codec, with_progress).await {
-                Ok(()) => return Ok(()),
-                Err(e) => tracing::debug!("compressed {name}.{suffix} unusable, trying next: {e}"),
-            }
+fn extract_pig_from_tarball(tarball: &std::path::Path, dest: &std::path::Path) -> Result<()> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(tarball)
+        .with_context(|| format!("open release tarball {}", tarball.display()))?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    let want = if cfg!(windows) { "pig.exe" } else { "pig" };
+    let mut found = false;
+    for entry in archive.entries().context("read tarball entries")? {
+        let entry = entry.context("read tarball entry")?;
+        let path = entry
+            .path()
+            .context("read tarball entry path")?
+            .into_owned();
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        if name != want && name != "pig" {
+            continue;
         }
-        match download_plain(&format!("{base}/{name}"), dest, with_progress).await {
-            Ok(()) => return Ok(()),
-            Err(e) => last_err = Some(e),
+        if entry.size() > MAX_TARBALL_EXTRACT_BYTES {
+            anyhow::bail!("release tarball entry exceeds the {MAX_TARBALL_EXTRACT_BYTES}-byte cap");
         }
+        let mut out = std::fs::File::create(dest)
+            .with_context(|| format!("create unpacked binary {}", dest.display()))?;
+        let mut capped = entry.take(MAX_TARBALL_EXTRACT_BYTES + 1);
+        let written = std::io::copy(&mut capped, &mut out).context("unpack tarball")?;
+        if written > MAX_TARBALL_EXTRACT_BYTES {
+            anyhow::bail!("unpacked binary exceeds the {MAX_TARBALL_EXTRACT_BYTES}-byte cap");
+        }
+        found = true;
+        break;
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no artifact at {base}/{object_name}")))
+    if !found {
+        anyhow::bail!("release tarball does not contain a `pig` binary");
+    }
+    Ok(())
 }
 
 /// Returns the version that was actually activated.
-async fn install_internal(target: Option<&str>, update_config: &UpdateConfig) -> Result<String> {
-    let bases = crate::version::cli_base_urls();
-    let base_refs: Vec<&str> = bases.iter().map(String::as_str).collect();
-    install_internal_from_bases(target, update_config, &base_refs).await
+async fn install_github(target: Option<&str>, update_config: &UpdateConfig) -> Result<String> {
+    let download = download_verified_github(target, update_config, None)
+        .await
+        .map_err(wrap_download_err)?;
+    activate_verified_download(&download)
+        .await
+        .map(|()| download.version)
+        .map_err(|e| InstallPhaseError::Activate(e).into())
 }
 
-/// Download-phase side effects (download dir creation, binary fetch) are idempotent, so retrying with a different base
-/// after a partial failure is safe. Its failures are not base-dependent, so they abort the install instead of triggering
-/// a pointless re-download from the next base.
+/// Test-only entry point: same as [`install_github`] but downloads tarballs
+/// from `download_base` (a loopback mock) instead of `https://github.com`.
+/// Persists installer config and writes to the managed home, so callers must isolate home.
 #[doc(hidden)]
-pub async fn install_internal_from_bases(
+pub async fn install_github_from_download_base(
     target: Option<&str>,
     update_config: &UpdateConfig,
-    bases: &[&str],
+    download_base: &str,
 ) -> Result<String> {
-    let mut last_err: Option<anyhow::Error> = None;
-    for (i, base) in bases.iter().enumerate() {
-        match download_verified_from_base(target, update_config, base).await {
-            Ok(download) => {
-                return activate_verified_download(&download)
-                    .await
-                    .map(|()| download.version)
-                    .map_err(|e| InstallPhaseError::Activate(e).into());
-            }
-            Err(e) if e.is::<SmokeTestFailure>() => {
-                // Same published artifact on every base; retrying will not change a --version timeout or crash
-                // Left unwrapped so telemetry classification sees the typed failure
-                return Err(e);
-            }
-            Err(e) => {
-                let e = wrap_download_err(e);
-                if i + 1 < bases.len() {
-                    tracing::warn!(
-                        "install via {} failed ({:#}); trying next base URL",
-                        base,
-                        e
-                    );
-                }
-                last_err = Some(e);
-            }
-        }
-    }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no CLI base URLs to try")))
+    let download = download_verified_github(target, update_config, Some(download_base))
+        .await
+        .map_err(wrap_download_err)?;
+    activate_verified_download(&download)
+        .await
+        .map(|()| download.version)
+        .map_err(|e| InstallPhaseError::Activate(e).into())
 }
 
 /// First-launch of a freshly downloaded macOS binary can exceed 10s (Rosetta AOT and Gatekeeper on ~140MB).
@@ -1586,40 +1558,20 @@ async fn smoke_test_binary(binary_path: &std::path::Path) -> Result<(), SmokeTes
     Err(SmokeTestFailure::Spawn(last_spawn))
 }
 
-/// Test-only entry point: same as [`install_internal`] but reads from `gcs_base_url` instead of the hardcoded GCS bucket.
-/// Persists installer config and writes to `~/.grok/bin/`, so callers must isolate `GROK_HOME`.
-#[doc(hidden)]
-pub async fn install_internal_from_base(
-    target: Option<&str>,
-    update_config: &UpdateConfig,
-    gcs_base_url: &str,
-) -> Result<String> {
-    let download = download_verified_from_base(target, update_config, gcs_base_url)
-        .await
-        .map_err(wrap_download_err)?;
-    activate_verified_download(&download)
-        .await
-        .map(|()| download.version)
-        .map_err(|e| InstallPhaseError::Activate(e).into())
-}
-
-/// A downloaded and smoke-tested binary in `~/.grok/downloads/`, not yet
-/// activated as the managed `grok`/`agent`.
+/// A downloaded and smoke-tested binary in `downloads/`, not yet
+/// activated as the managed `bin/pig`.
 struct VerifiedDownload {
     version: String,
     binary_path: std::path::PathBuf,
-    /// Windows: the grove hook exes and MinGit archive fetched for this release (empty elsewhere).
-    #[cfg_attr(not(windows), allow(dead_code))]
-    payload: windows_payload::Payload,
 }
 
-/// Base-dependent install phase: resolve the version (per base when no target is pinned), download the binary, and smoke-test it.
-/// Network / fetch failures here are worth retrying against another base URL.
-/// [`SmokeTestFailure`] is not; see [`install_internal_from_bases`].
-async fn download_verified_from_base(
+/// Install phase: resolve the version (latest from GitHub Releases when no
+/// target is pinned), download the release tarball, unpack the `pig` binary,
+/// and smoke-test it.
+async fn download_verified_github(
     target: Option<&str>,
     update_config: &UpdateConfig,
-    gcs_base_url: &str,
+    download_base_override: Option<&str>,
 ) -> Result<VerifiedDownload> {
     let (os, arch) = detect_platform()?;
     let platform = format!("{}-{}", os, arch);
@@ -1631,25 +1583,36 @@ async fn download_verified_from_base(
             v.to_string()
         }
         None => {
-            crate::version::fetch_gcs_version_from_base(&update_config.channel, gcs_base_url)
-                .await?
+            crate::version::fetch_github_version(effective_channel(&update_config.channel)).await?
         }
     };
+
+    let asset = crate::version::asset_for_platform(os, arch)?;
+    let base = download_base_override
+        .map(|b| b.trim_end_matches('/').to_owned())
+        .unwrap_or_else(crate::version::github_download_base);
+    let url = format!(
+        "{}/{}/releases/download/v{}/{}",
+        base,
+        crate::version::PIG_GITHUB_REPO,
+        version,
+        asset
+    );
 
     let grok_home = grok_home();
     let download_dir = grok_home.join("downloads");
     tokio::fs::create_dir_all(&download_dir).await?;
 
-    let binary_name = format!("grok-{}-{}", version, platform);
+    let binary_name = format!("pig-{}-{}", version, platform);
     let binary_path = download_dir.join(&binary_name);
 
-    eprintln!("  Downloading grok v{} ({})...", version, platform);
+    eprintln!("  Downloading pig v{} ({})...", version, platform);
 
-    // The downloaded binary is already +x (see `publish_downloaded_artifact`)
-    download_cli_artifact_from_gcs(gcs_base_url, &binary_name, &binary_path, true).await?;
+    // The unpacked binary is already +x (see `publish_downloaded_artifact`)
+    download_tarball_and_unpack(&url, &binary_path, true).await?;
 
     // Smoke-test: run the binary before activating it
-    // A truncated or corrupt download is caught here and never becomes the active grok
+    // A truncated or corrupt download is caught here and never becomes the active pig
     let smoke_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
         "update.smoke_test",
         elapsed_ms = tracing::field::Empty,
@@ -1666,16 +1629,9 @@ async fn download_verified_from_base(
         return Err(fail.into());
     }
 
-    // Best-effort and base-dependent, so it belongs to this phase; a miss never fails the install.
-    #[cfg(windows)]
-    let payload = windows_payload::download(gcs_base_url, &version, &platform, &download_dir).await;
-    #[cfg(not(windows))]
-    let payload = windows_payload::Payload::default();
-
     Ok(VerifiedDownload {
         version,
         binary_path,
-        payload,
     })
 }
 
@@ -1692,24 +1648,50 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
     let bin_dir = grok_home.join("bin");
     tokio::fs::create_dir_all(&bin_dir).await?;
 
-    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
+    // Atomic swap of the managed `bin/pig` -> downloaded binary.
     let link_path = swap_managed_bin_links(&download.binary_path, &bin_dir).await?;
 
     remove_stale_pager(&bin_dir).await;
+    remove_legacy_grok_links(&bin_dir).await;
 
-    // Hook exes beside grok.exe and the bundled MinGit; grok is already live, so a failure here is only logged.
-    #[cfg(windows)]
-    windows_payload::activate(&download.payload, &bin_dir, &download.version).await;
+    // Keep a `pig-latest` alias so existing symlinks routing through it resolve
+    // to the newly installed version; drop the legacy `grok-latest`.
+    #[cfg(unix)]
+    {
+        let latest_path = download_dir.join("pig-latest");
+        let rel_target = relative_symlink_target(&download.binary_path, &latest_path);
+        if let Err(e) = atomic_symlink_swap(&rel_target, &latest_path).await {
+            tracing::warn!("Failed to update pig-latest symlink: {e}");
+        }
+        let _ = tokio::fs::remove_file(download_dir.join("grok-latest")).await;
+    }
+
+    // Also update /usr/local/bin/pig if it points directly into downloads/
+    // (legacy layout — skips the pig-latest indirection). Permission errors ignored.
+    #[cfg(unix)]
+    {
+        let system_link = std::path::PathBuf::from("/usr/local/bin/pig");
+        if let Ok(existing_target) = tokio::fs::read_link(&system_link).await {
+            let target_str = existing_target.to_string_lossy();
+            if (target_str.contains(".grok/downloads/")
+                || target_str.contains(".config/pig/downloads/"))
+                && !target_str.ends_with("pig-latest")
+            {
+                let _ = atomic_symlink_swap(&download.binary_path, &system_link).await;
+            }
+        }
+    }
 
     eprintln!();
 
     // Current, N-1, and any leftover a live process is still executing.
+    cleanup_old_downloads(&download_dir, "pig", &download.version).await;
+    // Best-effort migration: prune upstream leftovers from pre-rework installs.
     cleanup_old_downloads(&download_dir, "grok", &download.version).await;
-    cleanup_old_downloads(&download_dir, "grok-pager", &download.version).await;
 
-    // Persist installer to config.toml so future runs auto-detect internal.
+    // Persist installer to config.toml so future runs auto-detect the direct binary.
     let _ = config::update_config(|st| {
-        st.cli.installer = Some("internal".to_string());
+        st.cli.installer = Some(GITHUB.to_string());
     })
     .await;
 
@@ -1729,9 +1711,9 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
     let user_home = xai_dirs::home_dir().unwrap_or_default();
 
     let completions: &[(&str, std::path::PathBuf)] = &[
-        ("bash", grok_home.join("completions/bash/grok.bash")),
-        ("zsh", grok_home.join("completions/zsh/_grok")),
-        ("fish", user_home.join(".config/fish/completions/grok.fish")),
+        ("bash", grok_home.join("completions/bash/pig.bash")),
+        ("zsh", grok_home.join("completions/zsh/_pig")),
+        ("fish", user_home.join(".config/fish/completions/pig.fish")),
     ];
 
     for (shell, dest) in completions {
@@ -1753,21 +1735,21 @@ async fn regenerate_completions(binary: &std::path::Path, grok_home: &std::path:
     }
 }
 
-/// When both paths share a grandparent (e.g. `~/.grok/bin/grok` and `~/.grok/downloads/grok-0.1.203-linux-x86_64`),
-/// returns a relative path like `../downloads/grok-0.1.203-linux-x86_64`. Relative symlinks survive Docker bind-mounts
-/// where `~/.grok/` is mapped into a container with a different `$HOME` (and thus a different absolute prefix).
+/// When both paths share a grandparent (e.g. `bin/pig` and `downloads/pig-1.0.1-linux-x86_64`),
+/// returns a relative path like `../downloads/pig-1.0.1-linux-x86_64`. Relative symlinks survive Docker bind-mounts
+/// where the home is mapped into a container with a different `$HOME` (and thus a different absolute prefix).
 #[cfg(unix)]
 fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) -> std::path::PathBuf {
     let (Some(target_parent), Some(link_parent)) = (target.parent(), link.parent()) else {
         return target.to_path_buf();
     };
-    // Same directory: just the filename (e.g. grok-latest -> grok-0.1.203-…)
+    // Same directory: just the filename (e.g. pig-latest -> pig-1.0.1-…)
     if target_parent == link_parent
         && let Some(name) = target.file_name()
     {
         return std::path::PathBuf::from(name);
     }
-    // Sibling directories: ../target_dir/filename (e.g. bin/grok -> ../downloads/grok-…)
+    // Sibling directories: ../target_dir/filename (e.g. bin/pig -> ../downloads/pig-…)
     if let (Some(tp), Some(lp)) = (target_parent.parent(), link_parent.parent())
         && tp == lp
         && let (Some(dir_name), Some(file_name)) = (target_parent.file_name(), target.file_name())
@@ -1777,22 +1759,16 @@ fn relative_symlink_target(target: &std::path::Path, link: &std::path::Path) -> 
     target.to_path_buf()
 }
 
-/// The bootstrap installers (`install.sh`, `install.ps1`, `install-enterprise.sh`) maintain `grok` and `agent` in
-/// lockstep, and so must the updater. Otherwise `grok update` leaves `agent` pinned at the previous version. Any earlier
-/// successful swaps are rolled back if a later one fails, including *removing* a link that didn't exist before.
+/// The managed layout owns a single `bin/pig` entry point. Any earlier
+/// successful swap is rolled back if it fails, including *removing* a link that didn't exist before.
 async fn swap_managed_bin_links(
     binary_path: &std::path::Path,
     bin_dir: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
-    let grok_name = if cfg!(windows) { "grok.exe" } else { "grok" };
-    let agent_name = if cfg!(windows) { "agent.exe" } else { "agent" };
-    let grok_link = bin_dir.join(grok_name);
-    let pairs = [
-        (binary_path.to_path_buf(), grok_link.clone()),
-        (binary_path.to_path_buf(), bin_dir.join(agent_name)),
-    ];
+    let pig_link = bin_dir.join(managed_bin_name());
+    let pairs = [(binary_path.to_path_buf(), pig_link.clone())];
     replace_managed_bins(&pairs).await?;
-    Ok(grok_link)
+    Ok(pig_link)
 }
 
 /// Point every `dest` in `pairs` at its `src` (a symlink on Unix, a copy through
@@ -2108,7 +2084,7 @@ async fn windows_replace_exe(src: &std::path::Path, dest: &std::path::Path) -> R
     rename_result.map_err(|e| {
         anyhow::anyhow!(
             "cannot rename locked executable {}: {e}\n\
-             Close all running grok sessions and retry.",
+             Close all running pig sessions and retry.",
             dest.display(),
         )
     })?;
@@ -2148,7 +2124,7 @@ async fn sweep_old_exe_backups(old: &std::path::Path) {
 }
 
 fn installer_manages_bin_entrypoints(installer: &str) -> bool {
-    matches!(installer, "internal" | "gh-release")
+    matches!(installer, GITHUB)
 }
 
 #[cfg_attr(not(any(unix, windows)), allow(clippy::unused_async))]
@@ -2157,222 +2133,42 @@ async fn heal_managed_install(installer: &str) {
         return;
     }
 
-    #[cfg(any(unix, windows))]
-    {
-        let bin_dir = grok_home().join("bin");
-
-        #[cfg(unix)]
-        reconcile_agent_to_grok(&bin_dir).await;
-
-        #[cfg(windows)]
-        reconcile_agent_exe_to_grok(&bin_dir).await;
-    }
-}
-
-#[cfg(unix)]
-async fn reconcile_agent_to_grok(bin_dir: &std::path::Path) {
-    let grok_link = bin_dir.join("grok");
-    let agent_link = bin_dir.join("agent");
-
-    let Ok(grok_target) = tokio::fs::read_link(&grok_link).await else {
-        return;
-    };
-    if tokio::fs::metadata(&grok_link).await.is_err() {
-        return;
-    }
-    if let Ok(agent_target) = tokio::fs::read_link(&agent_link).await
-        && agent_target == grok_target
-    {
-        return;
-    }
-    match atomic_symlink_swap(&grok_target, &agent_link).await {
-        Ok(()) => tracing::info!(
-            grok_target = %grok_target.display(),
-            "reconciled agent bin symlink to grok target"
-        ),
-        Err(e) => tracing::warn!("failed to reconcile agent bin symlink: {e:#}"),
-    }
-}
-
-#[cfg(windows)]
-async fn reconcile_agent_exe_to_grok(bin_dir: &std::path::Path) {
-    let grok_exe = bin_dir.join("grok.exe");
-    let agent_exe = bin_dir.join("agent.exe");
-
-    if tokio::fs::metadata(&grok_exe).await.is_err() {
-        return;
-    }
-    match agent_exe_differs(&grok_exe, &agent_exe).await {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(e) => {
-            tracing::debug!("agent.exe reconcile: compare failed: {e:#}");
-            return;
-        }
-    }
-    match windows_replace_exe(&grok_exe, &agent_exe).await {
-        Ok(()) => tracing::info!("reconciled agent.exe to grok.exe"),
-        Err(e) => tracing::warn!("failed to reconcile agent.exe to grok.exe: {e:#}"),
-    }
-}
-
-#[cfg(windows)]
-async fn agent_exe_differs(
-    grok: &std::path::Path,
-    agent: &std::path::Path,
-) -> std::io::Result<bool> {
-    use tokio::io::{AsyncReadExt, BufReader};
-    let grok_len = tokio::fs::metadata(grok).await?.len();
-    match tokio::fs::metadata(agent).await {
-        Ok(m) if m.len() != grok_len => return Ok(true),
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
-        Err(e) => return Err(e),
-    }
-    let mut rg = BufReader::new(tokio::fs::File::open(grok).await?);
-    let mut ra = BufReader::new(tokio::fs::File::open(agent).await?);
-    let mut bg = [0u8; 64 * 1024];
-    let mut ba = [0u8; 64 * 1024];
-    loop {
-        let n = rg.read(&mut bg).await?;
-        if n == 0 {
-            return Ok(false);
-        }
-        let Some(dst) = ba.get_mut(..n) else {
-            return Ok(true);
-        };
-        ra.read_exact(dst).await?;
-        if bg.get(..n) != ba.get(..n) {
-            return Ok(true);
-        }
-    }
-}
-
-/// Download a single asset from a GitHub release via `gh release download`.
-async fn gh_release_download(tag: &str, pattern: &str, dest: &std::path::Path) -> Result<()> {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("  {spinner:.cyan} Downloading from GitHub Releases...")
-            .unwrap(),
-    );
-    pb.enable_steady_tick(Duration::from_millis(100));
-
-    let mut cmd = tokio::process::Command::new("gh");
-    cmd.args([
-        "release",
-        "download",
-        tag,
-        "--repo",
-        crate::version::GH_RELEASE_REPO,
-        "--pattern",
-        pattern,
-        "--output",
-        &dest.to_string_lossy(),
-        "--clobber",
-    ])
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::piped());
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
-    let output = cmd.output().await?;
-
-    pb.finish_and_clear();
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!(
-            "gh release download failed for {} tag {} from {}: {}",
-            pattern,
-            tag,
-            crate::version::GH_RELEASE_REPO,
-            stderr.trim()
-        );
-    }
-    Ok(())
-}
-
-/// Download and install grok from GitHub Releases (xai-org-shared/grok-build). Uses `gh release download` to fetch the
-/// binary matching the current platform. This works anywhere the `gh` CLI is authenticated, without needing npm or
-/// internal network access.
-async fn install_gh_release(target: Option<&str>) -> Result<()> {
-    let (os, arch) = detect_platform()?;
-    let platform = format!("{}-{}", os, arch);
-
-    let version = match target {
-        Some(v) => v.to_string(),
-        None => crate::version::fetch_gh_release_version("stable").await?,
-    };
-
-    let grok_home = grok_home();
-    let download_dir = grok_home.join("downloads");
-    let bin_dir = grok_home.join("bin");
-    tokio::fs::create_dir_all(&download_dir).await?;
-    tokio::fs::create_dir_all(&bin_dir).await?;
-
-    let binary_name = format!("grok-{}-{}", version, platform);
-    let binary_path = download_dir.join(&binary_name);
-    let tag = format!("v{}", version);
-
-    eprintln!(
-        "  Downloading grok v{} ({}) from GitHub Releases...",
-        version, platform
-    );
-
-    gh_release_download(&tag, &binary_name, &binary_path).await?;
-
-    // chmod +x
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&binary_path, std::fs::Permissions::from_mode(0o755)).await?;
-    }
-
-    // Atomic swap of ~/.grok/bin/{grok,agent} -> downloaded binary.
-    swap_managed_bin_links(&binary_path, &bin_dir).await?;
-
-    // Update grok-latest -> versioned binary so any existing symlinks that route
-    // through it (e.g. /usr/local/bin/grok -> ~/.grok/downloads/grok-latest)
-    // resolve to the newly installed version.
-    #[cfg(unix)]
-    {
-        let latest_path = download_dir.join("grok-latest");
-        let rel_target = relative_symlink_target(&binary_path, &latest_path);
-        if let Err(e) = atomic_symlink_swap(&rel_target, &latest_path).await {
-            tracing::warn!("Failed to update grok-latest symlink: {e}");
+        // Drop a dangling `bin/pig` link (target deleted by manual downloads
+        // cleanup) so the disk probe reports None and the updater reinstalls
+        // instead of claiming "already up to date" forever.
+        let link = grok_home().join("bin").join(managed_bin_name());
+        if let Ok(target) = std::fs::read_link(&link)
+            && std::fs::metadata(&link).is_err()
+        {
+            tracing::warn!(
+                link = %link.display(),
+                target = %target.display(),
+                "removing dangling managed pig link"
+            );
+            let _ = tokio::fs::remove_file(&link).await;
         }
     }
+}
 
-    // Also update /usr/local/bin/{grok,agent} if either points directly into
-    // ~/.grok/downloads/ (legacy layout — skips the grok-latest indirection).
-    // Permission errors are ignored
-    #[cfg(unix)]
-    for name in ["grok", "agent"] {
-        let system_link = std::path::PathBuf::from(format!("/usr/local/bin/{name}"));
-        if let Ok(existing_target) = tokio::fs::read_link(&system_link).await {
-            let target_str = existing_target.to_string_lossy();
-            if target_str.contains(".grok/downloads/") && !target_str.ends_with("grok-latest") {
-                let _ = atomic_symlink_swap(&binary_path, &system_link).await;
-            }
+/// Best-effort removal of legacy upstream entry points (`bin/grok`,
+/// `bin/agent`, `bin/grok-pager`) after a pig install, so `pig` is the only
+/// managed binary left. Failures are ignored.
+async fn remove_legacy_grok_links(bin_dir: &std::path::Path) {
+    for name in ["grok", "agent", "grok-pager"] {
+        let link = bin_dir.join(name);
+        if link.exists() || link.is_symlink() {
+            let _ = tokio::fs::remove_file(&link).await;
         }
     }
-
-    remove_stale_pager(&bin_dir).await;
-
-    eprintln!();
-
-    // Current, N-1, and any leftover a live process is still executing.
-    cleanup_old_downloads(&download_dir, "grok", &version).await;
-    cleanup_old_downloads(&download_dir, "grok-pager", &version).await;
-
-    // Persist installer to config.toml so future runs auto-detect gh-release.
-    let _ = config::update_config(|st| {
-        st.cli.installer = Some("gh-release".to_string());
-    })
-    .await;
-
-    Ok(())
+    #[cfg(windows)]
+    for name in ["grok.exe", "agent.exe", "grok-pager.exe"] {
+        let link = bin_dir.join(name);
+        if link.exists() || link.is_symlink() {
+            let _ = tokio::fs::remove_file(&link).await;
+        }
+    }
 }
 
 /// Creates a temporary .npmrc file with the NPM token if present.
@@ -2404,14 +2200,14 @@ fn create_temp_npmrc(npm_registry: Option<&str>) -> Result<Option<std::path::Pat
     Ok(None)
 }
 
-/// Check if other grok processes are running (macOS only). Any grok process running from that vendored path will be
+/// Check if other pig processes are running (macOS only). Any pig process running from that vendored path will be
 /// SIGKILL'd by the kernel. macOS (Apple Silicon in particular) can no longer verify the code signature of the mmap'd
 /// executable pages once the backing inode is unlinked.
 #[cfg(target_os = "macos")]
 fn warn_if_other_grok_processes_running() {
     let my_pid = std::process::id().to_string();
     let mut cmd = Command::new("pgrep");
-    cmd.args(["-f", "grok"])
+    cmd.args(["-f", "pig"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -2425,12 +2221,12 @@ fn warn_if_other_grok_processes_running() {
             .collect();
         if !other_pids.is_empty() {
             eprintln!(
-                "  ⚠ Warning: {} other grok process(es) detected.",
+                "  ⚠ Warning: {} other pig process(es) detected.",
                 other_pids.len()
             );
             eprintln!("    Processes running from the npm vendored binary path may be");
             eprintln!("    killed by macOS when npm replaces the package files.");
-            eprintln!("    Consider closing other grok sessions before updating.");
+            eprintln!("    Consider closing other pig sessions before updating.");
             eprintln!();
         }
     }
@@ -2513,6 +2309,11 @@ fn install_npm(target: Option<&str>, channel: &str, npm_registry: Option<&str>) 
 }
 
 pub async fn apply_channel_switch(channel_switch: Option<&str>, update_config: &mut UpdateConfig) {
+    let mut channel_switch = channel_switch;
+    if channel_switch == Some("enterprise") {
+        eprintln!("enterprise channel has no pig equivalent; falling back to stable.");
+        channel_switch = Some("stable");
+    }
     if let Some(ch) = channel_switch
         && update_config.channel != ch
     {
@@ -2591,7 +2392,14 @@ pub async fn run_update(
     let installer = match installer {
         Some(i) => i,
         None => {
-            eprintln!("Auto-update is not available for manual installations.");
+            eprintln!(
+                "Auto-update is not available for manual installations. Current version: {}.",
+                get_installed_grok_version()
+            );
+            eprintln!(
+                "Download a new release from {} to update.",
+                crate::version::PIG_RELEASES_URL
+            );
             return Ok(None);
         }
     };
@@ -2611,7 +2419,7 @@ pub async fn run_update(
     // When --version is given, skip the latest-version check and install directly
     if let Some(version) = pinned_version {
         eprintln!(
-            "Installing Grok {} (current: {})...",
+            "Installing Pig Agent {} (current: {})...",
             version, current_version
         );
         eprintln!();
@@ -2624,7 +2432,7 @@ pub async fn run_update(
         {
             tracing::warn!("Failed to persist auto_update=false for pinned install: {e}");
         }
-        eprintln!("  ✓ grok v{} installed successfully!", version);
+        eprintln!("  ✓ pig v{} installed successfully!", version);
         eprintln!("  Please restart Pig Agent.");
         return Ok(Some(version.to_string()));
     }
@@ -2641,7 +2449,7 @@ pub async fn run_update(
 
     let (latest_version, install_target) = match plan {
         UpdatePlan::Skip { latest } => {
-            // Cache so an explicit `grok update` doesn't re-prompt every run.
+            // Cache so an explicit `pig update` doesn't re-prompt every run.
             let stable_ptr = try_fetch_stable_pointer().await;
             write_version_cache(&latest, stable_ptr.as_deref()).await;
             eprintln!("{}", skipped_update_notice(&latest, &current_version));
@@ -2699,7 +2507,7 @@ pub async fn run_update(
                 if parse_ok {
                     anyhow::bail!(
                         "Unsupported release channel '{}' (current={}, target={}). \
-                         Supported channels: stable, alpha, enterprise. \
+                         Supported channels: stable, alpha. \
                          Use --stable or --alpha to override, or set [cli] channel in config.toml.",
                         update_config.channel,
                         effective_current,
@@ -2726,7 +2534,7 @@ pub async fn run_update(
         .unwrap_or(true)
     {
         eprintln!(
-            "Forcing reinstall of Grok {} (already up to date)",
+            "Forcing reinstall of Pig Agent {} (already up to date)",
             effective_current
         );
         &effective_current
@@ -2745,7 +2553,7 @@ pub async fn run_update(
     let stable_ptr = try_fetch_stable_pointer().await;
     write_version_cache(target_version, stable_ptr.as_deref()).await;
     refresh_deployment_config().await;
-    eprintln!("  ✓ grok v{} installed successfully!", target_version);
+    eprintln!("  ✓ pig v{} installed successfully!", target_version);
 
     if !force && std::env::var_os("GROK_AUTO_UPDATE").is_none() {
         eprintln!("  Please restart Pig Agent.");
@@ -2771,18 +2579,15 @@ async fn refresh_deployment_config() {
     match xai_grok_shell::managed_config::sync().await {
         Ok(true) => eprintln!("  Applied managed configuration."),
         Ok(false) => tracing::debug!("no managed configuration to apply"),
-        // Auth issues aren't actionable mid-update: quiet here, loud on `grok setup`.
+        // Auth issues aren't actionable mid-update: quiet here, loud on `pig setup`.
         Err(e) if e.is_auth_rejection() => tracing::debug!("managed config not applied: {e}"),
         Err(e) if e.is_retryable() => {
             tracing::debug!("managed config refresh failed: {e}");
-            eprintln!("  Couldn't apply managed configuration. Run `grok setup` to retry.");
+            eprintln!("  Couldn't apply managed configuration. Run `pig setup` to retry.");
         }
         Err(e) => eprintln!("  Couldn't apply managed configuration. {e}"),
     }
 }
-
-#[path = "windows_payload.rs"]
-mod windows_payload;
 
 #[cfg(test)]
 #[path = "auto_update_tests.rs"]

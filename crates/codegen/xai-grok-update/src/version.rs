@@ -11,38 +11,48 @@ use xai_grok_shell::util::grok_home::grok_home;
 
 const TTL_SECONDS_BEFORE_AUTO_UPDATE: Duration = Duration::from_secs(60 * 30);
 const NPM_PACKAGE: &str = "@xai-official/grok";
-pub const GH_RELEASE_REPO: &str = "xai-org-shared/grok-build";
+/// Pig releases live here; tags are `v<version>` (`-` suffix means prerelease).
+pub const PIG_GITHUB_REPO: &str = "xcrong/pig";
+const GITHUB_API_DEFAULT: &str = "https://api.github.com";
+const GITHUB_DOWNLOAD_DEFAULT: &str = "https://github.com";
+/// Pig release page (user-visible reinstall hint target).
+pub const PIG_RELEASES_URL: &str = "https://github.com/xcrong/pig/releases";
 
-/// Primary CLI base URL: Cloudflare-fronted x.ai endpoint with edge caching for binaries and origin-respecting no-cache for channel pointers.
-pub(crate) const CLI_BASE_URL_PRIMARY: &str = "https://x.ai/cli";
-
-/// Fallback CLI base URL: direct GCS, used when the primary is unreachable (Cloudflare outage, regional CF egress issue, DNS hijack, etc.).
-pub(crate) const CLI_BASE_URL_FALLBACK: &str =
-    "https://storage.googleapis.com/grok-build-public-artifacts/cli";
-
-/// CLI base URLs in preference order.
-/// Callers (channel-pointer fetch, binary download, in-app updater) try each in turn and stop at the first success.
-pub(crate) const CLI_BASE_URLS: &[&str] = &[CLI_BASE_URL_PRIMARY, CLI_BASE_URL_FALLBACK];
-
-/// [`CLI_BASE_URLS`], unless tests set `GROK_CLI_BASE_URL` to point fetches and downloads at one base (as they set `GROK_INSTALLER`).
-/// Loopback-only: downloads are verified by a smoke test, not a checksum, so redirecting to an arbitrary base could serve a hijacked install.
-pub(crate) fn cli_base_urls() -> Vec<String> {
-    if let Ok(base) = std::env::var("GROK_CLI_BASE_URL") {
+/// API base for GitHub Releases version discovery, unless tests set
+/// `PIG_GITHUB_API_BASE` to point at a loopback mock (as they set `GROK_INSTALLER`).
+/// Loopback-only: tarball downloads are verified by a smoke test, not a
+/// checksum, so redirecting discovery at an arbitrary base could serve a
+/// hijacked install.
+pub(crate) fn github_api_base() -> String {
+    if let Ok(base) = std::env::var("PIG_GITHUB_API_BASE") {
         let base = base.trim();
         if is_loopback_base(base) {
-            return vec![base.to_owned()];
+            return base.to_owned();
         }
         if !base.is_empty() {
-            tracing::warn!("GROK_CLI_BASE_URL ignored: only loopback bases are honored");
+            tracing::warn!("PIG_GITHUB_API_BASE ignored: only loopback bases are honored");
         }
     }
-    CLI_BASE_URLS.iter().map(|s| (*s).to_owned()).collect()
+    GITHUB_API_DEFAULT.to_owned()
+}
+
+/// Download base for release tarballs, unless tests set
+/// `PIG_GITHUB_DOWNLOAD_BASE` to a loopback mock. Same loopback-only rule.
+pub(crate) fn github_download_base() -> String {
+    if let Ok(base) = std::env::var("PIG_GITHUB_DOWNLOAD_BASE") {
+        let base = base.trim();
+        if is_loopback_base(base) {
+            return base.trim_end_matches('/').to_owned();
+        }
+        if !base.is_empty() {
+            tracing::warn!("PIG_GITHUB_DOWNLOAD_BASE ignored: only loopback bases are honored");
+        }
+    }
+    GITHUB_DOWNLOAD_DEFAULT.to_owned()
 }
 
 /// Parsed, not prefix-matched: `http://127.0.0.1:9@evil.com` starts with a
 /// loopback prefix but its host is `evil.com` (userinfo trick).
-/// `https` loopback is allowed so merge CI can smoke rustls/aws-lc against a
-/// local SHA-512 server (GB-6134); non-loopback https is still rejected.
 fn is_loopback_base(base: &str) -> bool {
     let Ok(u) = url::Url::parse(base) else {
         return false;
@@ -73,6 +83,7 @@ pub struct UpdateConfig {
     /// Optional extra auth material forwarded with requests when present.
     pub alpha_test_key: Option<String>,
     /// Release channel: "stable" or "alpha". Loaded from config.
+    /// A stale "enterprise" value falls back to stable (no pig equivalent).
     pub channel: String,
     /// Custom npm registry URL. When set, passed as `--registry=` to npm CLI.
     pub npm_registry: Option<String>,
@@ -88,6 +99,17 @@ impl UpdateConfig {
             channel: "stable".to_string(),
             npm_registry: None,
         }
+    }
+}
+
+/// Treat a stale "enterprise" channel as stable: pig has no enterprise
+/// releases. Callers log the fallback where user-visible.
+pub(crate) fn effective_channel(channel: &str) -> &str {
+    if channel == "enterprise" {
+        tracing::warn!("enterprise channel has no pig equivalent; falling back to stable");
+        "stable"
+    } else {
+        channel
     }
 }
 
@@ -137,6 +159,7 @@ fn semver_max(a: &str, b: &str) -> Result<String> {
 /// For alpha channel, fetches both `@alpha` and `@latest` dist-tags and returns the semver-greater.
 /// This keeps alpha users from getting stuck when a newer stable ships without updating the alpha dist-tag.
 async fn fetch_npm_version(channel: &str, npm_registry: Option<&str>) -> Result<String> {
+    let channel = effective_channel(channel);
     if channel == "alpha" {
         let (alpha_v, stable_v) = tokio::try_join!(
             fetch_npm_tag("alpha", npm_registry),
@@ -198,160 +221,115 @@ async fn fetch_npm_tag(tag: &str, npm_registry: Option<&str>) -> Result<String> 
     }
 }
 
-/// Fetch the latest version from GitHub Releases using `gh release list`.
-/// For alpha channel, fetches both pre-release and stable-only, returns the semver-greater.
-/// `gh release list --limit 1` orders by publication date, not semver, so we need both.
-#[doc(hidden)]
-pub async fn fetch_gh_release_version(channel: &str) -> Result<String> {
-    if channel == "alpha" {
-        let (with_pre, stable_only) = tokio::try_join!(
-            fetch_gh_release_latest(false),
-            fetch_gh_release_latest(true),
-        )?;
-        return semver_max(&with_pre, &stable_only);
-    }
-    fetch_gh_release_latest(true).await
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    #[serde(default)]
+    tag_name: String,
+    #[serde(default)]
+    prerelease: bool,
+    #[serde(default)]
+    draft: bool,
 }
 
-async fn fetch_gh_release_latest(exclude_pre: bool) -> Result<String> {
-    let mut args = vec![
-        "release",
-        "list",
-        "--repo",
-        GH_RELEASE_REPO,
-        "--limit",
-        "1",
-        "--exclude-drafts",
-        "--json",
-        "tagName",
-        "--jq",
-        ".[0].tagName",
-    ];
-    if exclude_pre {
-        args.push("--exclude-pre-releases");
-    }
-    let mut cmd = Command::new("gh");
-    cmd.args(&args).stdin(std::process::Stdio::null());
-    xai_grok_tools::util::detach_command(&mut cmd);
-    cmd.envs(xai_grok_tools::util::pager_env());
-    let output = cmd.output().await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("gh release list failed: {}", stderr.trim());
-    }
-
-    let tag = String::from_utf8(output.stdout)?.trim().to_string();
-    // Tags are formatted as "v0.1.141", strip the leading "v"
-    let version = tag.strip_prefix('v').unwrap_or(&tag).to_string();
-    if version.is_empty() {
-        anyhow::bail!("No releases found in {}", GH_RELEASE_REPO);
-    }
-    Ok(version)
-}
-
-/// No auth required; the upstream bucket is public. For the alpha channel, fetches both `alpha` and `stable` pointers and
-/// returns the semver-greater, matching the npm and gh-release paths. Each base also retries up to 3 times with
-/// exponential backoff (1s, 2s, 4s) on transient failures before falling through to the next base.
-pub(crate) async fn fetch_gcs_version(channel: &str) -> Result<String> {
-    let mut last_err: Option<anyhow::Error> = None;
-    let bases = cli_base_urls();
-    for (i, base) in bases.iter().enumerate() {
-        match fetch_gcs_version_from_base(channel, base).await {
-            Ok(v) => return Ok(v),
-            Err(e) => {
-                if i + 1 < bases.len() {
-                    tracing::warn!(
-                        "channel pointer fetch from {} failed ({:#}); trying next base URL",
-                        base,
-                        e
-                    );
-                }
-                last_err = Some(e);
+fn github_token() -> Option<String> {
+    for key in ["GITHUB_TOKEN", "GH_TOKEN"] {
+        if let Ok(v) = std::env::var(key) {
+            let v = v.trim().to_owned();
+            if !v.is_empty() {
+                return Some(v);
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no CLI base URLs configured")))
+    None
 }
 
-/// Test-only entry point: same as [`fetch_gcs_version`] but reads from `base_url` instead of the hardcoded GCS bucket.
+/// Fetch the latest pig version from GitHub Releases over plain HTTPS
+/// (no `gh` CLI). `stable` is the newest non-prerelease; `alpha` is the
+/// newest release including prereleases. Drafts are ignored. Releases are
+/// ordered newest-first by the API, so "latest" is positional, not semver-max.
+pub async fn fetch_github_version(channel: &str) -> Result<String> {
+    let base = github_api_base();
+    fetch_github_version_from_api(channel, &base).await
+}
+
+/// Test-only entry point: same as [`fetch_github_version`] but against an
+/// explicit API base (wiremock in tests).
 #[doc(hidden)]
-pub async fn fetch_gcs_version_from_base(channel: &str, base_url: &str) -> Result<String> {
-    if channel == "alpha" {
-        let (alpha_v, stable_v) = tokio::try_join!(
-            fetch_gcs_channel_pointer("alpha", base_url),
-            fetch_gcs_channel_pointer("stable", base_url),
-        )?;
-        return semver_max(&alpha_v, &stable_v);
+pub async fn fetch_github_version_from_api(channel: &str, api_base: &str) -> Result<String> {
+    let channel = effective_channel(channel);
+    let url = format!(
+        "{}/repos/{}/releases?per_page=100",
+        api_base.trim_end_matches('/'),
+        PIG_GITHUB_REPO
+    );
+    let client = xai_grok_extra_ca::build_reqwest_client(|b| b.timeout(Duration::from_secs(15)))?;
+    let mut req = client
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "pig-agent");
+    if let Some(token) = github_token() {
+        req = req.bearer_auth(token);
     }
-    fetch_gcs_channel_pointer(channel, base_url).await
-}
-
-async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<String> {
-    let url = format!("{}/{}", base_url, channel);
-    let client = xai_grok_extra_ca::build_reqwest_client(|builder| {
-        builder.timeout(Duration::from_secs(15))
-    })?;
-
-    let max_retries: u32 = 3;
-    let mut last_err = None;
-    for attempt in 0..=max_retries {
-        if attempt > 0 {
-            tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
-        }
-        let resp = match client.get(&url).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                last_err = Some(anyhow::anyhow!(
-                    "GCS channel pointer fetch failed for {}: {:#}",
-                    url,
-                    e
-                ));
-                continue;
-            }
-        };
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            last_err = Some(anyhow::anyhow!(
-                "GCS channel pointer fetch failed: HTTP {} for {}: {}",
-                status,
-                url,
-                body.chars().take(200).collect::<String>().trim()
-            ));
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("GitHub releases fetch failed for {url}: {:#}", e))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "GitHub releases fetch failed: HTTP {} for {}: {}",
+            status,
+            url,
+            body.chars().take(200).collect::<String>().trim()
+        );
+    }
+    let releases: Vec<GithubRelease> = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("GitHub releases response parse failed: {:#}", e))?;
+    let mut latest: Option<String> = None;
+    let mut latest_stable: Option<String> = None;
+    for rel in releases.iter().filter(|r| !r.draft) {
+        let version = rel.tag_name.strip_prefix('v').unwrap_or(&rel.tag_name);
+        if version.is_empty() || semver::Version::parse(version).is_err() {
             continue;
         }
-        match resp.text().await {
-            Ok(body) => {
-                let version = body.trim().to_string();
-                if version.is_empty() {
-                    last_err = Some(anyhow::anyhow!(
-                        "empty {} channel pointer at {}",
-                        channel,
-                        url
-                    ));
-                    continue;
-                }
-                if semver::Version::parse(&version).is_err() {
-                    anyhow::bail!(
-                        "invalid semver in {} channel pointer: '{}'",
-                        channel,
-                        version
-                    );
-                }
-                return Ok(version);
-            }
-            Err(e) => {
-                last_err = Some(anyhow::anyhow!(
-                    "GCS channel pointer body read failed for {}: {:#}",
-                    url,
-                    e
-                ));
-                continue;
-            }
+        if latest.is_none() {
+            latest = Some(version.to_string());
+        }
+        if !rel.prerelease && latest_stable.is_none() {
+            latest_stable = Some(version.to_string());
+        }
+        if latest.is_some() && latest_stable.is_some() {
+            break;
         }
     }
-    Err(last_err.unwrap())
+    match channel {
+        "alpha" => {
+            latest.ok_or_else(|| anyhow::anyhow!("No releases found in {}", PIG_GITHUB_REPO))
+        }
+        _ => latest_stable
+            .ok_or_else(|| anyhow::anyhow!("No stable releases found in {}", PIG_GITHUB_REPO)),
+    }
+}
+
+/// Release tarball name for the current build's platform.
+///
+/// Updater platform naming uses `aarch64` while pig assets use `arm64`
+/// (`pig-macos-arm64.tar.gz`); `x86_64` matches on both sides.
+pub(crate) fn asset_for_platform(os: &str, arch: &str) -> Result<String> {
+    let asset_arch = match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "x86_64",
+        _ => anyhow::bail!("no pig release asset for {os}-{arch}"),
+    };
+    match (os, asset_arch) {
+        ("linux", "x86_64") => Ok("pig-linux-x86_64.tar.gz".to_string()),
+        ("macos", "arm64") => Ok("pig-macos-arm64.tar.gz".to_string()),
+        _ => anyhow::bail!("no pig release asset for {os}-{arch}"),
+    }
 }
 
 /// Fetch the latest version for the given installer type without writing the version cache.
@@ -360,10 +338,10 @@ async fn fetch_gcs_channel_pointer(channel: &str, base_url: &str) -> Result<Stri
 pub async fn fetch_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
     match installer {
         "npm" => fetch_npm_version(&config.channel, config.npm_registry.as_deref()).await,
-        "gh-release" => fetch_gh_release_version(&config.channel).await,
         // The WinGet package ships only stable releases, whatever channel is configured.
-        crate::winget::WINGET => fetch_gcs_version("stable").await,
-        _ => fetch_gcs_version(&config.channel).await,
+        crate::winget::WINGET => fetch_github_version("stable").await,
+        "github" => fetch_github_version(&config.channel).await,
+        _ => anyhow::bail!("unknown installer '{installer}': no version source"),
     }
 }
 
@@ -402,8 +380,8 @@ pub async fn write_version_cache(version: &str, stable_version: Option<&str>) {
 }
 
 /// Fetch the latest version for the given installer type and cache it. Each installer is fully independent: there is no
-/// cross-installer fallback. `"npm"`: uses `npm view` against the public registry; `"internal"`: reads the channel
-/// pointer from the public GCS bucket; `"gh-release"`: uses `gh release list` against GitHub Releases.
+/// cross-installer fallback. `"npm"`: uses `npm view` against the public registry; `"github"`: uses the GitHub
+/// Releases API for `xcrong/pig`.
 pub async fn get_latest_version(installer: &str, config: &UpdateConfig) -> Result<String> {
     let version = fetch_latest_version(installer, config).await?;
     let stable_ptr = try_fetch_stable_pointer().await;
@@ -427,16 +405,32 @@ pub async fn is_version_cache_fresh() -> bool {
 pub use xai_grok_version::installed as get_installed_grok_version;
 
 /// Returns `None` when there is no parseable managed symlink (Windows copy-based installs, dev builds) or when the
-/// symlink is DANGLING — a link whose target binary was deleted (e.g. manual `~/.grok/downloads` cleanup) must not report
-/// an installed version, or every updater would claim "already up to date" forever while no runnable binary exists.
+/// symlink is DANGLING — a link whose target binary was deleted (e.g. manual `~/.config/pig/downloads` cleanup) must
+/// not report an installed version, or every updater would claim "already up to date" forever while no runnable binary
+/// exists.
+///
+/// Prefers the pig layout (`bin/pig -> ../downloads/pig-<version>-<platform>`)
+/// and falls back to the legacy upstream layout (`bin/grok`) for migration.
 pub fn installed_on_disk_version() -> Option<String> {
     #[cfg(unix)]
     {
-        let app = xai_grok_shell::util::grok_home::grok_application();
-        let target = std::fs::read_link(&app).ok()?;
-        // metadata() follows the symlink: Err means the target is gone (dangling link) and the version it names is not actually on disk
-        std::fs::metadata(&app).ok()?;
-        version_from_versioned_binary_name(target.file_name()?.to_str()?, "grok")
+        let home = grok_home();
+        for (name, prefix) in [("pig", "pig"), ("grok", "grok")] {
+            let link = home.join("bin").join(name);
+            let Ok(target) = std::fs::read_link(&link) else {
+                continue;
+            };
+            // metadata() follows the symlink: Err means the target is gone (dangling link).
+            if std::fs::metadata(&link).is_err() {
+                continue;
+            }
+            if let Some(v) =
+                version_from_versioned_binary_name(target.file_name()?.to_str()?, prefix)
+            {
+                return Some(v);
+            }
+        }
+        None
     }
     #[cfg(not(unix))]
     {
@@ -444,9 +438,9 @@ pub fn installed_on_disk_version() -> Option<String> {
     }
 }
 
-/// Handles the internal layout (`grok-0.1.150-macos-aarch64`) and the npm layout without a platform suffix
-/// (`grok-0.1.150`). Pre-releases parse whole: `grok-0.1.150-alpha.1-linux-x86_64` gives `0.1.150-alpha.1`. Unknown
-/// layouts (`grok-latest`, `grok-pager-*` when `bin_prefix` is `grok`) return `None` instead of garbage.
+/// Handles the managed layout (`pig-1.0.1-macos-arm64`) and the npm layout without a platform suffix
+/// (`pig-1.0.1`). Pre-releases parse whole: `pig-1.0.1-alpha.1-linux-x86_64` gives `1.0.1-alpha.1`. Unknown
+/// layouts (`pig-latest`, `pig-pager-*` when `bin_prefix` is `pig`) return `None` instead of garbage.
 pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -> Option<String> {
     const PLATFORM_OS: &[&str] = &["macos", "linux", "darwin", "windows"];
     let suffix = name.strip_prefix(bin_prefix)?.strip_prefix('-')?;
@@ -461,22 +455,18 @@ pub(crate) fn version_from_versioned_binary_name(name: &str, bin_prefix: &str) -
 }
 
 /// Best-effort: returns `None` on any failure, and `channel_label()` returns `""` until the next successful fetch. The
-/// entire operation is capped at 500 ms to keep startup and post-install paths fast. The stable pointer is only used to
-/// derive the `[alpha]`/`[stable]` channel label; it is never required for correctness.
+/// entire operation is capped at 2s to keep startup and post-install paths fast (GitHub API is slower than the old
+/// channel pointer). The stable pointer is only used to derive the `[alpha]`/`[stable]` channel label; it is never
+/// required for correctness.
 pub(crate) async fn try_fetch_stable_pointer() -> Option<String> {
-    tokio::time::timeout(Duration::from_millis(500), async {
-        for base in cli_base_urls() {
-            if let Ok(v) = fetch_gcs_channel_pointer("stable", &base).await {
-                return Some(v);
-            }
-        }
-        None
+    tokio::time::timeout(Duration::from_millis(2000), async {
+        fetch_github_version("stable").await.ok()
     })
     .await
     .unwrap_or(None)
 }
 
-/// Read the cached stable version from `~/.grok/version.json` (sync, for display).
+/// Read the cached stable version from `version.json` (sync, for display).
 ///
 /// Returns `None` if the file doesn't exist, can't be parsed, or has no `stable_version` field (e.g. written by an older binary).
 pub fn cached_stable_version() -> Option<String> {
@@ -486,7 +476,7 @@ pub fn cached_stable_version() -> Option<String> {
     gv.stable_version
 }
 
-/// An empty or `"stable"` channel means stable, the installers' default (`CHANNEL="${GROK_CHANNEL:-stable}"` in install.sh).
+/// An empty or `"stable"` channel means stable, the installers' default.
 pub(crate) fn is_stable_channel(channel: &str) -> bool {
     channel.is_empty() || channel == "stable"
 }
@@ -514,7 +504,7 @@ pub fn channel_name() -> Option<&'static str> {
     })
 }
 
-/// Compares the compiled-in `VERSION` against the stable pointer stored in `~/.grok/version.json` (written by the
+/// Compares the compiled-in `VERSION` against the stable pointer stored in `version.json` (written by the
 /// auto-updater): `" [alpha]"` when the current version is ahead of stable,; `" [stable]"` when at or behind stable,;
 /// `""` when no cached pointer is available (first launch, old cache format).
 pub fn channel_label() -> &'static str {
@@ -546,9 +536,32 @@ mod tests {
         // Prefix-check bypass vectors.
         assert!(!is_loopback_base("http://127.0.0.1:9@evil.com"));
         assert!(!is_loopback_base("http://localhost.evil.com:80"));
-        assert!(!is_loopback_base("https://x.ai/cli"));
+        assert!(!is_loopback_base("https://github.com/xcrong/pig"));
         assert!(!is_loopback_base("http://192.168.1.1:80"));
         assert!(!is_loopback_base(""));
+    }
+
+    #[test]
+    fn asset_mapping_matches_pig_release_names() {
+        use super::asset_for_platform;
+        assert_eq!(
+            asset_for_platform("linux", "x86_64").unwrap(),
+            "pig-linux-x86_64.tar.gz"
+        );
+        assert_eq!(
+            asset_for_platform("macos", "aarch64").unwrap(),
+            "pig-macos-arm64.tar.gz"
+        );
+        assert!(asset_for_platform("linux", "aarch64").is_err());
+        assert!(asset_for_platform("windows", "x86_64").is_err());
+    }
+
+    #[test]
+    fn effective_channel_falls_back_enterprise_to_stable() {
+        use super::effective_channel;
+        assert_eq!(effective_channel("stable"), "stable");
+        assert_eq!(effective_channel("alpha"), "alpha");
+        assert_eq!(effective_channel("enterprise"), "stable");
     }
 
     use super::*;
@@ -566,68 +579,57 @@ mod tests {
         );
     }
 
-    /// Disk-version probe: parsing the version out of the managed install's symlink-target file name (`grok-<version>-<platform>`).
+    /// Disk-version probe: parsing the version out of the managed install's symlink-target file name (`pig-<version>-<platform>`).
     #[test]
     fn test_version_from_versioned_binary_name() {
         let cases: &[(&str, Option<&str>)] = &[
-            ("grok-0.2.46-darwin-arm64", Some("0.2.46")),
-            ("grok-0.1.220-linux-x86_64", Some("0.1.220")),
-            ("grok-0.2.5-windows-x86_64.exe", Some("0.2.5")),
+            ("pig-1.0.1-macos-arm64", Some("1.0.1")),
+            ("pig-1.0.1-linux-x86_64", Some("1.0.1")),
+            ("pig-1.0.1-windows-x86_64.exe", Some("1.0.1")),
             // Pre-releases must round-trip whole
-            // Truncating to "0.1.220" would make an alpha install masquerade as the release and mask updates from alpha to stable
-            ("grok-0.1.220-alpha.4-linux-x86_64", Some("0.1.220-alpha.4")),
-            ("grok-0.1.220-alpha.4", Some("0.1.220-alpha.4")), // npm layout
-            ("grok-pager-0.1.5-darwin-arm64", None),           // "pager" is not a version
-            ("grok-garbage-darwin-arm64", None),               // unparseable version
-            ("grok-0.2.46", Some("0.2.46")),                   // no platform suffix
-            ("other-0.2.46-darwin-arm64", None),               // wrong prefix
-            ("grok-latest", None),                             // symlink alias, not a version
-            ("grok", None),                                    // bare name
+            ("pig-1.0.1-alpha.4-linux-x86_64", Some("1.0.1-alpha.4")),
+            ("pig-1.0.1-alpha.4", Some("1.0.1-alpha.4")), // npm layout
+            ("pig-pager-0.1.5-darwin-arm64", None),       // "pager" is not a version
+            ("pig-garbage-darwin-arm64", None),           // unparseable version
+            ("pig-1.0.1", Some("1.0.1")),                 // no platform suffix
+            ("other-1.0.1-darwin-arm64", None),           // wrong prefix
+            ("pig-latest", None),                         // symlink alias, not a version
+            ("pig", None),                                // bare name
             ("", None),
         ];
         for (name, expected) in cases {
             assert_eq!(
-                version_from_versioned_binary_name(name, "grok").as_deref(),
+                version_from_versioned_binary_name(name, "pig").as_deref(),
                 *expected,
                 "version_from_versioned_binary_name({name:?})"
             );
         }
 
-        // bin_prefix discrimination: the pager binary parses under its own prefix but not under "grok"
+        // Legacy upstream layout still parses under its own prefix.
         assert_eq!(
-            version_from_versioned_binary_name("grok-pager-0.1.5-darwin-arm64", "grok-pager")
-                .as_deref(),
+            version_from_versioned_binary_name("grok-0.1.5-darwin-arm64", "grok").as_deref(),
             Some("0.1.5")
         );
     }
 
     // ────────────────────────────────────────────────────────────────────── derive_channel — invariant matrix. Tests the
-    // pure comparison logic that determines [alpha] vs [stable]. Covers current 0.1.X-alpha.N, future 0.2.X, edge cases, and
+    // pure comparison logic that determines [alpha] vs [stable]. Covers prerelease, release, edge cases, and
     // errors. ──────────────────────────────────────────────────────────────────────
 
     #[test]
     fn test_derive_channel_matrix() {
         // (current, stable_pointer, expected_channel)
         let cases: &[(&str, &str, Option<&str>)] = &[
-            // ── Current 0.1.X workflow ──
-            ("0.1.220-alpha.2", "0.1.219", Some("alpha")), // alpha ahead of stable
-            ("0.1.219", "0.1.219", Some("stable")),        // stable user on latest
-            ("0.1.218", "0.1.219", Some("stable")),        // stable user behind latest
-            ("0.1.220-alpha.2", "0.1.220-alpha.2", Some("stable")), // pointer matches exactly
-            ("0.1.220-alpha.2", "0.1.220", Some("stable")), // semver: release > pre-release
-            // ── Future 0.2.X workflow ──
-            ("0.2.5", "0.2.3", Some("alpha")), // alpha ahead of stable
-            ("0.2.5", "0.2.5", Some("stable")), // promoted to stable
-            ("0.2.3", "0.2.5", Some("stable")), // behind stable
-            ("0.2.0", "0.2.0", Some("stable")), // first release, both 0.2.0
-            // ── Cross-regime upgrade ──
-            ("0.2.0", "0.1.219", Some("alpha")), // new regime ahead of old stable
-            ("0.1.220-alpha.2", "0.2.0", Some("stable")), // old pre-release < new stable
-            // ── Error cases ──
-            ("garbage", "0.1.219", None), // unparseable current
-            ("0.1.219", "garbage", None), // unparseable stable
-            ("", "0.1.219", None),        // empty current
-            ("0.1.219", "", None),        // empty stable
+            ("1.0.1-alpha.2", "1.0.0", Some("alpha")),
+            ("1.0.0", "1.0.0", Some("stable")),
+            ("0.9.9", "1.0.0", Some("stable")),
+            ("1.0.1-alpha.2", "1.0.1-alpha.2", Some("stable")),
+            ("1.0.1-alpha.2", "1.0.1", Some("stable")),
+            ("1.0.1", "1.0.0", Some("alpha")),
+            ("garbage", "1.0.0", None),
+            ("1.0.0", "garbage", None),
+            ("", "1.0.0", None),
+            ("1.0.0", "", None),
         ];
 
         for (current, stable, expected) in cases {

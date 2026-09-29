@@ -50,6 +50,10 @@ pub fn test_home() -> &'static PathBuf {
             std::env::remove_var("GROK_INSTALLER");
             std::env::remove_var("GROK_MANAGED_BY_NPM");
             std::env::remove_var("GROK_MANAGED_BY_INTERNAL");
+            std::env::remove_var("PIG_GITHUB_API_BASE");
+            std::env::remove_var("PIG_GITHUB_DOWNLOAD_BASE");
+            std::env::remove_var("GITHUB_TOKEN");
+            std::env::remove_var("GH_TOKEN");
         }
         path
     })
@@ -69,6 +73,10 @@ pub fn reset_home() {
         std::env::remove_var("GROK_TEST_VERSION");
         std::env::remove_var("NPM_TOKEN");
         std::env::remove_var("GROK_INSTALLER");
+        std::env::remove_var("PIG_GITHUB_API_BASE");
+        std::env::remove_var("PIG_GITHUB_DOWNLOAD_BASE");
+        std::env::remove_var("GITHUB_TOKEN");
+        std::env::remove_var("GH_TOKEN");
     }
 }
 
@@ -83,7 +91,7 @@ pub fn set_test_version(v: &str) {
 // Install-test fixtures (shared by the blitz + convergence suites)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Host `{os}-{arch}` string matching the versioned binary naming scheme (`grok-{version}-{platform}`).
+/// Host `{os}-{arch}` string matching the versioned binary naming scheme (`pig-{version}-{platform}`).
 pub fn host_platform() -> String {
     let os = if cfg!(target_os = "macos") {
         "macos"
@@ -302,9 +310,8 @@ exit "$exit_code"
     )
 }
 
-/// sh script body for a fake `gh`. Logs argv to `<dir>/gh-args.log` and dispatches stdout based on `release list` argv:
-/// argv contains `release list --exclude-pre-releases` → `<dir>/gh-stable-only-stdout`; argv contains `release list` (no
-/// exclude flag) → `<dir>/gh-with-pre-stdout`; else → `<dir>/gh-stdout`. Exits with `<dir>/gh-exit` (default 0).
+/// sh script body for a fake `gh` (legacy: pre-rework updater shelled to `gh`;
+/// kept so old test binaries still link; new code never spawns `gh`).
 pub fn fake_gh_script(dir: &Path) -> String {
     let dq = single_quote_for_sh(dir);
     format!(
@@ -323,5 +330,54 @@ exit_code=0
 if [ -f {dq}/gh-exit ]; then exit_code=$(cat {dq}/gh-exit); fi
 exit "$exit_code"
 "#
+    )
+}
+
+/// Build a pig release tarball (`pig-<os>-<arch>.tar.gz` asset shape) whose
+/// sole entry is a bare `pig` binary with `payload` bytes. Used by GitHub
+/// install tests to serve realistic tarballs from wiremock.
+pub fn make_pig_tarball(payload: &[u8]) -> Vec<u8> {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    {
+        let mut archive = tar::Builder::new(&mut gz);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(payload.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive.append_data(&mut header, "pig", payload).unwrap();
+        archive.finish().unwrap();
+    }
+    gz.finish().unwrap()
+}
+
+/// Tarball asset name for the test host (mirrors the updater mapping:
+/// `aarch64` ships as `arm64`).
+pub fn host_asset() -> String {
+    let arch = if cfg!(target_arch = "x86_64") {
+        "x86_64"
+    } else {
+        "arm64"
+    };
+    let os = if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    format!("pig-{os}-{arch}.tar.gz")
+}
+
+/// Minimal GitHub Releases API payload for version-discovery tests.
+pub fn github_releases_json(entries: &[(&str, bool)]) -> serde_json::Value {
+    serde_json::Value::Array(
+        entries
+            .iter()
+            .map(|(tag, prerelease)| {
+                serde_json::json!({
+                    "tag_name": tag,
+                    "prerelease": prerelease,
+                    "draft": false,
+                })
+            })
+            .collect(),
     )
 }

@@ -203,124 +203,27 @@ fn managed_layout() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBu
 
 #[test]
 fn test_installer_manages_bin_entrypoints_gate() {
-    assert!(installer_manages_bin_entrypoints("internal"));
-    assert!(installer_manages_bin_entrypoints("gh-release"));
+    assert!(installer_manages_bin_entrypoints("github"));
     assert!(!installer_manages_bin_entrypoints("npm"));
     assert!(!installer_manages_bin_entrypoints("unknown"));
+    assert!(!installer_manages_bin_entrypoints(""));
 }
 
 #[cfg(unix)]
 #[tokio::test]
-async fn test_reconcile_agent_repoints_diverged_agent() {
-    let (_dir, bin, downloads) = managed_layout();
-    std::fs::write(downloads.join("grok-0.2.101-macos-aarch64"), "new").unwrap();
-    std::fs::write(downloads.join("grok-0.1.199-macos-aarch64"), "old").unwrap();
+async fn test_remove_legacy_grok_links_cleans_upstream_leftovers() {
+    let (_dir, bin, _downloads) = managed_layout();
+    for name in ["grok", "agent", "grok-pager"] {
+        std::fs::write(bin.join(name), "legacy").unwrap();
+    }
+    std::fs::write(bin.join("pig"), "current").unwrap();
 
-    std::os::unix::fs::symlink("../downloads/grok-0.2.101-macos-aarch64", bin.join("grok"))
-        .unwrap();
-    std::os::unix::fs::symlink("../downloads/grok-0.1.199-macos-aarch64", bin.join("agent"))
-        .unwrap();
+    remove_legacy_grok_links(&bin).await;
 
-    reconcile_agent_to_grok(&bin).await;
-
-    assert_eq!(
-        std::fs::read_link(bin.join("agent")).unwrap(),
-        std::path::PathBuf::from("../downloads/grok-0.2.101-macos-aarch64"),
-    );
-    assert_eq!(std::fs::read_to_string(bin.join("agent")).unwrap(), "new");
-    assert!(downloads.join("grok-0.1.199-macos-aarch64").exists());
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn test_reconcile_agent_heals_legacy_unversioned_agent() {
-    let (_dir, bin, downloads) = managed_layout();
-    std::fs::write(downloads.join("grok-0.2.101-macos-aarch64"), "new").unwrap();
-    std::fs::write(downloads.join("grok-macos-aarch64"), "legacy").unwrap();
-
-    std::os::unix::fs::symlink("../downloads/grok-0.2.101-macos-aarch64", bin.join("grok"))
-        .unwrap();
-    std::os::unix::fs::symlink("../downloads/grok-macos-aarch64", bin.join("agent")).unwrap();
-
-    reconcile_agent_to_grok(&bin).await;
-
-    assert_eq!(
-        std::fs::read_link(bin.join("agent")).unwrap(),
-        std::path::PathBuf::from("../downloads/grok-0.2.101-macos-aarch64"),
-    );
-    assert_eq!(std::fs::read_to_string(bin.join("agent")).unwrap(), "new");
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn test_reconcile_agent_creates_missing_agent() {
-    let (_dir, bin, downloads) = managed_layout();
-    std::fs::write(downloads.join("grok-0.2.101-macos-aarch64"), "new").unwrap();
-    std::os::unix::fs::symlink("../downloads/grok-0.2.101-macos-aarch64", bin.join("grok"))
-        .unwrap();
-
-    reconcile_agent_to_grok(&bin).await;
-
-    assert!(bin.join("agent").is_symlink());
-    assert_eq!(std::fs::read_to_string(bin.join("agent")).unwrap(), "new");
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn test_reconcile_agent_noop_when_consistent() {
-    let (_dir, bin, downloads) = managed_layout();
-    std::fs::write(downloads.join("grok-0.2.101-macos-aarch64"), "new").unwrap();
-    let target = "../downloads/grok-0.2.101-macos-aarch64";
-    std::os::unix::fs::symlink(target, bin.join("grok")).unwrap();
-    std::os::unix::fs::symlink(target, bin.join("agent")).unwrap();
-
-    reconcile_agent_to_grok(&bin).await;
-
-    assert_eq!(
-        std::fs::read_link(bin.join("agent")).unwrap(),
-        std::path::PathBuf::from(target),
-    );
-    let leftovers = std::fs::read_dir(&bin)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().contains(".tmp-link"))
-        .count();
-    assert_eq!(leftovers, 0, "no temp links from a no-op reconcile");
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn test_reconcile_agent_skips_when_grok_dangling() {
-    let (_dir, bin, downloads) = managed_layout();
-    std::os::unix::fs::symlink("../downloads/grok-0.2.101-macos-aarch64", bin.join("grok"))
-        .unwrap();
-    std::fs::write(downloads.join("grok-0.1.199-macos-aarch64"), "old").unwrap();
-    std::os::unix::fs::symlink("../downloads/grok-0.1.199-macos-aarch64", bin.join("agent"))
-        .unwrap();
-
-    reconcile_agent_to_grok(&bin).await;
-
-    assert_eq!(
-        std::fs::read_link(bin.join("agent")).unwrap(),
-        std::path::PathBuf::from("../downloads/grok-0.1.199-macos-aarch64"),
-    );
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn test_reconcile_agent_skips_when_grok_not_symlink() {
-    let (_dir, bin, downloads) = managed_layout();
-    std::fs::write(bin.join("grok"), "copy-binary").unwrap();
-    std::fs::write(downloads.join("grok-0.1.199-macos-aarch64"), "old").unwrap();
-    std::os::unix::fs::symlink("../downloads/grok-0.1.199-macos-aarch64", bin.join("agent"))
-        .unwrap();
-
-    reconcile_agent_to_grok(&bin).await;
-
-    assert_eq!(
-        std::fs::read_link(bin.join("agent")).unwrap(),
-        std::path::PathBuf::from("../downloads/grok-0.1.199-macos-aarch64"),
-    );
+    for name in ["grok", "agent", "grok-pager"] {
+        assert!(!bin.join(name).exists(), "{name} must be removed");
+    }
+    assert!(bin.join("pig").exists(), "pig must survive");
 }
 
 #[cfg(unix)]
@@ -927,99 +830,30 @@ fn test_reinstall_hint_npm_mentions_npm_command() {
 }
 
 #[test]
-fn test_reinstall_hint_gh_release_mentions_gh_command() {
-    let hint = reinstall_hint("gh-release", "stable");
+fn test_reinstall_hint_github_points_to_releases_page() {
+    let hint = reinstall_hint("github", "stable");
     assert!(
-        hint.contains("gh release download"),
-        "should suggest gh release download: {hint}"
-    );
-    assert!(
-        hint.contains("xai-org-shared/grok-build"),
-        "should name the repo: {hint}"
+        hint.contains("github.com/xcrong/pig/releases"),
+        "should point to pig releases: {hint}"
     );
 }
 
 #[test]
-fn test_reinstall_hint_internal_mentions_platform_installer() {
-    let hint = reinstall_hint("internal", "stable");
-    if cfg!(windows) {
-        assert!(hint.contains("irm"), "should suggest irm install: {hint}");
-        assert!(
-            hint.contains("install.ps1"),
-            "should reference install.ps1: {hint}"
-        );
-        assert!(
-            !hint.contains("GROK_CHANNEL"),
-            "stable must not set channel: {hint}"
-        );
-    } else {
-        assert!(hint.contains("curl"), "should suggest curl install: {hint}");
-        assert!(
-            hint.contains("install.sh"),
-            "should reference install.sh: {hint}"
-        );
-        assert!(
-            !hint.contains("GROK_CHANNEL"),
-            "stable must not set channel: {hint}"
-        );
-    }
-}
-
-#[test]
-fn test_reinstall_hint_internal_alpha_sets_channel() {
-    let hint = reinstall_hint("internal", "alpha");
-    if cfg!(windows) {
-        assert!(
-            hint.contains("$env:GROK_CHANNEL='alpha'"),
-            "alpha should set GROK_CHANNEL: {hint}"
-        );
-    } else {
-        assert!(
-            hint.contains("| GROK_CHANNEL='alpha' bash"),
-            "alpha must set GROK_CHANNEL on bash (the process running \
-             install.sh), not curl: {hint}"
-        );
-    }
-}
-
-#[test]
-fn test_reinstall_hint_enterprise_uses_enterprise_script() {
-    // Enterprise ships via its own bootstrap script (channel hardcoded there), never install.sh with GROK_CHANNEL
-    let hint = reinstall_hint("internal", "enterprise");
-    assert!(
-        hint.contains("/enterprise-install."),
-        "enterprise must use the published enterprise-install script: {hint}"
-    );
-    assert!(
-        !hint.contains("GROK_CHANNEL"),
-        "enterprise script needs no channel env: {hint}"
-    );
-}
-
-#[test]
-fn test_reinstall_hint_malformed_channel_falls_back_to_stable() {
-    // Free-text config channels never reach the shell one-liner unless they are plain [A-Za-z0-9._-] tokens
-    for bad in ["al pha", "x'; rm -rf ~;'", "a\"b", ""] {
-        let hint = reinstall_hint("internal", bad);
-        assert!(
-            !hint.contains("GROK_CHANNEL"),
-            "malformed channel {bad:?} must fall back to stable: {hint}"
-        );
-    }
-}
-
-#[test]
-fn test_reinstall_hint_unknown_falls_back_to_internal() {
-    // Unknown installer falls back to the same hint as "internal".
+fn test_reinstall_hint_unknown_points_to_releases_page() {
     let unknown = reinstall_hint("homebrew", "stable");
-    let internal = reinstall_hint("internal", "stable");
-    assert_eq!(unknown, internal);
+    assert!(
+        unknown.contains("github.com/xcrong/pig/releases"),
+        "unknown installer must point to releases: {unknown}"
+    );
 }
 
 #[test]
-fn test_reinstall_hint_empty_falls_back_to_internal() {
+fn test_reinstall_hint_empty_points_to_releases_page() {
     let hint = reinstall_hint("", "stable");
-    assert_eq!(hint, reinstall_hint("internal", "stable"));
+    assert!(
+        hint.contains("github.com/xcrong/pig/releases"),
+        "empty installer must point to releases: {hint}"
+    );
 }
 
 #[test]
@@ -1198,12 +1032,12 @@ fn test_needs_update_channel_is_case_sensitive() {
 
 #[test]
 fn test_needs_update_unknown_channels_return_none() {
-    // Unknown channels (not stable/alpha/enterprise) return None.
+    // Unknown channels (not stable/alpha) return None.
+    // A stale "enterprise" value falls back to stable via effective_channel.
     assert_eq!(needs_update("0.1.140", "0.1.141", "beta", false), None);
     assert_eq!(needs_update("0.1.140", "0.1.141", "nightly", false), None);
     assert_eq!(needs_update("0.1.140", "0.1.141", "", false), None);
     assert_eq!(needs_update("0.1.140", "0.1.141", "rc", false), None);
-    // Enterprise is explicitly supported (behaves like stable).
     assert_eq!(
         needs_update("0.1.140", "0.1.141", "enterprise", false),
         Some(true)
@@ -1328,7 +1162,8 @@ fn test_needs_update_downgrade_alpha_when_allowed() {
 }
 
 #[test]
-fn test_needs_update_downgrade_enterprise_when_allowed() {
+fn test_needs_update_downgrade_enterprise_falls_back_to_stable() {
+    // Stale enterprise channel falls back to stable via effective_channel.
     assert_eq!(
         needs_update("0.1.207", "0.1.206", "enterprise", true),
         Some(true)
@@ -1360,13 +1195,9 @@ fn test_needs_update_downgrade_major_version_when_allowed() {
 
 #[test]
 fn test_needs_update_downgrade_prerelease_still_rejected_on_stable() {
-    // Even with allow_downgrade=true, pre-release targets are rejected on stable/enterprise channels (safety net)
+    // Even with allow_downgrade=true, pre-release targets are rejected on the stable channel (safety net)
     assert_eq!(
         needs_update("0.2.7", "0.2.5-alpha.1", "stable", true),
-        Some(false)
-    );
-    assert_eq!(
-        needs_update("0.2.7", "0.2.5-alpha.1", "enterprise", true),
         Some(false)
     );
 }
@@ -1389,13 +1220,8 @@ fn test_needs_update_prerelease_current_forces_install_regardless_of_allow_downg
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
-fn test_installer_allows_downgrade_internal() {
-    assert!(installer_allows_downgrade("internal"));
-}
-
-#[test]
-fn test_installer_allows_downgrade_gh_release() {
-    assert!(installer_allows_downgrade("gh-release"));
+fn test_installer_allows_downgrade_github() {
+    assert!(installer_allows_downgrade("github"));
 }
 
 #[test]
@@ -1630,13 +1456,13 @@ fn test_user_facing_constants_are_stable() {
     );
     assert_eq!(
         MSG_RUN_UPDATE_MANUAL,
-        "Run `grok update` to get the latest version."
+        "Run `pig update` to get the latest version."
     );
 }
 
 // ────────────────────────────────────────────────────────────────────── env_installer — env-var based, must run
-// serially. GROK_INSTALLER (npm | internal | gh-release | gh); GROK_MANAGED_BY_NPM → npm; GROK_MANAGED_BY_INTERNAL →
-// internal. ──────────────────────────────────────────────────────────────────────
+// serially. GROK_INSTALLER (npm | github | direct | internal-compat | gh-release-compat | gh-compat); GROK_MANAGED_BY_NPM → npm;
+// GROK_MANAGED_BY_INTERNAL → github (compat). ──────────────────────────────────────────────────────────────────────
 
 /// Snapshot every installer-related env var so the test can clear them at start and restore them at end.
 /// Without the guard, a parent shell that sets e.g. `npm_config_user_agent` (as `npm run` always does) makes every "no env vars" test misbehave.
@@ -1652,6 +1478,10 @@ impl InstallerEnvGuard {
             "GROK_MANAGED_BY_INTERNAL",
             "npm_config_user_agent",
             "NPM_TOKEN",
+            "PIG_GITHUB_API_BASE",
+            "PIG_GITHUB_DOWNLOAD_BASE",
+            "GITHUB_TOKEN",
+            "GH_TOKEN",
         ];
         let prev: Vec<_> = VARS.iter().map(|k| (*k, std::env::var_os(k))).collect();
         unsafe {
@@ -1693,27 +1523,35 @@ fn test_env_installer_explicit_npm() {
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_explicit_internal() {
+fn test_env_installer_explicit_internal_maps_to_github() {
     let _g = InstallerEnvGuard::isolate();
     unsafe { std::env::set_var("GROK_INSTALLER", "internal") };
-    assert_eq!(env_installer(), Some("internal"));
+    assert_eq!(env_installer(), Some("github"));
 }
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_explicit_gh_release() {
+fn test_env_installer_explicit_github() {
+    let _g = InstallerEnvGuard::isolate();
+    unsafe { std::env::set_var("GROK_INSTALLER", "github") };
+    assert_eq!(env_installer(), Some("github"));
+}
+
+#[test]
+#[serial_test::serial]
+fn test_env_installer_explicit_gh_release_compat() {
     let _g = InstallerEnvGuard::isolate();
     unsafe { std::env::set_var("GROK_INSTALLER", "gh-release") };
-    assert_eq!(env_installer(), Some("gh-release"));
+    assert_eq!(env_installer(), Some("github"));
 }
 
 #[test]
 #[serial_test::serial]
 fn test_env_installer_explicit_gh_alias() {
-    // `gh` is shorthand for `gh-release`.
+    // `gh` is shorthand for the direct GitHub Release binary.
     let _g = InstallerEnvGuard::isolate();
     unsafe { std::env::set_var("GROK_INSTALLER", "gh") };
-    assert_eq!(env_installer(), Some("gh-release"));
+    assert_eq!(env_installer(), Some("github"));
 }
 
 #[test]
@@ -1723,8 +1561,8 @@ fn test_env_installer_explicit_uppercase_normalized() {
     unsafe { std::env::set_var("GROK_INSTALLER", "NPM") };
     assert_eq!(env_installer(), Some("npm"));
 
-    unsafe { std::env::set_var("GROK_INSTALLER", "Gh-Release") };
-    assert_eq!(env_installer(), Some("gh-release"));
+    unsafe { std::env::set_var("GROK_INSTALLER", "GitHub") };
+    assert_eq!(env_installer(), Some("github"));
 }
 
 #[test]
@@ -1771,10 +1609,10 @@ fn test_env_installer_managed_by_npm_any_value() {
 
 #[test]
 #[serial_test::serial]
-fn test_env_installer_managed_by_internal() {
+fn test_env_installer_managed_by_internal_maps_to_github() {
     let _g = InstallerEnvGuard::isolate();
     unsafe { std::env::set_var("GROK_MANAGED_BY_INTERNAL", "1") };
-    assert_eq!(env_installer(), Some("internal"));
+    assert_eq!(env_installer(), Some("github"));
 }
 
 #[test]
@@ -1793,14 +1631,14 @@ fn test_env_installer_npm_config_user_agent_implies_npm() {
 }
 #[test]
 #[serial_test::serial]
-fn test_env_installer_explicit_internal_wins_over_npm_managed() {
-    // GROK_INSTALLER=internal must override an inherited MANAGED_BY_NPM.
+fn test_env_installer_explicit_github_wins_over_npm_managed() {
+    // GROK_INSTALLER=github must override an inherited MANAGED_BY_NPM.
     let _g = InstallerEnvGuard::isolate();
     unsafe {
-        std::env::set_var("GROK_INSTALLER", "internal");
+        std::env::set_var("GROK_INSTALLER", "github");
         std::env::set_var("GROK_MANAGED_BY_NPM", "1");
     }
-    assert_eq!(env_installer(), Some("internal"));
+    assert_eq!(env_installer(), Some("github"));
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -2290,141 +2128,107 @@ async fn test_windows_replace_exe_sweeps_accumulated_asides() {
 fn assert_decoded_executable(path: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(path).unwrap().permissions().mode();
-    assert_eq!(mode & 0o777, 0o755, "decoded binary must be executable");
+    assert_eq!(mode & 0o777, 0o755, "unpacked binary must be executable");
 }
 #[cfg(not(unix))]
 fn assert_decoded_executable(_path: &std::path::Path) {}
 
-#[tokio::test]
-async fn download_and_decode_round_trips_each_codec() {
-    use std::io::Write;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    let payload = b"\x7fELF grok binary payload".to_vec();
-    let zst = zstd::encode_all(payload.as_slice(), 3).unwrap();
-    let gz = {
-        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-        enc.write_all(&payload).unwrap();
-        enc.finish().unwrap()
-    };
-
-    for (suffix, codec, body) in [("zst", Codec::Zstd, zst), ("gz", Codec::Gzip, gz)] {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(format!("/grok-1.2.3-linux-x86_64.{suffix}")))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let dest = dir.path().join("grok-1.2.3-linux-x86_64");
-        let url = format!("{}/grok-1.2.3-linux-x86_64.{suffix}", server.uri());
-        download_and_decode(&url, &dest, codec, false)
-            .await
-            .unwrap_or_else(|e| panic!("decode .{suffix}: {e}"));
-
-        assert_eq!(
-            std::fs::read(&dest).unwrap(),
-            payload,
-            ".{suffix} decode mismatch"
-        );
-        assert_decoded_executable(&dest);
+fn make_pig_tarball(payload: &[u8]) -> Vec<u8> {
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    {
+        let mut archive = tar::Builder::new(&mut gz);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(payload.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive.append_data(&mut header, "pig", payload).unwrap();
+        archive.finish().unwrap();
     }
+    gz.finish().unwrap()
 }
 
 #[tokio::test]
-async fn download_and_decode_errs_on_corrupt() {
+async fn download_tarball_and_unpack_round_trips_pig_binary() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    let payload = b"#!/bin/sh\nexit 0\n".to_vec();
+    let tarball = make_pig_tarball(&payload);
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/grok-1.2.3-linux-x86_64.zst"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"not a zstd frame".to_vec()))
+        .and(path("/pig-1.0.1-linux-x86_64.tar.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(tarball))
         .mount(&server)
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    let dest = dir.path().join("grok-1.2.3-linux-x86_64");
-    let url = format!("{}/grok-1.2.3-linux-x86_64.zst", server.uri());
-    let result = download_and_decode(&url, &dest, Codec::Zstd, false).await;
-
-    assert!(
-        result.is_err(),
-        "a corrupt .zst must error so the caller falls back"
-    );
-    assert!(
-        !dest.exists(),
-        "no partial binary published from a bad decode"
-    );
-}
-
-#[tokio::test]
-async fn download_cli_artifact_falls_back_to_plain() {
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    let payload = b"\x7fELF grok binary payload".to_vec();
-    let server = MockServer::start().await; // only the plain object exists; .zst/.gz 404
-    Mock::given(method("GET"))
-        .and(path("/grok-1.2.3-linux-x86_64"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(payload.clone()))
-        .mount(&server)
-        .await;
-
-    let dir = tempfile::tempdir().unwrap();
-    let dest = dir.path().join("grok-1.2.3-linux-x86_64");
-    download_cli_artifact_from_gcs(&server.uri(), "grok-1.2.3-linux-x86_64", &dest, false)
+    let dest = dir.path().join("pig-1.0.1-linux-x86_64");
+    let url = format!("{}/pig-1.0.1-linux-x86_64.tar.gz", server.uri());
+    download_tarball_and_unpack(&url, &dest, false)
         .await
-        .expect("fall back to the plain binary when compressed forms are absent");
+        .unwrap_or_else(|e| panic!("unpack tarball: {e}"));
 
     assert_eq!(std::fs::read(&dest).unwrap(), payload);
     assert_decoded_executable(&dest);
 }
 
 #[tokio::test]
-async fn download_cli_artifact_prefers_compressed_over_plain() {
+async fn download_tarball_and_unpack_errs_without_pig_entry() {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    let payload = b"\x7fELF grok binary payload".to_vec();
-    let zst = zstd::encode_all(payload.as_slice(), 3).unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    {
+        let mut archive = tar::Builder::new(&mut gz);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(3);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, "not-pig", b"xyz" as &[u8])
+            .unwrap();
+        archive.finish().unwrap();
+    }
+    let tarball = gz.finish().unwrap();
     let server = MockServer::start().await;
     Mock::given(method("GET"))
-        .and(path("/grok-1.2.3-linux-x86_64.zst"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(zst))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/grok-1.2.3-linux-x86_64"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PLAIN sentinel".to_vec()))
+        .and(path("/pig-1.0.1-linux-x86_64.tar.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(tarball))
         .mount(&server)
         .await;
 
     let dir = tempfile::tempdir().unwrap();
-    let dest = dir.path().join("grok-1.2.3-linux-x86_64");
-    download_cli_artifact_from_gcs(&server.uri(), "grok-1.2.3-linux-x86_64", &dest, false)
-        .await
-        .expect("prefer the compressed sidecar when present");
+    let dest = dir.path().join("pig-1.0.1-linux-x86_64");
+    let url = format!("{}/pig-1.0.1-linux-x86_64.tar.gz", server.uri());
+    let result = download_tarball_and_unpack(&url, &dest, false).await;
 
-    assert_eq!(
-        std::fs::read(&dest).unwrap(),
-        payload,
-        "decoded compressed payload must win over the plain object"
+    assert!(result.is_err(), "tarball without pig entry must error");
+    assert!(
+        !dest.exists(),
+        "no partial binary published from a bad tarball"
     );
-    assert_decoded_executable(&dest);
 }
 
-#[test]
-fn cli_object_candidates_try_windows_exe_first() {
-    assert_eq!(
-        cli_object_candidates("grok-1.2.3-windows-x86_64", true),
-        ["grok-1.2.3-windows-x86_64.exe", "grok-1.2.3-windows-x86_64"]
-    );
-    assert_eq!(
-        cli_object_candidates("grok-1.2.3-linux-x86_64", false),
-        ["grok-1.2.3-linux-x86_64"]
+#[tokio::test]
+async fn download_tarball_and_unpack_errs_on_corrupt() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pig-1.0.1-linux-x86_64.tar.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"not a gzip".to_vec()))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("pig-1.0.1-linux-x86_64");
+    let url = format!("{}/pig-1.0.1-linux-x86_64.tar.gz", server.uri());
+    let result = download_tarball_and_unpack(&url, &dest, false).await;
+
+    assert!(result.is_err(), "a corrupt tarball must error");
+    assert!(
+        !dest.exists(),
+        "no partial binary published from a bad tarball"
     );
 }
 

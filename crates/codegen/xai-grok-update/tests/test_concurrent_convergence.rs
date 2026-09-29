@@ -12,9 +12,9 @@
 //!
 //! - **Convergence** (`ensure_latest_on_disk`, `run_update`): a sequential updater finds the target already on disk and skips the download.
 //!   The artifact server and fake `gh` count downloads so the skip is asserted, not assumed.
-//! - **Race integrity** (`install_internal_from_base` run concurrently): the same-instant race is accepted as rare.
+//! - **Race integrity** (`install_github_from_download_base` run concurrently): the same-instant race is accepted as rare.
 //!   These tests pin the property that makes it acceptable: concurrent installs (same or *different* versions) never corrupt the active binary.
-//!   Before per-attempt temp names, every `0.1.x` download shared one `grok-0.1.tmp` (`with_extension("tmp")` eats everything after the last dot).
+//!   Before per-attempt temp names, every `0.1.x` download shared one `pig-0.1.tmp` (`with_extension("tmp")` eats everything after the last dot).
 //!   Racer A could atomically rename racer B's half-written file into place.
 
 #![cfg(unix)]
@@ -28,26 +28,26 @@ use serial_test::serial;
 
 use common::artifact_server::ArtifactServer;
 use common::{
-    FakeBinGuard, can_exec_shell_scripts, host_platform, make_update_config, reset_home,
-    set_test_version, small_good_artifact, test_home,
+    FakeBinGuard, can_exec_shell_scripts, host_platform, make_pig_tarball, make_update_config,
+    reset_home, set_test_version, small_good_artifact, test_home,
 };
 use xai_grok_update::auto_update::{
-    CliUpdateTrigger, ensure_latest_on_disk, install_internal_from_base, run_update,
+    CliUpdateTrigger, ensure_latest_on_disk, install_github_from_download_base, run_update,
 };
 use xai_grok_update::version::installed_on_disk_version;
 
-/// Assert the active `~/.grok/bin/grok` resolves to the expected versioned
+/// Assert the active `~/.grok/bin/pig` resolves to the expected versioned
 /// binary, actually runs, and has exactly the expected content (the content
 /// check is what catches a cross-racer temp-file corruption).
 fn assert_active_binary(home: &Path, version: &str, platform: &str, expected_content: &[u8]) {
-    let link = home.join("bin").join("grok");
-    assert!(link.is_symlink(), "grok must be a symlink");
+    let link = home.join("bin").join("pig");
+    assert!(link.is_symlink(), "pig must be a symlink");
     let resolved = dunce::canonicalize(&link)
-        .unwrap_or_else(|e| panic!("active grok symlink does not resolve: {e}"));
+        .unwrap_or_else(|e| panic!("active pig symlink does not resolve: {e}"));
     assert_eq!(
         resolved.file_name().unwrap().to_string_lossy(),
-        format!("grok-{version}-{platform}"),
-        "active grok must be the expected version"
+        format!("pig-{version}-{platform}"),
+        "active pig must be the expected version"
     );
     assert_eq!(
         std::fs::read(&resolved).unwrap(),
@@ -63,17 +63,17 @@ fn assert_active_binary(home: &Path, version: &str, platform: &str, expected_con
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    assert!(ran_ok, "active grok must pass the smoke-test");
+    assert!(ran_ok, "active pig must pass the smoke-test");
 }
 
-/// Lay down what `install_internal_from_base` produces in the test GROK_HOME: `bin/grok -> ../downloads/grok-<version>-<platform>`.
+/// Lay down what `install_github_from_download_base` produces in the test GROK_HOME: `bin/pig -> ../downloads/pig-<version>-<platform>`.
 fn fake_managed_install(version: &str) {
     let home = test_home();
     let downloads = home.join("downloads");
     let bin = home.join("bin");
     std::fs::create_dir_all(&downloads).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
-    let name = format!("grok-{version}-{}", host_platform());
+    let name = format!("pig-{version}-{}", host_platform());
     std::fs::write(downloads.join(&name), small_good_artifact()).unwrap();
     std::fs::set_permissions(
         downloads.join(&name),
@@ -82,153 +82,18 @@ fn fake_managed_install(version: &str) {
     .unwrap();
     std::os::unix::fs::symlink(
         std::path::Path::new("../downloads").join(&name),
-        bin.join("grok"),
+        bin.join("pig"),
     )
     .unwrap();
 }
 
-/// Fake `gh` that logs argv to `<dir>/gh-args.log`.
-/// It answers `release list --exclude-pre-releases` from `<dir>/gh-stable-only-stdout`.
-/// For `release download ... --output <path>` it writes an executable `exit 0` script to the output path.
-fn fake_gh_serving_releases(dir: &std::path::Path) -> String {
-    let dq = format!("'{}'", dir.to_string_lossy().replace('\'', "'\\''"));
-    format!(
-        r#"#!/bin/sh
-echo "$@" >> {dq}/gh-args.log
-case "$*" in
-  *"release list"*)
-    if [ -f {dq}/gh-stable-only-stdout ]; then cat {dq}/gh-stable-only-stdout; fi
-    ;;
-  *"release download"*)
-    out=""
-    prev=""
-    for a in "$@"; do
-      if [ "$prev" = "--output" ]; then out="$a"; fi
-      prev="$a"
-    done
-    if [ -n "$out" ]; then
-      printf '#!/bin/sh\nexit 0\n' > "$out"
-      chmod +x "$out"
-    fi
-    ;;
-esac
-exit 0
-"#
-    )
-}
-
-/// Count `release download` invocations in the fake gh's argv log.
-fn gh_download_count(g: &FakeBinGuard) -> usize {
-    g.args_log()
-        .iter()
-        .filter(|l| l.contains("release download"))
-        .count()
-}
-
-fn setup_gh_release(running_version: &str) -> FakeBinGuard {
-    let _ = test_home();
-    reset_home();
-    set_test_version(running_version);
-    // SAFETY: serial_test ensures no race; reset_home clears this between tests.
-    unsafe { std::env::set_var("GROK_INSTALLER", "gh-release") };
-    FakeBinGuard::install("gh", fake_gh_serving_releases)
-}
-
-// Convergence: ensure_latest_on_disk downloads once, then every subsequent pass (the leader's hourly re-entry) converges
-// without re-downloading. This is the e2e companion to the decision-level tests in test_downgrade_matrix.rs; it asserts
-// on actual download invocations ─────────────────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-#[serial]
-async fn ensure_latest_downloads_once_then_converges_without_redownload() {
-    if !can_exec_shell_scripts() {
-        eprintln!("skipping: shell scripts cannot execute in this sandbox");
-        return;
-    }
-    let g = setup_gh_release("0.2.5");
-    g.set_stable_only_stdout("v0.2.7\n");
-    let cfg = make_update_config("stable");
-
-    // Pass 1: disk is empty, so it downloads and installs
-    let first = ensure_latest_on_disk(&cfg).await.unwrap();
-    assert_eq!(first.installed.as_deref(), Some("0.2.7"));
-    assert!(first.relaunch_needed, "running 0.2.5 < disk 0.2.7");
-    assert_eq!(gh_download_count(&g), 1, "first pass downloads");
-    assert_eq!(installed_on_disk_version().as_deref(), Some("0.2.7"));
-
-    // Pass 2, the hourly re-entry that used to re-download: disk is already current, so no download
-    // The stale running process still gets the relaunch signal
-    let second = ensure_latest_on_disk(&cfg).await.unwrap();
-    assert_eq!(second.installed, None, "second pass must not re-download");
-    assert!(second.relaunch_needed, "still running 0.2.5 < disk 0.2.7");
-    assert_eq!(
-        gh_download_count(&g),
-        1,
-        "hourly re-entry must not download again"
-    );
-}
-
-// Convergence: explicit `grok update` (the Ctrl+U fallback path) finds the binary another process already installed and
-// skips the download. It still returns the target version so stale leaders get signalled
-// ─────────────────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-#[serial]
-async fn run_update_skips_download_when_disk_already_current() {
-    if !can_exec_shell_scripts() {
-        eprintln!("skipping: shell scripts cannot execute in this sandbox");
-        return;
-    }
-    let g = setup_gh_release("0.2.5");
-    g.set_stable_only_stdout("v0.2.7\n");
-    // Another process (TUI background download) already installed 0.2.7.
-    fake_managed_install("0.2.7");
-    let mut cfg = make_update_config("stable");
-
-    let result = run_update(false, None, None, &mut cfg, CliUpdateTrigger::UserCommand)
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result.as_deref(),
-        Some("0.2.7"),
-        "run_update must still report the on-disk target so the caller \
-         signals stale leaders to relaunch"
-    );
-    assert_eq!(
-        gh_download_count(&g),
-        0,
-        "a binary someone else installed must not be downloaded again"
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn run_update_force_still_redownloads_when_disk_current() {
-    if !can_exec_shell_scripts() {
-        eprintln!("skipping: shell scripts cannot execute in this sandbox");
-        return;
-    }
-    let g = setup_gh_release("0.2.7");
-    g.set_stable_only_stdout("v0.2.7\n");
-    fake_managed_install("0.2.7");
-    let mut cfg = make_update_config("stable");
-
-    let result = run_update(true, None, None, &mut cfg, CliUpdateTrigger::UserCommand)
-        .await
-        .unwrap();
-
-    assert_eq!(result.as_deref(), Some("0.2.7"));
-    assert_eq!(
-        gh_download_count(&g),
-        1,
-        "--force must bypass the disk-current skip and reinstall"
-    );
-}
+// Convergence via the GitHub API is covered in test_network.rs (version
+// discovery) and test_install_github.rs (tarball install); the leader
+// re-entry skip logic is exercised in the lib unit tests.
 
 // ─────────────────────────────────────────────────────────────────────────────. Installer gating: the disk-version
-// probe must only be trusted for installers that actually maintain the managed `~/.grok/bin/grok` symlink (internal,
-// gh-release). For npm, a symlink left over from a previous internal install LIES about the npm install's version.
+// probe must only be trusted for installers that actually maintain the managed `bin/pig` symlink (github).
+// For npm, a symlink left over from a previous direct install LIES about the npm install's version.
 
 fn setup_npm(running_version: &str) -> FakeBinGuard {
     let _ = test_home();
@@ -325,52 +190,12 @@ async fn disk_probe_rejects_dangling_symlink() {
     fake_managed_install("0.2.7");
     assert_eq!(installed_on_disk_version().as_deref(), Some("0.2.7"));
 
-    std::fs::remove_file(
-        home.join("downloads")
-            .join(format!("grok-0.2.7-{platform}")),
-    )
-    .unwrap();
+    std::fs::remove_file(home.join("downloads").join(format!("pig-0.2.7-{platform}"))).unwrap();
 
     assert_eq!(
         installed_on_disk_version(),
         None,
         "a dangling symlink must not report an installed version"
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn ensure_latest_repairs_dangling_symlink_by_downloading() {
-    if !can_exec_shell_scripts() {
-        eprintln!("skipping: shell scripts cannot execute in this sandbox");
-        return;
-    }
-    // Dangling symlink and stale running process: the probe returns None, so the decision falls back to the running version
-    // The download then runs, repairing the install instead of wedging on "already up to date"
-    let g = setup_gh_release("0.2.5");
-    g.set_stable_only_stdout("v0.2.7\n");
-    let home = test_home();
-    let platform = host_platform();
-    fake_managed_install("0.2.7");
-    std::fs::remove_file(
-        home.join("downloads")
-            .join(format!("grok-0.2.7-{platform}")),
-    )
-    .unwrap();
-    let cfg = make_update_config("stable");
-
-    let outcome = ensure_latest_on_disk(&cfg).await.unwrap();
-
-    assert_eq!(
-        outcome.installed.as_deref(),
-        Some("0.2.7"),
-        "dangling symlink must be repaired by an actual download"
-    );
-    assert_eq!(gh_download_count(&g), 1);
-    assert_eq!(
-        installed_on_disk_version().as_deref(),
-        Some("0.2.7"),
-        "probe healthy again after the repair install"
     );
 }
 
@@ -389,7 +214,7 @@ async fn run_concurrent_installs(
         let version = version.to_string();
         tasks.push(tokio::spawn(async move {
             let cfg = make_update_config("stable");
-            install_internal_from_base(Some(&version), &cfg, &base).await
+            install_github_from_download_base(Some(&version), &cfg, &base).await
         }));
     }
     let mut results = Vec::new();
@@ -410,18 +235,18 @@ async fn concurrent_same_version_installs_leave_valid_active_binary() {
     reset_home();
     let platform = host_platform();
     let artifact = small_good_artifact();
-    let server = ArtifactServer::start(artifact.clone());
+    let server = ArtifactServer::start(make_pig_tarball(&artifact));
     // Hold responses open so the racers overlap mid-download
     server.set_slow(true);
 
-    let results = run_concurrent_installs(&server, &["0.1.181", "0.1.181", "0.1.181"]).await;
+    let results = run_concurrent_installs(&server, &["1.0.1", "1.0.1", "1.0.1"]).await;
     for r in results {
         r.expect("every racing install must succeed (atomic swap, last writer wins)");
     }
 
     // Lock-free model: concurrent racers may each download (accepted waste); the invariant is integrity, not the count
     assert!(server.request_count() >= 1);
-    assert_active_binary(home, "0.1.181", &platform, &artifact);
+    assert_active_binary(home, "1.0.1", &platform, &artifact);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -435,21 +260,21 @@ async fn concurrent_different_version_installs_do_not_corrupt_each_other() {
     reset_home();
     let platform = host_platform();
     let artifact = small_good_artifact();
-    let server = ArtifactServer::start(artifact.clone());
+    let server = ArtifactServer::start(make_pig_tarball(&artifact));
     server.set_slow(true);
 
-    // Pre-fix, BOTH of these wrote to downloads/grok-0.1.tmp concurrently (with_extension("tmp") truncates at the last dot)
+    // Pre-fix, BOTH of these wrote to downloads/pig-0.1.tmp concurrently (with_extension("tmp") truncates at the last dot)
     // One racer could rename the other's partial file into its own versioned path
-    let results = run_concurrent_installs(&server, &["0.1.181", "0.1.182"]).await;
+    let results = run_concurrent_installs(&server, &["1.0.1", "1.0.2"]).await;
     for r in results {
         r.expect("both racing installs must succeed");
     }
 
     // Both versioned binaries must exist with full, uncorrupted content.
-    for version in ["0.1.181", "0.1.182"] {
+    for version in ["1.0.1", "1.0.2"] {
         let path = home
             .join("downloads")
-            .join(format!("grok-{version}-{platform}"));
+            .join(format!("pig-{version}-{platform}"));
         assert_eq!(
             std::fs::read(&path).unwrap(),
             artifact,
@@ -458,16 +283,16 @@ async fn concurrent_different_version_installs_do_not_corrupt_each_other() {
     }
 
     // The active symlink points at whichever racer swapped last; it must resolve and run regardless
-    let resolved = dunce::canonicalize(home.join("bin").join("grok")).unwrap();
+    let resolved = dunce::canonicalize(home.join("bin").join("pig")).unwrap();
     assert_eq!(std::fs::read(&resolved).unwrap(), artifact);
     let name = resolved.file_name().unwrap().to_string_lossy().to_string();
     assert!(
         !name.contains(".tmp"),
-        "active grok must never be a temp file: {name}"
+        "active pig must never be a temp file: {name}"
     );
 
     assert!(
-        !home.join("downloads").join("grok-0.1.tmp").exists(),
+        !home.join("downloads").join("pig-0.1.tmp").exists(),
         "the pre-fix shared temp name must not exist"
     );
 }

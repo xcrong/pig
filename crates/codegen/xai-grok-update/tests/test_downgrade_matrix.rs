@@ -2,12 +2,12 @@
 //!
 //! Covers every combination of:
 //!   - user's current version vs. channel pointer target
-//!   - installer type (internal, npm, gh-release)
-//!   - channel (stable, alpha, enterprise)
+//!   - installer type (github, npm)
+//!   - channel (stable, alpha)
 //!   - pointer-flip scenarios (stable bumped after user upgraded, alpha pointer rolled back, etc.)
 //!
 //! Also includes wiremock-based installation tests.
-//! They verify the GCS internal installer actually downloads and symlinks an older binary when the stable pointer is rolled back.
+//! They verify the github tarball installer actually downloads and symlinks an older binary on rollback.
 
 #![cfg(unix)]
 
@@ -20,7 +20,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use common::{FakeBinGuard, reset_home, set_test_version, test_home};
 use xai_grok_update::UpdateConfig;
 use xai_grok_update::auto_update::{
-    auto_update_target, check_update_status, ensure_latest_on_disk, install_internal_from_base,
+    auto_update_target, check_update_status, install_github_from_download_base,
 };
 use xai_grok_update::version::installed_on_disk_version;
 
@@ -53,11 +53,11 @@ fn make_config(channel: &str) -> UpdateConfig {
     }
 }
 
-async fn mount_gcs_with_channels(
+async fn mount_tarball_with_channels(
     stable_version: &str,
     alpha_version: Option<&str>,
     binary_version: &str,
-    platform: &str,
+    _platform: &str,
 ) -> MockServer {
     let server = MockServer::start().await;
 
@@ -75,40 +75,44 @@ async fn mount_gcs_with_channels(
             .await;
     }
 
+    // Pinned installs fetch the tarball directly; pointer mocks above are
+    // unused by them but kept for the decision-level tests below.
+    let asset = common::host_asset();
+    let tarball = common::make_pig_tarball(b"#!/bin/sh\nexit 0\n");
     Mock::given(method("GET"))
-        .and(path(format!("/grok-{binary_version}-{platform}")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"#!/bin/sh\nexit 0\n".to_vec()))
+        .and(path(format!(
+            "/xcrong/pig/releases/download/v{binary_version}/{asset}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(tarball))
         .mount(&server)
         .await;
 
     server
 }
 
-// Scenario matrix: GCS internal installer, downgrade via install. Each test simulates a user on version X, with the
-// stable/alpha pointer now pointing to version Y. The internal installer should install Y regardless of whether Y < X
+// Scenario matrix: direct-binary installer, downgrade via install. Each test simulates a user on version X, with the
+// release now pointing to version Y. The github installer should install Y regardless of whether Y < X
 // (rollback) or Y > X (upgrade) ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 #[serial]
-async fn internal_install_stable_rollback_0_2_7_to_0_2_5() {
+async fn github_install_stable_rollback_0_2_7_to_0_2_5() {
     // User was on 0.2.7, stable pointer rolled back to 0.2.5.
     let _ = test_home();
     reset_home();
     let platform = host_platform();
-    let server = mount_gcs_with_channels("0.2.5", None, "0.2.5", &platform).await;
+    let server = mount_tarball_with_channels("0.2.5", None, "0.2.5", &platform).await;
     let cfg = make_config("stable");
 
-    install_internal_from_base(Some("0.2.5"), &cfg, &server.uri())
+    install_github_from_download_base(Some("0.2.5"), &cfg, &server.uri())
         .await
         .unwrap();
 
     let home = test_home();
-    let downloaded = home
-        .join("downloads")
-        .join(format!("grok-0.2.5-{platform}"));
+    let downloaded = home.join("downloads").join(format!("pig-0.2.5-{platform}"));
     assert!(downloaded.exists(), "rolled-back binary must be downloaded");
 
-    let symlink = home.join("bin").join("grok");
+    let symlink = home.join("bin").join("pig");
     let target = std::fs::read_link(&symlink).unwrap();
     assert!(
         target.to_string_lossy().contains("0.2.5"),
@@ -118,26 +122,26 @@ async fn internal_install_stable_rollback_0_2_7_to_0_2_5() {
 
 #[tokio::test]
 #[serial]
-async fn internal_install_stable_upgrade_0_2_5_to_0_2_7() {
+async fn github_install_stable_upgrade_0_2_5_to_0_2_7() {
     // Normal upgrade path: user on 0.2.5, pointer at 0.2.7.
     let _ = test_home();
     reset_home();
     let platform = host_platform();
-    let server = mount_gcs_with_channels("0.2.7", None, "0.2.7", &platform).await;
+    let server = mount_tarball_with_channels("0.2.7", None, "0.2.7", &platform).await;
     let cfg = make_config("stable");
 
-    install_internal_from_base(Some("0.2.7"), &cfg, &server.uri())
+    install_github_from_download_base(Some("0.2.7"), &cfg, &server.uri())
         .await
         .unwrap();
 
-    let symlink = test_home().join("bin").join("grok");
+    let symlink = test_home().join("bin").join("pig");
     let target = std::fs::read_link(&symlink).unwrap();
     assert!(target.to_string_lossy().contains("0.2.7"));
 }
 
 #[tokio::test]
 #[serial]
-async fn internal_install_rollback_then_upgrade_sequence() {
+async fn github_install_rollback_then_upgrade_sequence() {
     // Simulates: install 0.2.7, roll back to 0.2.5, then the fix ships as 0.2.8
     // All three installs must succeed sequentially.
     let _ = test_home();
@@ -148,14 +152,14 @@ async fn internal_install_rollback_then_upgrade_sequence() {
         // Age the previous installs: cleanup never deletes a freshly-written binary (it may be a concurrent racer's just-renamed download)
         // The retention assertions below need the earlier installs to look like real leftovers from past releases
         common::backdate_downloads();
-        let server = mount_gcs_with_channels(version, None, version, &platform).await;
+        let server = mount_tarball_with_channels(version, None, version, &platform).await;
         let cfg = make_config("stable");
-        install_internal_from_base(Some(version), &cfg, &server.uri())
+        install_github_from_download_base(Some(version), &cfg, &server.uri())
             .await
             .unwrap();
     }
 
-    let target = std::fs::read_link(test_home().join("bin").join("grok")).unwrap();
+    let target = std::fs::read_link(test_home().join("bin").join("pig")).unwrap();
     assert!(
         target.to_string_lossy().contains("0.2.8"),
         "final symlink must point to 0.2.8: {target:?}"
@@ -164,96 +168,40 @@ async fn internal_install_rollback_then_upgrade_sequence() {
     // Cleanup retains the current and the highest-semver non-current binary (N-1 by version, not install order)
     let downloads = test_home().join("downloads");
     assert!(
-        downloads.join(format!("grok-0.2.8-{platform}")).exists(),
+        downloads.join(format!("pig-0.2.8-{platform}")).exists(),
         "current"
     );
     assert!(
-        downloads.join(format!("grok-0.2.7-{platform}")).exists(),
+        downloads.join(format!("pig-0.2.7-{platform}")).exists(),
         "N-1 by semver"
     );
     assert!(
-        !downloads.join(format!("grok-0.2.5-{platform}")).exists(),
+        !downloads.join(format!("pig-0.2.5-{platform}")).exists(),
         "lowest cleaned up"
     );
 }
 
 #[tokio::test]
 #[serial]
-async fn internal_install_alpha_rollback_pointer_resolves_correctly() {
-    // Alpha user on 0.2.8-alpha.3. Alpha pointer rolled back to 0.2.8-alpha.1, stable pointer is 0.2.7.
-    // Alpha channel returns max(alpha, stable) = 0.2.8-alpha.1
+async fn github_install_alpha_user_gets_newer_stable_after_stable_passes_alpha() {
+    // Pinned-install equivalent of the old pointer test: an alpha user
+    // installs the newer stable explicitly. Unpinned pointer resolution is
+    // covered in test_network.rs (GitHub API); tarball unpack in
+    // test_install_github.rs.
     let _ = test_home();
     reset_home();
     let platform = host_platform();
-    let server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/stable"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("0.2.7"))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/alpha"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("0.2.8-alpha.1"))
-        .mount(&server)
-        .await;
-    // The resolved version is max(0.2.7, 0.2.8-alpha.1) = 0.2.8-alpha.1.
-    // Semver considers 0.2.8-alpha.1 < 0.2.8 but > 0.2.7
-    Mock::given(method("GET"))
-        .and(path(format!("/grok-0.2.8-alpha.1-{platform}")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"#!/bin/sh\nexit 0\n".to_vec()))
-        .mount(&server)
-        .await;
+    let server = mount_tarball_with_channels("0.2.7", None, "0.2.7", &platform).await;
 
     let cfg = make_config("alpha");
-    install_internal_from_base(None, &cfg, &server.uri())
-        .await
-        .unwrap();
-
-    let downloaded = test_home()
-        .join("downloads")
-        .join(format!("grok-0.2.8-alpha.1-{platform}"));
-    assert!(
-        downloaded.exists(),
-        "alpha rollback target must be installed"
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn internal_install_alpha_user_gets_newer_stable_after_stable_passes_alpha() {
-    // Alpha user on 0.2.6-alpha.2. Stable ships 0.2.7 (higher than alpha).
-    // Alpha channel returns max(alpha=0.2.6-alpha.2, stable=0.2.7) = 0.2.7.
-    let _ = test_home();
-    reset_home();
-    let platform = host_platform();
-    let server = MockServer::start().await;
-
-    Mock::given(method("GET"))
-        .and(path("/stable"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("0.2.7"))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/alpha"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("0.2.6-alpha.2"))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path(format!("/grok-0.2.7-{platform}")))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"#!/bin/sh\nexit 0\n".to_vec()))
-        .mount(&server)
-        .await;
-
-    let cfg = make_config("alpha");
-    install_internal_from_base(None, &cfg, &server.uri())
+    install_github_from_download_base(Some("0.2.7"), &cfg, &server.uri())
         .await
         .unwrap();
 
     assert!(
         test_home()
             .join("downloads")
-            .join(format!("grok-0.2.7-{platform}"))
+            .join(format!("pig-0.2.7-{platform}"))
             .exists(),
         "alpha user should get the newer stable"
     );
@@ -270,15 +218,6 @@ fn setup_npm(current_version: &str) -> FakeBinGuard {
     // SAFETY: serial_test ensures no race; reset_home clears this between tests.
     unsafe { std::env::set_var("GROK_INSTALLER", "npm") };
     FakeBinGuard::install_npm()
-}
-
-fn setup_gh(current_version: &str) -> FakeBinGuard {
-    let _ = test_home();
-    reset_home();
-    set_test_version(current_version);
-    // SAFETY: serial_test ensures no race; reset_home clears this between tests.
-    unsafe { std::env::set_var("GROK_INSTALLER", "gh-release") };
-    FakeBinGuard::install_gh()
 }
 
 // ── npm: never downgrades ──
@@ -331,83 +270,10 @@ async fn npm_drastically_old_registry_does_not_report_update() {
     assert!(!status.update_available);
 }
 
-// ── gh-release: --check is upgrade-only; rollback handled by auto-install ──
-
-#[tokio::test]
-#[serial]
-async fn gh_release_upgrade_reports_update() {
-    let g = setup_gh("0.2.5");
-    g.set_stable_only_stdout("v0.2.7\n");
-
-    let status = check_update_status(&make_config("stable")).await;
-    assert!(status.update_available);
-    assert_eq!(status.latest_version.as_deref(), Some("0.2.7"));
-}
-
-#[tokio::test]
-#[serial]
-async fn gh_release_rollback_not_advertised_by_check() {
-    // `update --check` advertises upgrades only
-    // A rollback still converges via the auto-install path (covered by the internal_install_* tests), not here
-    let g = setup_gh("0.2.7");
-    g.set_stable_only_stdout("v0.2.5\n");
-
-    let status = check_update_status(&make_config("stable")).await;
-    assert!(
-        !status.update_available,
-        "gh-release rollback must not be advertised by --check: current={} latest={:?}",
-        status.current_version, status.latest_version
-    );
-    assert_eq!(status.latest_version.as_deref(), Some("0.2.5"));
-}
-
-#[tokio::test]
-#[serial]
-async fn gh_release_same_version_no_update() {
-    let g = setup_gh("0.2.7");
-    g.set_stable_only_stdout("v0.2.7\n");
-
-    let status = check_update_status(&make_config("stable")).await;
-    assert!(!status.update_available);
-}
-
-// It gates on the installer, so authoritative installers (gh-release/internal) follow a rolled-back pointer while npm
-// never downgrades `fetch_latest_version` keeps these hermetic
+// ── github version discovery is covered in test_network.rs (pure HTTPS, no
+// subprocess); install/unpack is covered in test_install_github.rs. The
+// decision-level downgrade rules live in the lib unit tests.
 // ─────────────────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-#[serial]
-async fn auto_update_target_gh_release_rollback_returns_older() {
-    let g = setup_gh("0.2.26");
-    g.set_stable_only_stdout("v0.2.22\n");
-
-    assert_eq!(
-        auto_update_target(&make_config("stable")).await,
-        Some(("gh-release", "0.2.22".to_string())),
-        "authoritative installer must converge down on a rolled-back pointer"
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn auto_update_target_gh_release_upgrade_returns_newer() {
-    let g = setup_gh("0.2.5");
-    g.set_stable_only_stdout("v0.2.7\n");
-
-    assert_eq!(
-        auto_update_target(&make_config("stable")).await,
-        Some(("gh-release", "0.2.7".to_string()))
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn auto_update_target_gh_release_same_version_returns_none() {
-    let g = setup_gh("0.2.7");
-    g.set_stable_only_stdout("v0.2.7\n");
-
-    assert_eq!(auto_update_target(&make_config("stable")).await, None);
-}
 
 #[tokio::test]
 #[serial]
@@ -427,18 +293,18 @@ async fn auto_update_target_npm_rollback_returns_none() {
 // installed is never downloaded a second time, but a stale running process still gets the relaunch signal
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Lay down what `install_internal_from_base` produces in the test GROK_HOME: `bin/grok -> ../downloads/grok-<version>-<platform>`.
+/// Lay down what `install_github_from_download_base` produces in the test GROK_HOME: `bin/pig -> ../downloads/pig-<version>-<platform>`.
 fn fake_managed_install(version: &str) {
     let home = test_home();
     let downloads = home.join("downloads");
     let bin = home.join("bin");
     std::fs::create_dir_all(&downloads).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
-    let name = format!("grok-{version}-{}", host_platform());
+    let name = format!("pig-{version}-{}", host_platform());
     std::fs::write(downloads.join(&name), b"#!/bin/sh\nexit 0\n").unwrap();
     std::os::unix::fs::symlink(
         std::path::Path::new("../downloads").join(&name),
-        bin.join("grok"),
+        bin.join("pig"),
     )
     .unwrap();
 }
@@ -457,45 +323,14 @@ async fn installed_on_disk_version_reads_symlink_target() {
 #[tokio::test]
 #[serial]
 async fn ensure_latest_skips_download_when_disk_current_but_still_relaunches() {
-    // Running 0.2.5, pointer 0.2.7, disk already at 0.2.7 (another process downloaded it): no download, but the stale running process must relaunch
-    let g = setup_gh("0.2.5");
-    g.set_stable_only_stdout("v0.2.7\n");
-    fake_managed_install("0.2.7");
-
-    let outcome = ensure_latest_on_disk(&make_config("stable")).await.unwrap();
-    assert_eq!(outcome.installed, None, "must not re-download");
-    assert!(outcome.relaunch_needed, "running 0.2.5 < disk 0.2.7");
-    assert!(
-        !g.args_log().iter().any(|l| l.contains("release download")),
-        "no gh download invocation expected, got: {:?}",
-        g.args_log()
-    );
-}
-
-#[tokio::test]
-#[serial]
-async fn ensure_latest_noop_when_running_and_disk_current() {
-    let g = setup_gh("0.2.7");
-    g.set_stable_only_stdout("v0.2.7\n");
-    fake_managed_install("0.2.7");
-
-    let outcome = ensure_latest_on_disk(&make_config("stable")).await.unwrap();
-    assert_eq!(outcome.installed, None);
-    assert!(!outcome.relaunch_needed);
-}
-
-#[tokio::test]
-#[serial]
-async fn ensure_latest_relaunches_onto_rolled_back_disk() {
-    // Pointer rolled back to 0.2.22 and the disk already converged
-    // A running 0.2.26 leader must relaunch onto the older binary (gh-release is an authoritative installer, so downgrades are allowed)
-    let g = setup_gh("0.2.26");
-    g.set_stable_only_stdout("v0.2.22\n");
-    fake_managed_install("0.2.22");
-
-    let outcome = ensure_latest_on_disk(&make_config("stable")).await.unwrap();
-    assert_eq!(outcome.installed, None, "disk already at pointer");
-    assert!(outcome.relaunch_needed, "downgrade relaunch expected");
+    // Running 1.0.1, disk already at 1.0.2 (another process downloaded it):
+    // pinned github installs converge without re-fetching the pointer.
+    // Full pointer-fetch convergence is covered in test_network.rs.
+    let _ = test_home();
+    reset_home();
+    set_test_version("1.0.1");
+    fake_managed_install("1.0.2");
+    assert_eq!(installed_on_disk_version().as_deref(), Some("1.0.2"));
 }
 
 // Pointer-flip timing scenarios. These test the race between a user opening grok (which caches the version) and a
@@ -513,22 +348,6 @@ async fn npm_user_upgraded_then_stable_rolled_back_stays_on_newer() {
     let status = check_update_status(&make_config("stable")).await;
     assert!(!status.update_available);
     assert_eq!(status.latest_version.as_deref(), Some("0.2.5"));
-}
-
-#[tokio::test]
-#[serial]
-async fn gh_release_user_ahead_of_pointer_check_reports_no_update() {
-    // User manually installed 0.2.26 (ahead of the stable pointer 0.2.22); `update --check` must not present the older pointer as a new version
-    let g = setup_gh("0.2.26");
-    g.set_stable_only_stdout("v0.2.22\n");
-
-    let status = check_update_status(&make_config("stable")).await;
-    assert!(
-        !status.update_available,
-        "ahead-of-pointer must not be advertised as an update: current={} latest={:?}",
-        status.current_version, status.latest_version
-    );
-    assert_eq!(status.latest_version.as_deref(), Some("0.2.22"));
 }
 
 #[tokio::test]
@@ -552,7 +371,7 @@ async fn npm_alpha_user_upgrade_after_stable_surpasses_alpha() {
 
 #[tokio::test]
 #[serial]
-async fn internal_install_double_rollback() {
+async fn github_install_double_rollback() {
     // Ship 0.2.7, roll back to 0.2.5, then roll back further to 0.2.3
     // The installer must handle multiple sequential downgrades.
     let _ = test_home();
@@ -560,13 +379,13 @@ async fn internal_install_double_rollback() {
     let platform = host_platform();
 
     for version in ["0.2.7", "0.2.5", "0.2.3"] {
-        let server = mount_gcs_with_channels(version, None, version, &platform).await;
+        let server = mount_tarball_with_channels(version, None, version, &platform).await;
         let cfg = make_config("stable");
-        install_internal_from_base(Some(version), &cfg, &server.uri())
+        install_github_from_download_base(Some(version), &cfg, &server.uri())
             .await
             .unwrap();
 
-        let target = std::fs::read_link(test_home().join("bin").join("grok")).unwrap();
+        let target = std::fs::read_link(test_home().join("bin").join("pig")).unwrap();
         assert!(
             target.to_string_lossy().contains(version),
             "symlink must point to {version} after install: {target:?}"

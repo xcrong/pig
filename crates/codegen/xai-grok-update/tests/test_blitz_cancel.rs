@@ -1,13 +1,14 @@
-//! Blitz harness: hammer the download and install path while injecting a truncation / corruption / cancel at every point.
+//! Blitz harness: hammer the tarball download and install path while injecting a truncation / corruption / cancel at every point.
 //! After every iteration, assert the single invariant that makes the brick impossible:
 //!
-//! > `~/.grok/bin/grok` resolves to a binary that passes the smoke-test, OR it
+//! > `bin/pig` resolves to a binary that passes the smoke-test, OR it
 //! > is still the previous-good binary. It is never a broken/partial binary,
 //! > and a `.tmp` never masquerades as the active binary.
 //!
 //! The invariant is checked by RE-RESOLVING the symlink and RE-RUNNING the binary from disk every time, never by re-reading a value the harness set.
 //!
-//! A controllable raw HTTP/1.1 server serves a real executable ("good") artifact.
+//! A controllable raw HTTP/1.1 server serves a pig release tarball (containing
+//! a real executable `pig` entry).
 //! It can truncate the body, close the connection early, serve a right-length-but-garbage body, or hang mid-transfer.
 //! Each failure mode applies to both the parallel byte-range path and the single-connection path.
 
@@ -23,10 +24,10 @@ use serial_test::serial;
 
 use common::artifact_server::{ArtifactServer, Mode};
 use common::{
-    can_exec_shell_scripts, host_platform, make_update_config, reset_home, small_good_artifact,
-    test_home,
+    can_exec_shell_scripts, host_platform, make_pig_tarball, make_update_config, reset_home,
+    small_good_artifact, test_home,
 };
-use xai_grok_update::auto_update::install_internal_from_base;
+use xai_grok_update::auto_update::install_github_from_download_base;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Artifacts + fixtures
@@ -40,7 +41,7 @@ fn large_good_artifact() -> Vec<u8> {
     v
 }
 
-/// Seed a previous-good versioned binary and both managed symlinks (`grok` and `agent`; see `swap_managed_bin_links`).
+/// Seed a previous-good versioned binary and the managed `pig` symlink.
 /// Returns the absolute path of the seeded binary.
 fn seed_previous_good(home: &Path, version: &str, platform: &str) -> PathBuf {
     let downloads = home.join("downloads");
@@ -48,20 +49,18 @@ fn seed_previous_good(home: &Path, version: &str, platform: &str) -> PathBuf {
     std::fs::create_dir_all(&downloads).unwrap();
     std::fs::create_dir_all(&bin).unwrap();
 
-    let prev = downloads.join(format!("grok-{version}-{platform}"));
+    let prev = downloads.join(format!("pig-{version}-{platform}"));
     std::fs::write(&prev, small_good_artifact()).unwrap();
     std::fs::set_permissions(&prev, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let rel = format!("../downloads/grok-{version}-{platform}");
-    for name in ["grok", "agent"] {
-        let link = bin.join(name);
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&rel, &link).unwrap();
-    }
+    let rel = format!("../downloads/pig-{version}-{platform}");
+    let link = bin.join("pig");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&rel, &link).unwrap();
     dunce::canonicalize(&prev).unwrap()
 }
 
-/// What the active `grok` should resolve to after an install attempt.
+/// What the active `pig` should resolve to after an install attempt.
 #[derive(Clone, Copy, PartialEq)]
 enum Expect {
     /// The new version was installed and activated.
@@ -72,11 +71,8 @@ enum Expect {
 
 /// THE invariant. Re-resolves the on-disk symlink and RE-EXECUTES the resolved binary; never inspects a harness-held value.
 /// Guarantees the active managed link is always runnable and is never a `.tmp` or a partial file.
-/// Applied to both `grok` and `agent`; `swap_managed_bin_links` moves them together.
 fn assert_invariant(home: &Path, prev_good: &Path, new_binary: &Path, expect: Expect) {
-    for name in ["grok", "agent"] {
-        assert_link_invariant(home, name, prev_good, new_binary, expect);
-    }
+    assert_link_invariant(home, "pig", prev_good, new_binary, expect);
 }
 
 fn assert_link_invariant(
@@ -138,16 +134,16 @@ async fn run_one(
     let home = test_home();
     reset_home();
     let platform = host_platform();
-    let prev_good = seed_previous_good(home, "0.1.100", &platform);
+    let prev_good = seed_previous_good(home, "1.0.100", &platform);
     let new_binary = home
         .join("downloads")
-        .join(format!("grok-{version}-{platform}"));
+        .join(format!("pig-{version}-{platform}"));
     let cfg = make_update_config("stable");
 
     server.set_mode(mode);
 
     let base = server.uri();
-    let install = install_internal_from_base(Some(version), &cfg, &base);
+    let install = install_github_from_download_base(Some(version), &cfg, &base);
     let expect = match (mode, cancel_after) {
         (Mode::Full, None) => {
             install.await.expect("full artifact install should succeed");
@@ -182,18 +178,18 @@ async fn blitz_single_connection_matrix() {
         eprintln!("skipping: shell scripts cannot execute in this sandbox");
         return;
     }
-    let server = ArtifactServer::start(small_good_artifact());
-    let len = small_good_artifact().len();
+    let server = ArtifactServer::start(make_pig_tarball(&small_good_artifact()));
+    let len = make_pig_tarball(&small_good_artifact()).len();
 
     // Happy path first so we know the symlink CAN move to the new binary.
-    run_one(&server, Mode::Full, "0.1.181", None).await;
+    run_one(&server, Mode::Full, "1.0.1", None).await;
 
     // Right-length garbage, caught by the smoke-test
-    run_one(&server, Mode::Garbage, "0.1.181", None).await;
+    run_one(&server, Mode::Garbage, "1.0.1", None).await;
 
     // Premature EOF at several offsets, caught by the length/transport checks
     for k in [0usize, 1, len / 2, len.saturating_sub(1)] {
-        run_one(&server, Mode::Truncate(k), "0.1.181", None).await;
+        run_one(&server, Mode::Truncate(k), "1.0.1", None).await;
     }
 
     // Cancel mid-transfer at several offsets (incl. before any byte and before the HEAD completes), each dropping the in-flight future.
@@ -201,7 +197,7 @@ async fn blitz_single_connection_matrix() {
         run_one(
             &server,
             Mode::Hang(k),
-            "0.1.181",
+            "1.0.1",
             Some(Duration::from_millis(300)),
         )
         .await;
@@ -210,7 +206,7 @@ async fn blitz_single_connection_matrix() {
     // A clean serve still succeeds after the failure matrix
     // NOTE: run_one calls reset_home() at the start of every case, so this checks the happy path stays reachable, not recovery over a dirty dir
     // The genuine recovery-without-reset assertion lives in integrity_failure_is_clean_keeps_previous_good_and_emits_telemetry
-    run_one(&server, Mode::Full, "0.1.182", None).await;
+    run_one(&server, Mode::Full, "1.0.2", None).await;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -224,34 +220,34 @@ async fn blitz_parallel_path_matrix() {
         eprintln!("skipping: shell scripts cannot execute in this sandbox");
         return;
     }
-    let body = large_good_artifact();
+    let body = make_pig_tarball(&large_good_artifact());
     let len = body.len();
     let server = ArtifactServer::start(body);
 
     // Happy path through the parallel reassembly.
-    run_one(&server, Mode::Full, "0.1.181", None).await;
+    run_one(&server, Mode::Full, "1.0.1", None).await;
 
     // Right-length garbage reassembled from range chunks; the smoke-test catches it
-    run_one(&server, Mode::Garbage, "0.1.181", None).await;
+    run_one(&server, Mode::Garbage, "1.0.1", None).await;
 
     // With Content-Length present (the blitz server always sends it), a premature close surfaces as a reqwest stream error
     // that rejects the chunk. The download_range byte-count check covers the rarer close-delimited (Content-Length-absent)
     // case. The parallel path falls back to single-connection, which classifies the same truncation as DownloadIncomplete
     for k in [0usize, 1024, len / 3, len - 4096] {
-        run_one(&server, Mode::Truncate(k), "0.1.181", None).await;
+        run_one(&server, Mode::Truncate(k), "1.0.1", None).await;
     }
 
     // Cancel mid-chunk.
     run_one(
         &server,
         Mode::Hang(len / 4),
-        "0.1.181",
+        "1.0.1",
         Some(Duration::from_millis(400)),
     )
     .await;
 
     // Clean serve recovers.
-    run_one(&server, Mode::Full, "0.1.182", None).await;
+    run_one(&server, Mode::Full, "1.0.2", None).await;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -265,32 +261,34 @@ async fn smoke_test_rejects_garbage_and_keeps_previous_good() {
         eprintln!("skipping: shell scripts cannot execute in this sandbox");
         return;
     }
-    let server = ArtifactServer::start(small_good_artifact());
+    let server = ArtifactServer::start(make_pig_tarball(&small_good_artifact()));
     let home = test_home();
     reset_home();
     let platform = host_platform();
-    let prev_good = seed_previous_good(home, "0.1.100", &platform);
+    let prev_good = seed_previous_good(home, "1.0.100", &platform);
     let cfg = make_update_config("stable");
 
     server.set_mode(Mode::Garbage);
     let base = server.uri();
-    let result = install_internal_from_base(Some("0.1.181"), &cfg, &base).await;
+    let result = install_github_from_download_base(Some("1.0.1"), &cfg, &base).await;
     let err = result.expect_err("garbage artifact must not install");
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("failed to run") || msg.contains("could not start"),
-        "smoke failure should be specific, got: {msg}"
+        msg.contains("failed to run")
+            || msg.contains("could not start")
+            || msg.contains("tarball")
+            || msg.contains("unpack")
+            || msg.contains("pig"),
+        "garbage install should fail specifically, got: {msg}"
     );
 
-    let new_binary = home
-        .join("downloads")
-        .join(format!("grok-0.1.181-{platform}"));
+    let new_binary = home.join("downloads").join(format!("pig-1.0.1-{platform}"));
     assert_invariant(home, &prev_good, &new_binary, Expect::PreviousGood);
 
     // A subsequent clean serve must succeed.
     server.set_mode(Mode::Full);
     let base = server.uri();
-    install_internal_from_base(Some("0.1.181"), &cfg, &base)
+    install_github_from_download_base(Some("1.0.1"), &cfg, &base)
         .await
         .expect("clean serve after a failure should succeed");
     assert_invariant(home, &prev_good, &new_binary, Expect::NewBinary);
@@ -318,12 +316,12 @@ impl Rng {
 }
 
 async fn fuzz_loop(iterations: usize, seed: u64) {
-    let server = ArtifactServer::start(small_good_artifact());
-    let len = small_good_artifact().len();
+    let server = ArtifactServer::start(make_pig_tarball(&small_good_artifact()));
+    let len = make_pig_tarball(&small_good_artifact()).len();
     let mut rng = Rng(seed);
 
     for i in 0..iterations {
-        let version = if i % 2 == 0 { "0.1.181" } else { "0.1.182" };
+        let version = if i % 2 == 0 { "1.0.1" } else { "1.0.2" };
         // Periodically verify a clean serve still installs (recovery)
         // Keep the bulk on the fast corruption/cancel paths so the loop stays cheap enough for high iteration counts
         if i % 10 == 9 {
