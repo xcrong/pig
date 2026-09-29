@@ -8,10 +8,10 @@ use crate::app::actions::Effect;
 use crate::app::agent::{AgentId, AgentSession};
 use crate::app::agent_view::{ActivePane, AgentView};
 use crate::app::app_view::{ActiveView, AppView};
+use crate::app::cancel_latency::CancellationScope;
 use crate::app::cancel_latency::{CancelOrigin, TurnEnd};
 use crate::scrollback::state::ScrollbackState;
 use std::time::Instant;
-use xai_grok_telemetry::events::CancellationScope;
 
 /// Map `[ui].cancel_subagents_on_turn_cancel` / in-memory agent preference to `cancel_subagents` for the cancel wire payload.
 /// `None` means prompt.

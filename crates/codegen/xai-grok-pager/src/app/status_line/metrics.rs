@@ -28,6 +28,21 @@ pub(crate) struct StatusLineMetrics {
     slowest_ms: AtomicU64,
 }
 
+/// How the status line fared, at shutdown, for every session that enabled it.
+#[derive(Debug)]
+pub(crate) struct StatusLineHealth {
+    pub(crate) kind: &'static str,
+    /// A run's error text counts, a config diagnostic does not, so `false` can still mean a bar that showed one all session.
+    pub(crate) had_content: bool,
+    pub(crate) runs_ok: u64,
+    /// Shown on the row as `[status line: …]`.
+    pub(crate) runs_failed: u64,
+    pub(crate) runs_timed_out: u64,
+    /// Given up on; counted again under its outcome if it ever lands.
+    pub(crate) runs_abandoned: u64,
+    pub(crate) slowest_ms: u64,
+}
+
 impl StatusLineMetrics {
     const fn new() -> Self {
         Self {
@@ -81,12 +96,11 @@ impl StatusLineMetrics {
     }
 
     pub(crate) fn report_health(&self) {
-        if let Some(event) = self.health_event() {
-        }
+        if let Some(_event) = self.health_event() {}
     }
 
     /// `None` when there is nothing to report: both exit paths call this and the first wins, and a session with no row would dilute the signal.
-    fn health_event(&self) -> Option<xai_grok_telemetry::events::StatusLineHealth> {
+    fn health_event(&self) -> Option<StatusLineHealth> {
         if !self.draws_a_row.load(Ordering::Relaxed) {
             return None;
         }
@@ -95,7 +109,7 @@ impl StatusLineMetrics {
         if self.reported.swap(true, Ordering::Relaxed) {
             return None;
         }
-        Some(xai_grok_telemetry::events::StatusLineHealth {
+        Some(StatusLineHealth {
             kind,
             had_content: self.had_content.load(Ordering::Relaxed),
             runs_ok: self.ok.load(Ordering::Relaxed),

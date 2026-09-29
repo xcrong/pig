@@ -5,11 +5,8 @@ use std::time::Duration;
 
 use agent_client_protocol as acp;
 use xai_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
-use xai_grok_telemetry::events::{
-    PromptAckDisposition, PromptAckPromptKind, PromptAckSurface, PromptAckTimeoutFired,
-};
 
-use crate::app::prompt_ack::{AckSignal, PromptAckDeadlines, queue_changed_acks};
+use crate::app::prompt_ack::{AckSignal, PromptAckDeadlines, PromptAckSurface, queue_changed_acks};
 
 /// Bounds the rewind cancel and the final `x.ai/log` flush after an unacknowledged prompt: a wedged in-process
 /// shell holds the dispatch lock its `cancel()` also needs (see `test_hooks::park_forever_if_blackholed`).

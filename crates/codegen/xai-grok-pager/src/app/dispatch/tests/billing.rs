@@ -1279,11 +1279,7 @@ fn free_usage_upsell_shows_three_options_with_exact_labels() {
     let qv = agent_qv(&app);
     assert!(matches!(
         qv.local_kind,
-        Some(
-            crate::views::question_view::LocalQuestionKind::FreeUsageUpsell {
-                source: xai_grok_telemetry::events::SuperGrokUpsell::FreeUsagePaywall,
-            }
-        )
+        Some(crate::views::question_view::LocalQuestionKind::FreeUsageUpsell)
     ));
     let q = first_question(qv);
     assert_eq!(q.question, "You hit your free usage limit.");
@@ -1385,9 +1381,7 @@ fn free_usage_translate_local_submit_maps_options() {
     let agent = app.agents.get_mut(&AgentId(0)).unwrap();
     open_free_usage_upsell(agent, None);
     let mut qv = agent.question_view.take().unwrap();
-    let kind = || LocalQuestionKind::FreeUsageUpsell {
-        source: xai_grok_telemetry::events::SuperGrokUpsell::FreeUsagePaywall,
-    };
+    let kind = || LocalQuestionKind::FreeUsageUpsell;
 
     for idx in [0, 1, 2] {
         set_first_selection(&mut qv, QuestionSelection::Single(Some(idx)));
@@ -1424,11 +1418,7 @@ fn restricted_command_submit_opens_three_option_upsell() {
     let qv = agent_qv(&app);
     assert!(matches!(
         qv.local_kind,
-        Some(
-            crate::views::question_view::LocalQuestionKind::FreeUsageUpsell {
-                source: xai_grok_telemetry::events::SuperGrokUpsell::RestrictedCommand,
-            }
-        )
+        Some(crate::views::question_view::LocalQuestionKind::FreeUsageUpsell)
     ));
     let q = first_question(qv);
     assert_eq!(q.question, "Unlock all features with SuperGrok.");
@@ -1678,13 +1668,7 @@ fn credit_limit_upsell_submit_shows_url_when_browser_unavailable() {
         .expect("expected credit-limit upsell modal");
     // Select option 1, "Buy more credits" (credits / usage URL)
     set_first_selection(&mut qv, QuestionSelection::Single(Some(1)));
-    let kind = LocalQuestionKind::CreditLimitUpsell {
-        choices: vec![
-            xai_grok_telemetry::events::CreditLimitChoice::UpgradeTier,
-            xai_grok_telemetry::events::CreditLimitChoice::PurchaseCredits,
-            xai_grok_telemetry::events::CreditLimitChoice::RetryLastPrompt,
-        ],
-    };
+    let kind = LocalQuestionKind::CreditLimitUpsell;
     let InputOutcome::Action(Action::OpenUrl(url)) =
         translate_local_submit_for_test(&qv, kind, false)
     else {

@@ -220,10 +220,7 @@ fn flush_telemetry_and_exit(exit_code: i32) -> ! {
         xai_tty_utils::restore_native_stderr();
         crate::app::status_line::metrics::global().report_health();
     }
-    // Flush the --debug firehose on TUI signal exit (this path bypasses main's flush).
-    if let Some(path) = xai_grok_telemetry::span_profile::finalize() {
-        eprintln!("grok: span profile written to {}", path.display());
-    }
+    // Signal exit bypasses main's shutdown path; exit directly.
     std::process::exit(exit_code);
 }
 

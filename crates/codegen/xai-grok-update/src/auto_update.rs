@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -18,10 +18,50 @@ use crate::version::{
 use crate::winget::{UPGRADE_COMMAND, WINGET};
 use xai_grok_shell::util::config;
 use xai_grok_shell::util::grok_home::grok_home;
-pub use xai_grok_telemetry::events::CliUpdateTrigger;
-use xai_grok_telemetry::events::{
-    CliUpdate, CliUpdateChannel, CliUpdateErrorKind, CliUpdateInstaller, CliUpdateOutcome,
-};
+
+/// Why the updater is running: which caller started this update attempt.
+/// The value crosses the process boundary as `--trigger=<snake_case>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CliUpdateTrigger {
+    UserCommand,
+    AutoBackground,
+    LeaderConverge,
+}
+
+impl AsRef<str> for CliUpdateTrigger {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::UserCommand => "user_command",
+            Self::AutoBackground => "auto_background",
+            Self::LeaderConverge => "leader_converge",
+        }
+    }
+}
+
+impl std::str::FromStr for CliUpdateTrigger {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "user_command" => Ok(Self::UserCommand),
+            "auto_background" => Ok(Self::AutoBackground),
+            "leader_converge" => Ok(Self::LeaderConverge),
+            other => Err(format!("unknown update trigger: {other}")),
+        }
+    }
+}
+
+/// Coarse install-failure bucket for logs. Smoke kinds are post-download
+/// `--version` checks; other kinds cover download/activation/misc errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CliUpdateErrorKind {
+    SmokeTimeout,
+    SmokeNonzero,
+    SmokeSpawn,
+    Download,
+    Activate,
+    Other,
+}
 
 #[derive(Clone, Copy, Debug)]
 pub enum UpdateRunMode {
@@ -100,14 +140,7 @@ fn corrected_arch(
     }
 }
 
-/// Artifact platform from [`detect_platform`]; falls back to the compile-time values for combos the updater does not support.
-fn platform_label() -> String {
-    detect_platform()
-        .map(|(os, arch)| format!("{os}-{arch}"))
-        .unwrap_or_else(|_| format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH))
-}
-
-/// Typed phase marker for telemetry classification.
+/// Typed phase marker for install-error classification.
 /// Deliberately no `source()`, so anyhow's `{:#}` does not print the chain twice.
 #[derive(Debug, thiserror::Error)]
 enum InstallPhaseError {
@@ -117,7 +150,7 @@ enum InstallPhaseError {
     Activate(anyhow::Error),
 }
 
-/// Smoke failures stay unwrapped: already typed for telemetry classification.
+/// Smoke failures stay unwrapped: already typed for error classification.
 fn wrap_download_err(e: anyhow::Error) -> anyhow::Error {
     if e.is::<SmokeTestFailure>() {
         e
@@ -351,8 +384,6 @@ async fn fetch_update_plan(
     update_config: &UpdateConfig,
     policy: &config::VersionPolicy,
 ) -> Result<UpdatePlan> {
-    let _check_span =
-        xai_grok_telemetry::region!("update.check", xai_grok_telemetry::region::Parent::Inherit);
     let latest = fetch_latest_version(installer, update_config).await?;
     Ok(plan_for(policy, latest))
 }
@@ -397,10 +428,6 @@ pub struct EnsureLatestOutcome {
 /// another process (TUI background download, explicit `grok update`) is reused as-is. On Windows a busy leader therefore
 /// still re-downloads hourly; only the symlink layout can prove the disk is current without exec'ing the binary.
 pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<EnsureLatestOutcome> {
-    let _ensure_span = xai_grok_telemetry::region!(
-        "update.ensure_latest",
-        xai_grok_telemetry::region::Parent::Inherit
-    );
     let mut outcome = EnsureLatestOutcome {
         installed: None,
         relaunch_needed: false,
@@ -437,10 +464,6 @@ pub async fn ensure_latest_on_disk(update_config: &UpdateConfig) -> Result<Ensur
             CliUpdateTrigger::LeaderConverge,
         )
         .await?;
-        // The leader relaunches right after a successful converge and would die with the event still in flight
-        // Failures keep it alive, so successes would under-report. The install is already done.
-        xai_grok_telemetry::session_ctx::drain_pending(xai_grok_telemetry::session_ctx::CLI_DRAIN)
-            .await;
         outcome.installed = Some(target.clone());
     }
 
@@ -878,12 +901,6 @@ async fn run_update_subcommand(
     // One trigger representation end to end: the enum crosses the process boundary as --trigger=<value> (FromStr on the other side)
     cmd.arg("update");
     cmd.arg(format!("--trigger={}", trigger.as_ref()));
-    // Hand the resolved telemetry mode to the child, which cannot see the remote-settings layer (requirement pins still beat env)
-    // None at the startup spawns: they run before the settings prefetch, when this process knows no more than the child
-    // Waiting would let telemetry delay an update
-    if let Some(mode) = xai_grok_telemetry::client::current_mode() {
-        cmd.env("GROK_TELEMETRY_ENABLED", mode.to_string());
-    }
     match run_mode {
         UpdateRunMode::Blocking => {
             // stderr must be null, not piped: `.status()` does not drain pipes, so if the child writes more than the OS pipe buffer
@@ -968,12 +985,8 @@ pub async fn run_install_script(
     installer: &str,
     target: Option<&str>,
     update_config: &UpdateConfig,
-    trigger: CliUpdateTrigger,
+    _trigger: CliUpdateTrigger,
 ) -> Result<()> {
-    // What's on disk is being replaced, not this (possibly stale) process's version; npm has no trustworthy disk version, so it falls back
-    let from_version =
-        disk_version_for_installer(installer).unwrap_or_else(get_installed_grok_version);
-    let started = Instant::now();
     // Direct-binary reports the version it actually activated; npm resolves its own artifact, so the requested target stands in
     let result: Result<Option<String>> = match installer {
         "npm" => install_npm(
@@ -989,31 +1002,9 @@ pub async fn run_install_script(
             crate::version::PIG_RELEASES_URL
         )),
     };
-    // Measured before the success-only cache sweep, so the sweep cannot inflate success durations
-    let duration_ms = started.elapsed().as_millis() as u64;
     if result.is_ok() {
         remove_stale_models_cache().await;
     }
-    let (outcome, error_kind) = match &result {
-        Ok(_) => (CliUpdateOutcome::Success, None),
-        Err(e) => (CliUpdateOutcome::Failed, Some(classify_install_error(e))),
-    };
-    let to_version = match &result {
-        Ok(Some(installed)) => Some(installed.clone()),
-        _ => target.map(str::to_string),
-    };
-    xai_grok_telemetry::session_ctx::log_event(CliUpdate {
-        outcome,
-        trigger,
-        from_version,
-        to_version,
-        channel: CliUpdateChannel::from_channel_str(&update_config.channel),
-        installer: CliUpdateInstaller::from_installer_str(installer),
-        platform: platform_label(),
-        rosetta: running_under_rosetta_on_apple_silicon(),
-        duration_ms,
-        error_kind,
-    });
     result.map(|_| ()).map_err(|e| {
         anyhow::anyhow!(
             "Auto-update failed: {:#}\n\n{}",
@@ -1127,11 +1118,6 @@ async fn try_parallel_download(
     if size < PARALLEL_DOWNLOAD_MIN_BYTES {
         anyhow::bail!("file too small for parallel download ({} bytes)", size);
     }
-
-    let _dl_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
-        "update.download",
-        bytes = size as i64,
-    ));
 
     let n_chunks = parallel_chunk_count(size);
     if n_chunks < 2 {
@@ -1613,16 +1599,7 @@ async fn download_verified_github(
 
     // Smoke-test: run the binary before activating it
     // A truncated or corrupt download is caught here and never becomes the active pig
-    let smoke_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
-        "update.smoke_test",
-        elapsed_ms = tracing::field::Empty,
-    ));
-    let smoke_started = Instant::now();
     let smoke_result = smoke_test_binary(&binary_path).await;
-    smoke_span
-        .span()
-        .record("elapsed_ms", smoke_started.elapsed().as_millis() as i64);
-    smoke_span.close();
     if let Err(fail) = smoke_result {
         let _ = tokio::fs::remove_file(&binary_path).await;
         // No prefix: run_install_script's wrap adds "Auto-update failed:".
@@ -1638,11 +1615,6 @@ async fn download_verified_github(
 /// Local activation phase: swap the managed bin links to the downloaded binary and finish bookkeeping.
 /// Nothing here depends on which base URL served the download, so callers must not retry another base on failure.
 async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
-    let activate_span = xai_grok_telemetry::region::Region::from_span(tracing::info_span!(
-        "update.install",
-        elapsed_ms = tracing::field::Empty,
-    ));
-    let activate_started = Instant::now();
     let grok_home = grok_home();
     let download_dir = grok_home.join("downloads");
     let bin_dir = grok_home.join("bin");
@@ -1697,9 +1669,6 @@ async fn activate_verified_download(download: &VerifiedDownload) -> Result<()> {
 
     regenerate_completions(&link_path, &grok_home).await;
 
-    activate_span
-        .span()
-        .record("elapsed_ms", activate_started.elapsed().as_millis() as i64);
     Ok(())
 }
 

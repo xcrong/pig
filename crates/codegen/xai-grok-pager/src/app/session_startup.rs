@@ -11,14 +11,11 @@ pub(crate) fn stamp_phase_traceparent(meta: &mut Option<agent_client_protocol::M
     stamp_span_traceparent(meta, &span);
 }
 /// Stamp `span`'s traceparent into `meta` so the agent-side leg of the send nests under `span`.
+/// No-op: external trace propagation was removed with telemetry.
 pub(crate) fn stamp_span_traceparent(
-    meta: &mut Option<agent_client_protocol::Meta>,
-    span: &tracing::Span,
+    _meta: &mut Option<agent_client_protocol::Meta>,
+    _span: &tracing::Span,
 ) {
-    if let Some(tp) = xai_grok_otel::traceparent_of_span(span) {
-        meta.get_or_insert_with(agent_client_protocol::Meta::new)
-            .insert("traceparent".into(), serde_json::Value::String(tp));
-    }
 }
 /// Session-create intent deferred until [`AppView::session_startup_allowed`].
 ///
@@ -819,9 +816,7 @@ pub(crate) fn pre_acp_auth_manager(
         agent_config.grok_com_config.clone(),
         agent_config.endpoints.proxy_url(),
     ));
-    auth.configure_refresher(
-        agent_config.grok_com_config.auth_provider_command.clone(),
-    );
+    auth.configure_refresher(agent_config.grok_com_config.auth_provider_command.clone());
     auth
 }
 /// Pre-TUI remote restore (session state and memory only).
@@ -1347,25 +1342,6 @@ mod tests {
     }
     fn parse(args: &[&str]) -> PagerArgs {
         PagerArgs::try_parse_from(args).unwrap()
-    }
-    #[test]
-    fn traceparent_of_span_captures_own_span_id_not_parent() {
-        let _guard = xai_grok_otel::set_local_trace_subscriber();
-        let parent = tracing::info_span!("startup");
-        let _entered = parent.enter();
-        let child = tracing::info_span!("startup.session_create.backend_rpc");
-        let mut meta: Option<agent_client_protocol::Meta> = None;
-        stamp_span_traceparent(&mut meta, &child);
-        let stamped = meta
-            .as_ref()
-            .and_then(|m| m.get("traceparent"))
-            .and_then(serde_json::Value::as_str)
-            .expect("stamp_span_traceparent writes a traceparent");
-        let span_id = |tp: &str| tp.split('-').nth(2).unwrap().to_owned();
-        let child_own = xai_grok_otel::traceparent_of_span(&child).expect("child traceparent");
-        let parent_own = xai_grok_otel::traceparent_of_span(&parent).expect("parent traceparent");
-        assert_eq!(span_id(stamped), span_id(&child_own));
-        assert_ne!(span_id(stamped), span_id(&parent_own));
     }
     #[test]
     fn parent_session_is_worktree_detects_standalone_marker() {

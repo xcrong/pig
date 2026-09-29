@@ -118,25 +118,6 @@ pub enum ViewerKind {
     PlainText,
 }
 
-impl ViewerKind {
-    pub fn telemetry_kind(self) -> xai_grok_telemetry::events::BlockViewerKind {
-        use xai_grok_telemetry::events::BlockViewerKind;
-        match self {
-            Self::Markdown => BlockViewerKind::Markdown,
-            Self::Execute => BlockViewerKind::Execute,
-            Self::Edit => BlockViewerKind::Edit,
-            Self::BgTask => BlockViewerKind::BgTask,
-            Self::WebFetch => BlockViewerKind::WebFetch,
-            Self::WebSearch => BlockViewerKind::WebSearch,
-            Self::IntegrationSearch => BlockViewerKind::IntegrationSearch,
-            Self::UseTool => BlockViewerKind::UseTool,
-            Self::Read => BlockViewerKind::Read,
-            Self::Grep => BlockViewerKind::Grep,
-            Self::PlainText => BlockViewerKind::PlainText,
-        }
-    }
-}
-
 /// Fullscreen block content viewer. Replaces the scrollback area when open. Owns a `ListPaneState`
 /// for navigation, search, and visual-select. Reads block content from the scrollback via
 /// `entry_id`.

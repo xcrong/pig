@@ -180,7 +180,7 @@ impl AgentView {
                     && !self.pos_occluded(mouse.column, mouse.row)
                 {
                     return InputOutcome::Action(Action::AnnouncementsOpenCta(
-                        xai_grok_telemetry::events::AnnouncementCtaSurface::Banner,
+                        crate::app::actions::AnnouncementCtaSurface::Banner,
                     ));
                 }
                 if self
@@ -223,7 +223,7 @@ impl AgentView {
                     && !self.pos_occluded(mouse.column, mouse.row)
                 {
                     return InputOutcome::Action(Action::AnnouncementsOpenCta(
-                        xai_grok_telemetry::events::AnnouncementCtaSurface::Header,
+                        crate::app::actions::AnnouncementCtaSurface::Header,
                     ));
                 }
                 if self.hit_dashboard.contains(mouse.column, mouse.row) {

@@ -97,17 +97,11 @@ pub enum LocalQuestionKind {
     /// On submit, the selected option index is translated into an [`crate::app::actions::Action::NewSessionAnswered`].
     NewSession,
     /// Modal shown when the user hits the credit/rate limit (403). Options map to upsell URLs (upgrade
-    /// tier when not max-tier, buy credits / PAYG) plus "Try Again". `choices` maps each option index
-    /// to a telemetry choice variant.
-    CreditLimitUpsell {
-        choices: Vec<xai_grok_telemetry::events::CreditLimitChoice>,
-    },
+    /// tier when not max-tier, buy credits / PAYG) plus "Try Again".
+    CreditLimitUpsell,
     /// SuperGrok upsell modal: the free-usage paywall (429 with `subscription:free-usage-exhausted`) or a tier-restricted slash command invocation.
     /// Upgrade options carry their URL in the option `id`.
-    FreeUsageUpsell {
-        /// Telemetry source for `SuperGrokUpsellClicked`; distinguishes the paywall from the restricted-command upsell.
-        source: xai_grok_telemetry::events::SuperGrokUpsell,
-    },
+    FreeUsageUpsell,
     /// Modal shown when the shell rejects a model switch due to agent type incompatibility.
     /// Carries the target model and effort so the answer handler can create a new session with it.
     AgentTypeMismatch {

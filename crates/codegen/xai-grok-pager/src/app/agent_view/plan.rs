@@ -45,13 +45,6 @@ pub(crate) enum PostTurnPlanCommit {
     Revised,
     Abandoned,
 }
-/// Telemetry for every way a plan review resolves ("build", "abandon", "revise").
-fn log_plan_submit(action: &str) {
-    use xai_grok_telemetry::events::PlanSubmit;
-    log_event(PlanSubmit {
-        action: action.to_string(),
-    });
-}
 impl AgentView {
     /// Resolve the absolute path to the plan file for this session.
     fn plan_file_path(&self) -> Option<std::path::PathBuf> {
@@ -607,10 +600,6 @@ impl AgentView {
                 outcome,
                 permission: self.session.permission_label(),
             }));
-        log_plan_submit(match outcome {
-            PlanReviewOutcome::Approved => "build",
-            PlanReviewOutcome::Abandoned => "abandon",
-        });
     }
     /// Close a post-turn review only after its follow-up dispatch is accepted.
     /// Approve, revise, and abandon share this so a refuse cannot record a
@@ -654,7 +643,6 @@ impl AgentView {
                 self.kept_plan.drop_body_if_pathed();
                 self.prompt.textarea.cancel_undo_group();
                 self.show_toast("Plan revision sent.");
-                log_plan_submit("revise");
             }
         }
     }
@@ -704,7 +692,6 @@ impl AgentView {
         }
         self.prompt.textarea.cancel_undo_group();
         self.show_toast("Plan revision sent.");
-        log_plan_submit("revise");
         InputOutcome::Changed
     }
     pub(crate) fn reopen_plan_approval(&mut self) {

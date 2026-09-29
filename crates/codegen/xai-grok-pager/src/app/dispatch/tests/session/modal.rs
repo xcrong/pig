@@ -10,7 +10,7 @@ fn open_extensions_modal_no_session_sets_flag_no_fetches() {
     let effects = dispatch(
         Action::OpenExtensionsModal {
             tab: ExtensionsTab::Hooks,
-            trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::SlashCommand,
+            trigger: crate::app::actions::ExtensionsModalTrigger::SlashCommand,
         },
         &mut app,
     );
@@ -35,7 +35,7 @@ fn open_extensions_modal_with_session_emits_fetches_no_flag() {
     let effects = dispatch(
         Action::OpenExtensionsModal {
             tab: ExtensionsTab::Hooks,
-            trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::SlashCommand,
+            trigger: crate::app::actions::ExtensionsModalTrigger::SlashCommand,
         },
         &mut app,
     );
@@ -55,7 +55,7 @@ fn open_extensions_modal_with_session_resets_stale_flag() {
     let effects = dispatch(
         Action::OpenExtensionsModal {
             tab: ExtensionsTab::Hooks,
-            trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::SlashCommand,
+            trigger: crate::app::actions::ExtensionsModalTrigger::SlashCommand,
         },
         &mut app,
     );
@@ -323,7 +323,7 @@ fn marketplace_fetch_coalesces_while_inflight() {
     let effects = dispatch(
         Action::OpenExtensionsModal {
             tab: ExtensionsTab::Marketplace,
-            trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::SlashCommand,
+            trigger: crate::app::actions::ExtensionsModalTrigger::SlashCommand,
         },
         &mut app,
     );
@@ -367,7 +367,7 @@ fn marketplace_fetch_fires_immediately_when_idle() {
     dispatch(
         Action::OpenExtensionsModal {
             tab: ExtensionsTab::Marketplace,
-            trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::SlashCommand,
+            trigger: crate::app::actions::ExtensionsModalTrigger::SlashCommand,
         },
         &mut app,
     );

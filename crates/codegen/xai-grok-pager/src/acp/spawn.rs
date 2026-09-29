@@ -252,9 +252,7 @@ pub(crate) fn boot_auth_manager(
         agent_config.grok_com_config.clone(),
         agent_config.endpoints.proxy_url(),
     ));
-    auth_manager.configure_refresher(
-        agent_config.grok_com_config.auth_provider_command.clone(),
-    );
+    auth_manager.configure_refresher(agent_config.grok_com_config.auth_provider_command.clone());
     auth_manager
 }
 
@@ -327,7 +325,6 @@ pub async fn spawn_grok_shell(
 
             let mut agent =
                 MvpAgent::with_models(gateway, &agent_config, auth_manager, models_manager);
-            drop(_t);
             if let Some(mc) = memory_config {
                 agent.set_memory_config(mc);
             }

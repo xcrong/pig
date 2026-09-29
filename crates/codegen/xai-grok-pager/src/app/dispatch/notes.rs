@@ -328,8 +328,7 @@ pub(super) fn dispatch_enter_remember_mode(app: &mut AppView) -> Vec<Effect> {
 }
 
 /// Log the trace-consent outcome carried on an immediate send exactly once.
-pub(crate) fn log_trace_consent_selected(reenables_sharing: bool, choice: FeedbackTraceChoice) {
-}
+pub(crate) fn log_trace_consent_selected(reenables_sharing: bool, choice: FeedbackTraceChoice) {}
 /// The `feedback.send` unified log plus the POST effect for a committed report.
 /// This is the single writer for both, shared with the modal submit path.
 pub(crate) fn feedback_send_effect(
@@ -533,11 +532,7 @@ pub(super) fn dispatch_send_feedback(
         Some(FeedbackTraceChoice::AlwaysUpload) => {
             app.feedback_trace_choice_latched = true;
             if app.coding_data_retention_opt_out {
-                effects.extend(super::status::set_coding_data_sharing(
-                    app,
-                    true,
-                    xai_grok_telemetry::events::CodingDataConsentSource::FeedbackTraceCard,
-                ));
+                effects.extend(super::status::set_coding_data_sharing(app, true));
             }
             effects.push(Effect::UploadFeedbackTrace {
                 agent_id: id,
@@ -545,12 +540,6 @@ pub(super) fn dispatch_send_feedback(
                 submission_id: None,
                 intent: None,
                 trace_upload_token: None,
-            });
-            // The `[telemetry] trace_upload = true` write an `AlwaysUpload` consent collects.
-            effects.push(Effect::PersistSetting {
-                key: "trace_upload",
-                value: crate::settings::SettingValue::Bool(true),
-                rollback_value: crate::settings::SettingValue::Bool(false),
             });
         }
     }

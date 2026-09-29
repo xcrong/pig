@@ -14,7 +14,6 @@ mod billing;
 mod cta;
 mod ctx;
 mod dashboard;
-mod dashboard_telemetry;
 pub(crate) mod external_editor;
 mod import_claude;
 mod inline_feedback;

@@ -1,4 +1,6 @@
 use super::{ConnectAttempt, Context, EarlierAttempt, Reason, StartupFailure};
+use crate::acp::startup::format_duration;
+use crate::acp::{AgentKind, PhaseSnapshot, StartupPhase};
 use crate::app::connect_timeout::CONNECT_UI_TIMEOUT_TRY_COMMAND;
 use std::fmt::Write as _;
 use std::time::Duration;
@@ -29,7 +31,14 @@ pub(super) fn render(failure: &StartupFailure) -> String {
             )
         }
     };
-    rows.push(("Log", context.log_path.display().to_string()));
+    rows.push((
+        "Log",
+        context
+            .log_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "none".to_string()),
+    ));
     let _ = write!(report, "\n\n{}", label_rows(&rows));
     report
 }

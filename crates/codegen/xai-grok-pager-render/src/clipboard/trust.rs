@@ -31,10 +31,6 @@ impl ClipboardDelivery {
     pub fn reported_success(self) -> bool {
         matches!(self, Self::Confirmed | Self::Unverified)
     }
-
-    pub fn telemetry_label(self) -> &'static str {
-        self.into()
-    }
 }
 
 /// Clipboard-relevant facts about the terminal and host environment.
@@ -230,9 +226,6 @@ mod tests {
     ) -> ClipboardWriteLegs {
         ClipboardWriteLegs {
             route_native: true,
-            route_label: "test".into(),
-            cli_tools_tried: String::new(),
-            cli_ok_tools: cli_ok_tools.into(),
             wl_copy_ok: cli_ok_tools.split('+').any(|tool| tool == "wl-copy"),
             cli_ok,
             arboard_ok,
@@ -256,19 +249,12 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_projection_labels_and_historical_boolean_are_pinned() {
-        for (delivery, label, confirmed, failed, reported_success) in [
-            (ClipboardDelivery::Confirmed, "confirmed", true, false, true),
-            (
-                ClipboardDelivery::Unverified,
-                "unverified",
-                false,
-                false,
-                true,
-            ),
-            (ClipboardDelivery::Failed, "failed", false, true, false),
+    fn delivery_boolean_projection_is_pinned() {
+        for (delivery, confirmed, failed, reported_success) in [
+            (ClipboardDelivery::Confirmed, true, false, true),
+            (ClipboardDelivery::Unverified, false, false, true),
+            (ClipboardDelivery::Failed, false, true, false),
         ] {
-            assert_eq!(delivery.telemetry_label(), label);
             assert_eq!(delivery.is_confirmed(), confirmed);
             assert_eq!(delivery.is_failed(), failed);
             assert_eq!(delivery.reported_success(), reported_success);

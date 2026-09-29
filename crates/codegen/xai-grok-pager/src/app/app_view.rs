@@ -1068,7 +1068,7 @@ pub struct AppView {
     /// (hide-key, surface) pairs whose `AnnouncementCtaShown` impression was already logged (once per pager process, cleared on logout).
     /// Keyed by `announcement_hide_key` (stable even for id-less items, unlike the event's `id`).
     pub announcement_cta_impressions_logged:
-        std::collections::BTreeSet<(String, xai_grok_telemetry::events::AnnouncementCtaSurface)>,
+        std::collections::BTreeSet<(String, crate::app::actions::AnnouncementCtaSurface)>,
     /// Access gate from `grok_build_access_gate`. `Some` means blocked.
     pub gate: Option<xai_grok_login::GateInfo>,
     /// User-friendly subscription tier name (e.g. "SuperGrok", "Free").
@@ -1175,10 +1175,7 @@ enum UnconsumedInputScope {
 impl AppView {
     /// Finishes startup if this view still holds the obligation; does nothing after.
     pub(crate) fn finish_startup(&mut self, outcome: crate::acp::startup::StartupOutcome) {
-        crate::acp::startup::PendingStartup::finish_held(
-            &mut self.pending_startup,
-            outcome,
-        );
+        crate::acp::startup::PendingStartup::finish_held(&mut self.pending_startup, outcome);
     }
     /// Releases the obligation without recording; does nothing after finish.
     pub(crate) fn abandon_startup(&mut self) {
@@ -3716,7 +3713,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
         if matches!(ctx.auth_state, AuthState::Done) {
             if ctx.upgrade_cta_keyboard && key!('o', CONTROL).matches(key) {
                 return InputOutcome::Action(Action::AnnouncementsOpenCta(
-                    xai_grok_telemetry::events::AnnouncementCtaSurface::Keyboard,
+                    crate::app::actions::AnnouncementCtaSurface::Keyboard,
                 ));
             }
             if key!('w', CONTROL).matches(key) && ctx.cwd_has_git_ancestor {
@@ -3938,7 +3935,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     && rect.contains(ratatui::layout::Position::new(mouse.column, mouse.row))
                 {
                     return InputOutcome::Action(Action::AnnouncementsOpenCta(
-                        xai_grok_telemetry::events::AnnouncementCtaSurface::Welcome,
+                        crate::app::actions::AnnouncementCtaSurface::Welcome,
                     ));
                 }
                 if let Some(rect) = ctx.privacy_banner_opt_in_rect
@@ -5022,11 +5019,11 @@ impl AppView {
         self.log_announcement_cta_impressions();
         self.maybe_evict_offscreen_caches();
     }
-    /// Log [`xai_grok_telemetry::events::AnnouncementCtaShown`] for each surface whose CTA button is painted this frame.
+    /// Record each surface whose CTA button is painted this frame.
     /// (Armed hit rect, not covered by a frame occluder: the click/OSC 8 truth the impression pairs with.)
     /// The owner resolves through the same slot gate as the click dispatch, so a critical preempting the slot or a hidden promo emits nothing.
     pub(crate) fn log_announcement_cta_impressions(&mut self) {
-        use xai_grok_telemetry::events::AnnouncementCtaSurface;
+        use crate::app::actions::AnnouncementCtaSurface;
         let (banner, welcome, header, dashboard) = match self.active_view {
             ActiveView::Welcome => (false, self.welcome_upgrade_cta_rect.is_some(), false, false),
             ActiveView::Agent(agent_id) => match self.agents.get(&agent_id) {
@@ -5072,8 +5069,7 @@ impl AppView {
             if self
                 .announcement_cta_impressions_logged
                 .insert((key.clone(), surface))
-            {
-            }
+            {}
         }
     }
     /// Interval between off-screen render-cache eviction sweeps.

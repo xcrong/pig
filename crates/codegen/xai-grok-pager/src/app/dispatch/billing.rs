@@ -69,8 +69,7 @@ pub(crate) fn is_credit_limit_error(http_status: Option<u16>, message: &str) -> 
     }
 }
 
-/// Option id for Try Again. Submit routes on this sentinel, not on position in the telemetry `choices` vec.
-/// position in the telemetry `choices` vec.
+/// Option id for Try Again. Submit routes on this sentinel, not on option position.
 pub(crate) const CREDIT_LIMIT_RETRY_OPTION_ID: &str = "retry-last-prompt";
 
 struct CreditLimitCopy {
@@ -78,8 +77,6 @@ struct CreditLimitCopy {
     upgrade_tier_desc: &'static str,
     secondary_label: &'static str,
     secondary_desc: &'static str,
-    second_choice: xai_grok_telemetry::events::CreditLimitChoice,
-    payg_telemetry: bool,
 }
 
 /// Open the credit-limit upsell Q&A on the given agent.
@@ -105,31 +102,22 @@ pub(super) fn open_credit_limit_upsell(
             upgrade_tier_desc: "Upgrade to a higher tier for more usage",
             secondary_label: "Buy more credits",
             secondary_desc: "Purchase credits to keep using Pig Agent",
-            second_choice: xai_grok_telemetry::events::CreditLimitChoice::PurchaseCredits,
-            payg_telemetry: false,
         },
         CreditLimitUpsellMode::LegacyPayg { enabled: true } => CreditLimitCopy {
             heading: "You\u{2019}ve hit your spending cap.",
             upgrade_tier_desc: "Upgrade to a higher tier for more credits",
             secondary_label: "Increase limit",
             secondary_desc: "Raise your pay-as-you-go spending cap",
-            second_choice: xai_grok_telemetry::events::CreditLimitChoice::PayAsYouGo,
-            payg_telemetry: true,
         },
         CreditLimitUpsellMode::LegacyPayg { enabled: false } => CreditLimitCopy {
             heading: "You\u{2019}ve hit the credit limit for your plan.",
             upgrade_tier_desc: "Upgrade to a higher tier for more credits",
             secondary_label: "Pay as you go",
             secondary_desc: "Enable pay-as-you-go credits for on-demand usage",
-            second_choice: xai_grok_telemetry::events::CreditLimitChoice::PayAsYouGo,
-            payg_telemetry: false,
         },
     };
-    let unified_billing = matches!(mode, CreditLimitUpsellMode::UnifiedCredits);
-
 
     let mut options = Vec::new();
-    let mut choices = Vec::new();
     if !max_tier {
         options.push(QuestionOption {
             label: "Upgrade tier".into(),
@@ -137,7 +125,6 @@ pub(super) fn open_credit_limit_upsell(
             preview: None,
             id: Some(UPSELL_URL_UPGRADE.into()),
         });
-        choices.push(xai_grok_telemetry::events::CreditLimitChoice::UpgradeTier);
     }
     options.push(QuestionOption {
         label: copy.secondary_label.into(),
@@ -145,14 +132,12 @@ pub(super) fn open_credit_limit_upsell(
         preview: None,
         id: Some(UPSELL_URL_PAYG.into()),
     });
-    choices.push(copy.second_choice);
     options.push(QuestionOption {
         label: "Try Again".into(),
         description: "Resubmit the last prompt once you have usage again".into(),
         preview: None,
         id: Some(CREDIT_LIMIT_RETRY_OPTION_ID.into()),
     });
-    choices.push(xai_grok_telemetry::events::CreditLimitChoice::RetryLastPrompt);
 
     let question = Question {
         question: copy.heading.into(),
@@ -167,7 +152,7 @@ pub(super) fn open_credit_limit_upsell(
         vec![question],
         stashed,
     )
-    .with_local_kind(LocalQuestionKind::CreditLimitUpsell { choices })
+    .with_local_kind(LocalQuestionKind::CreditLimitUpsell)
     .with_no_freeform();
     agent.install_local_question(state);
     agent.prompt.set_text("");
@@ -217,19 +202,13 @@ fn open_supergrok_upsell(
         return false;
     }
 
-    let (heading, source, modal_id_prefix) = match reason {
-        UpsellReason::FreeUsageLimit => (
-            "You hit your free usage limit.",
-            SuperGrokUpsell::FreeUsagePaywall,
-            "free-usage-upsell",
-        ),
+    let (heading, modal_id_prefix) = match reason {
+        UpsellReason::FreeUsageLimit => ("You hit your free usage limit.", "free-usage-upsell"),
         UpsellReason::RestrictedCommand => (
             "Unlock all features with SuperGrok.",
-            SuperGrokUpsell::RestrictedCommand,
             "restricted-command-upsell",
         ),
     };
-
 
     // /supergrok lists all plans; every upgrade option lands there.
     let options = vec![
@@ -265,7 +244,7 @@ fn open_supergrok_upsell(
         vec![question],
         stashed,
     )
-    .with_local_kind(LocalQuestionKind::FreeUsageUpsell { source })
+    .with_local_kind(LocalQuestionKind::FreeUsageUpsell)
     .with_no_freeform();
     agent.install_local_question(state);
     agent.prompt.set_text("");
@@ -531,10 +510,6 @@ pub(super) fn dispatch_retry_credit_limit_prompt(app: &mut AppView) -> Vec<Effec
 // Action handlers.
 
 pub(super) fn dispatch_open_supergrok_url(app: &mut AppView) -> Vec<Effect> {
-    log_event(SuperGrokUpsellClicked {
-        source: SuperGrokUpsell::WelcomeScreen,
-        auth_method: app.login_method_id.as_ref().map(|id| id.0.to_string()),
-    });
     let url = app
         .gate
         .as_ref()

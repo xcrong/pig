@@ -1,9 +1,14 @@
 //! User-cancel latency measurement.
 //!
-//! The small data types plus the settle rule behind the `CancellationCompleted` telemetry event.
+//! The small data types plus the settle rule behind user-cancel latency tracking.
 //! All consumers live in `agent_view` (anchor/settle) and `dispatch` (the cancel call sites); nothing in `agent.rs` uses them.
 use std::time::Instant;
-use xai_grok_telemetry::events::CancellationScope;
+/// Which unit of work a user cancel targets.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum CancellationScope {
+    Turn,
+    Compaction,
+}
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum CancelOrigin {
     UserGesture,
@@ -21,6 +26,12 @@ pub(crate) enum TurnEnd {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CancelLatency {
     pub(crate) requested_at: Instant,
+    pub(crate) scope: CancellationScope,
+}
+/// Settled user-cancel latency: how long the cancel took, and what it targeted.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CancellationCompleted {
+    pub(crate) latency_ms: u64,
     pub(crate) scope: CancellationScope,
 }
 impl CancelLatency {

@@ -530,18 +530,13 @@ impl ExtensionsTab {
             Self::McpServers => Self::Workflows,
         }
     }
+}
 
-    pub fn telemetry_tab(self) -> xai_grok_telemetry::events::ExtensionsModalTab {
-        use xai_grok_telemetry::events::ExtensionsModalTab;
-        match self {
-            Self::Hooks => ExtensionsModalTab::Hooks,
-            Self::Plugins => ExtensionsModalTab::Plugins,
-            Self::Marketplace => ExtensionsModalTab::Marketplace,
-            Self::Skills => ExtensionsModalTab::Skills,
-            Self::Workflows => ExtensionsModalTab::Workflows,
-            Self::McpServers => ExtensionsModalTab::McpServers,
-        }
-    }
+/// Whether the user acted via keyboard or mouse in the extensions modal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionsInputMethod {
+    Keyboard,
+    Mouse,
 }
 
 /// Group toggle direction for a collapsed hooks group.

@@ -23,6 +23,34 @@ pub(crate) const MIN_PROMPT_ACK_TIMEOUT_SECS: u64 = 5;
 /// Clamp ceiling; keeps `armed_at + hard` from overflowing `Instant` on absurd input.
 pub(crate) const MAX_PROMPT_ACK_TIMEOUT_SECS: u64 = 3600;
 
+/// Which client surface hit the prompt-acknowledgment fail-safe.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PromptAckSurface {
+    Tui,
+    Headless,
+}
+
+/// What the client did with the unacknowledged prompt's text.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PromptAckDisposition {
+    RestoredToComposer,
+    MergedIntoDraft,
+    /// Nothing went back to a composer: skill / wire-block / bash prompts, a composer busy editing a
+    /// queued row, a draft that already carries images, or the headless runner.
+    NotRestorable,
+}
+
+/// Which kind of prompt went unacknowledged.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PromptAckPromptKind {
+    Prompt,
+    Bash,
+    Skill,
+}
+
 /// Resolved soft/hard deadlines, measured from the arm instant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PromptAckDeadlines {

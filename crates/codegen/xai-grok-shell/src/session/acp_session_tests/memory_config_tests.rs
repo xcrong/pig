@@ -996,8 +996,7 @@ async fn test_session_close_does_not_run_dream() {
                 ),
                 xai_grok_sampling_types::ConversationItem::assistant("done"),
             ]);
-            let timer = xai_grok_telemetry::session_end::SessionEndTimer::new_shared();
-            actor.run_session_end_memory_pipeline("test", &timer).await;
+            actor.run_session_end_memory_pipeline("test").await;
             assert_eq!(
                 actor
                     .memory

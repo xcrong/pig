@@ -2613,9 +2613,9 @@ fn fork_failure_force_idle_drops_a_live_cancel_anchor() {
 
 #[test]
 fn settled_cancel_emits_latency_from_arm_anchor_once() {
+    use crate::app::cancel_latency::CancellationScope;
     use crate::app::cancel_latency::{CancelLatency, CancelOrigin, TurnEnd};
     use std::time::{Duration, Instant};
-    use xai_grok_telemetry::events::CancellationScope;
 
     let mut app = test_app_with_agent();
     let id = AgentId(0);
@@ -2657,7 +2657,7 @@ fn settled_cancel_emits_latency_from_arm_anchor_once() {
 #[test]
 fn cancel_and_arm_anchors_before_the_cancel_teardown() {
     use crate::app::cancel_latency::CancelOrigin;
-    use xai_grok_telemetry::events::CancellationScope;
+    use crate::app::cancel_latency::CancellationScope;
 
     let mut app = test_app_with_agent();
     let id = AgentId(0);

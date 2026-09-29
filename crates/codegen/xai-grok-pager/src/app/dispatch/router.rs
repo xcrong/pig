@@ -1095,11 +1095,7 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SaveRememberNoteFromModal => dispatch_save_remember_note_from_modal(app),
         Action::SendBtw { question, images } => dispatch_send_btw(app, question, images),
         Action::SendRecap { auto } => dispatch_send_recap(app, auto),
-        Action::SetCodingDataSharing { opted_in } => set_coding_data_sharing(
-            app,
-            opted_in,
-            xai_grok_telemetry::events::CodingDataConsentSource::Settings,
-        ),
+        Action::SetCodingDataSharing { opted_in } => set_coding_data_sharing(app, opted_in),
         Action::ToggleYolo => dispatch_toggle_yolo(app),
         Action::ToggleMultiline => dispatch_toggle_multiline(app),
         Action::ToggleCompactMode => dispatch_toggle_compact_mode(app),

@@ -1476,9 +1476,8 @@ fn cycle_mode_pre_session_normal_to_plan_does_not_persist_permission_mode() {
     );
 }
 
-/// The `set_yolo_mode_inner` early-return at the `app.active_view` guard MUST precede the `xai_grok_telemetry::log_event` call.
-/// Otherwise a no-agent dispatch would leak a `YoloToggled` telemetry event for an action that never happened.
-/// We can't easily intercept the telemetry library from a unit test, but we DO pin that no side effects escape via the SHARED-state checks below.
+/// The `set_yolo_mode_inner` early-return at the `app.active_view` guard MUST precede any state mutation.
+/// Otherwise a no-agent dispatch would persist a permission-mode change for an action that never happened.
 #[test]
 fn set_yolo_mode_no_op_when_no_active_agent() {
     let mut app = test_app(); // no agent; active_view is Welcome

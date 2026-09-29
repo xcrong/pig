@@ -701,7 +701,7 @@ fn parse_session_load_restore_meta_rejects_unknown_degree() {
 /// A deadline is `Timeout` and a decode/persist panic is `Panicked`, never `ReadFailed`; the deadline arm returns without waiting on the stalled thread.
 #[tokio::test]
 async fn clipboard_probe_stage_names_a_deadline_and_a_panic_apart_from_a_read_failure() {
-    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    use crate::clipboard::ClipboardProbeDropReason as Reason;
     let started = std::time::Instant::now();
     let late = clipboard_probe_stage(
             std::time::Duration::from_millis(20),
@@ -729,7 +729,7 @@ fn probe_raster() -> crate::clipboard::ImageData {
 /// Each drop reason maps to exactly one completion; a failed persist keeps its error text for the toast.
 #[tokio::test]
 async fn bounded_clipboard_probe_maps_each_drop_reason_to_its_completion() {
-    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    use crate::clipboard::ClipboardProbeDropReason as Reason;
     for (reason, image, expected) in [
         (Reason::PasteboardChangedBeforeRead, None, "ProbeDropped"),
         (Reason::PasteboardChangedAfterRead, Some(probe_raster()), "ProbeDropped"),
@@ -787,7 +787,7 @@ fn probe_stage(
 /// A board that moved since enqueue drops before any pasteboard read.
 #[test]
 fn probe_stage_drops_before_reading_when_the_board_moved_since_the_keypress() {
-    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    use crate::clipboard::ClipboardProbeDropReason as Reason;
     let (outcome, probe_calls) = probe_stage(crate::clipboard::ClipboardProbeHook {
         snapshot: Some((Some(2), true)),
         ..crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster()))
@@ -800,7 +800,7 @@ fn probe_stage_drops_before_reading_when_the_board_moved_since_the_keypress() {
 /// A copy landing during the read (GB-5461) discards the raster that read returned and names the move.
 #[test]
 fn probe_stage_drops_the_raster_when_the_board_moved_during_the_read() {
-    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    use crate::clipboard::ClipboardProbeDropReason as Reason;
     let (outcome, probe_calls) = probe_stage(crate::clipboard::ClipboardProbeHook {
         snapshot_after_read: Some((Some(2), true)),
         ..crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster()))
@@ -813,7 +813,7 @@ fn probe_stage_drops_the_raster_when_the_board_moved_during_the_read() {
 /// A read error keeps its own reason: the deadline kill stays `Timeout`, anything else `ReadFailed`.
 #[test]
 fn probe_stage_keeps_the_read_error_reason() {
-    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    use crate::clipboard::ClipboardProbeDropReason as Reason;
     for reason in [Reason::Timeout, Reason::ReadFailed] {
         let (outcome, _) = probe_stage(crate::clipboard::ClipboardProbeHook {
             attachment_probe_error: Some(reason),
@@ -857,7 +857,7 @@ fn non_bracketed_probe_attaches_even_when_text_does_not_match() {
 }
 #[test]
 fn bracketed_probe_drops_a_mismatched_payload_before_reading_the_raster() {
-    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    use crate::clipboard::ClipboardProbeDropReason as Reason;
     crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook {
         text: Some("screenshot".to_owned()),
         ..crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster()))
@@ -911,7 +911,7 @@ fn bracketed_probe_attaches_an_image_only_paste() {
 /// Origin-text read failure on a bracketed probe is its own silent drop, not the toasting `ReadFailed`.
 #[test]
 fn bracketed_probe_names_a_clipboard_text_read_failure() {
-    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    use crate::clipboard::ClipboardProbeDropReason as Reason;
     crate::clipboard::set_clipboard_probe_hook(crate::clipboard::ClipboardProbeHook {
         text_read_failed: true,
         ..crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster()))
@@ -932,7 +932,7 @@ fn bracketed_probe_names_a_clipboard_text_read_failure() {
 /// A failed session persist keeps the raster (for the drop's hash) and the error text (for the toast).
 #[test]
 fn probe_stage_reports_a_failed_persist_with_its_error() {
-    use xai_grok_telemetry::events::ClipboardProbeDropReason as Reason;
+    use crate::clipboard::ClipboardProbeDropReason as Reason;
     let not_a_dir = tempfile::NamedTempFile::new().expect("temp file");
     crate::clipboard::set_clipboard_probe_hook(
         crate::clipboard::ClipboardProbeHook::with_raster(Some(probe_raster())),

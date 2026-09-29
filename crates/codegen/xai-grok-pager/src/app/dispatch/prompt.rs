@@ -412,8 +412,7 @@ pub(super) fn dispatch_show_undo_tip(app: &mut AppView) -> Vec<Effect> {
     if agent.show_ephemeral_tip(
         crate::tips::clear_detector::undo_tip(),
         &mut app.tip_seen_counts,
-    ) {
-    }
+    ) {}
     vec![]
 }
 
@@ -434,8 +433,7 @@ pub(in crate::app) fn show_small_screen_tip(app: &mut AppView) {
     if agent.show_ephemeral_tip(
         crate::tips::small_screen::small_screen_tip(),
         &mut app.tip_seen_counts,
-    ) {
-    }
+    ) {}
 }
 
 /// Show the existing one-shot SSH discovery tip, redirected to `/doctor`.
@@ -452,8 +450,7 @@ pub(in crate::app) fn show_ssh_wrap_tip(app: &mut AppView) {
     if agent.show_ephemeral_tip(
         crate::tips::ssh_wrap::ssh_wrap_tip(),
         &mut app.tip_seen_counts,
-    ) {
-    }
+    ) {}
 }
 
 pub(super) fn dispatch_show_plan_nudge(app: &mut AppView) -> Vec<Effect> {
@@ -471,8 +468,7 @@ pub(super) fn dispatch_show_plan_nudge(app: &mut AppView) -> Vec<Effect> {
     if agent.show_ephemeral_tip(
         crate::tips::plan_nudge::plan_nudge_tip(),
         &mut app.tip_seen_counts,
-    ) {
-    }
+    ) {}
     vec![]
 }
 
@@ -492,8 +488,7 @@ pub(super) fn dispatch_show_word_select_tip(app: &mut AppView) -> Vec<Effect> {
     if agent.show_ephemeral_tip(
         crate::tips::word_select::word_select_tip(),
         &mut app.tip_seen_counts,
-    ) {
-    }
+    ) {}
     // Snapshot the prompt as of this double-click (also on a same-key TTL refresh: a new double-click is a new moment)
     // Any later divergence (typed, pasted, dropped) refuses the chord and retires the tip
     // A no-show gated by the seen cap leaves the slot to another tip and skips this
@@ -517,8 +512,7 @@ pub(in crate::app) fn present_export_copy_tip(
         return false;
     }
     let shown = agent.show_ephemeral_tip(crate::tips::export_copy::export_copy_tip(), seen_counts);
-    if shown {
-    }
+    if shown {}
     shown
 }
 
@@ -564,8 +558,7 @@ fn maybe_show_send_now_tip(app: &mut AppView) {
     if agent.show_ephemeral_tip(
         crate::tips::send_now::send_now_tip(),
         &mut app.tip_seen_counts,
-    ) {
-    }
+    ) {}
 }
 
 /// Body of [`dispatch_send_prompt`], parameterized over whether to consume the prompt textarea after the command is processed.
@@ -811,24 +804,11 @@ pub(super) fn dispatch_send_prompt_submission(
             };
 
             if let Some(invocation) = parse_invocation(trimmed) {
-                let (is_builtin, command) = {
+                let command = {
                     let reg = agent.prompt.slash_controller.registry();
-                    let is_builtin = reg.is_builtin(invocation.token);
                     // Bypasses only the menu-only hide (hard gates still return `None`); see `CommandRegistry::get_for_dispatch`
-                    let command = reg.get_for_dispatch(invocation.token).cloned();
-                    (is_builtin, command)
+                    reg.get_for_dispatch(invocation.token).cloned()
                 };
-                {
-                    let source = if is_builtin {
-                        PagerCommandSource::Builtin
-                    } else {
-                        PagerCommandSource::NonBuiltin
-                    };
-                    log_event(PagerSlashCommand {
-                        command_name: invocation.token.to_string(),
-                        source,
-                    });
-                }
                 if let Some(command) = command {
                     // Central screen-mode gate
                     // A fully-typed invocation thus earns a hint that names the way out instead of leaking to the model

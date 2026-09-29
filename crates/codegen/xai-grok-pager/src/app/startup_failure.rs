@@ -6,6 +6,7 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::acp::{AgentKind, PhaseSnapshot, StartupOutcome, StartupPhase};
 
 #[derive(Debug)]
 pub struct StartupFailure {
@@ -67,7 +68,9 @@ pub(crate) struct Context {
     pub(crate) target: AgentKind,
     pub(crate) attempt: ConnectAttempt,
     pub(crate) version: String,
-    pub(crate) log_path: PathBuf,
+    /// Local log file for the failure report. `None`: no log file is
+    /// written locally (the telemetry unified log was removed).
+    pub(crate) log_path: Option<PathBuf>,
 }
 
 impl StartupFailure {

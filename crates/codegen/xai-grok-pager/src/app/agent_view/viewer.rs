@@ -998,9 +998,6 @@ impl AgentView {
     }
 
     pub(crate) fn show_block_viewer(&mut self, pane: BlockViewerPane) {
-        log_event(BlockViewerOpened {
-            kind: pane.kind.telemetry_kind(),
-        });
         self.block_viewer = Some(pane);
     }
 
@@ -1019,9 +1016,6 @@ impl AgentView {
         if quoted.is_empty() {
             return IdleEnterQuote::ConsumedEmpty;
         }
-        log_event(BlockViewerQuoted {
-            kind: viewer.kind.telemetry_kind(),
-        });
         self.dismiss_block_viewer();
         IdleEnterQuote::Quoted(quoted)
     }

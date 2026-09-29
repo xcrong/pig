@@ -3,7 +3,7 @@ use std::path::Path;
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
 use xai_acp_lib::{AcpAgentTx, acp_send};
-use xai_grok_telemetry::events::ClipboardProbeDropReason;
+use crate::clipboard::ClipboardProbeDropReason;
 use super::actions::{
     PermissionModePersist, ProbedAttachment, SubagentKillOutcome, TaskResult,
 };
@@ -192,20 +192,14 @@ pub(super) async fn clipboard_probe_stage(
     }
 }
 /// One deadline over the whole stage so a stall anywhere still completes and cannot strand a send parked behind
-/// `paste_probe_in_flight`. Drop telemetry is emitted after the deadline check so a late stage never reports twice.
+/// `paste_probe_in_flight`.
 pub(super) async fn bounded_clipboard_probe(
     deadline: std::time::Duration,
     work: impl FnOnce() -> ClipboardProbeStage + Send + 'static,
 ) -> (ProbedAttachment, Option<String>) {
-    let started = std::time::Instant::now();
     match clipboard_probe_stage(deadline, work).await {
         Ok(outcome) => outcome,
         Err(dropped) => {
-            crate::clipboard::log_clipboard_probe_dropped(
-                dropped.reason,
-                dropped.image.as_ref(),
-                started,
-            );
             let attachment = match dropped.reason {
                 ClipboardProbeDropReason::ReadFailed
                 | ClipboardProbeDropReason::Timeout
@@ -992,14 +986,6 @@ pub(crate) async fn persist_setting(
                 return Err(kind_mismatch("compact_mode", "Bool", &value));
             };
             xai_grok_shell::util::config::set_compact_mode(b)
-                .await
-                .map_err(|e| e.to_string())
-        }
-        "trace_upload" => {
-            let SettingValue::Bool(b) = value else {
-                return Err(kind_mismatch("trace_upload", "Bool", &value));
-            };
-            xai_grok_shell::util::config::set_trace_upload(b)
                 .await
                 .map_err(|e| e.to_string())
         }

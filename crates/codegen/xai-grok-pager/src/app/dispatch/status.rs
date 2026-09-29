@@ -215,20 +215,9 @@ fn is_current_coding_data_write(app: &AppView, seq: u64, agent_id: AgentId) -> b
     false
 }
 
-fn log_coding_data_consent_selected(
-    source: xai_grok_telemetry::events::CodingDataConsentSource,
-    opted_in: bool,
-    previous_opted_in: bool,
-) {
-}
-
 /// Set coding-data-sharing preference.
 /// The shell owns this setting and stores it in auth metadata (persists via ACP ext-request, NOT `~/.grok/config.toml`).
-pub(super) fn set_coding_data_sharing(
-    app: &mut AppView,
-    opted_in: bool,
-    source: xai_grok_telemetry::events::CodingDataConsentSource,
-) -> Vec<Effect> {
+pub(super) fn set_coding_data_sharing(app: &mut AppView, opted_in: bool) -> Vec<Effect> {
     match app.coding_data_sharing_lock() {
         Some(CodingDataSharingLock::Zdr) => {
             app.show_toast("\u{2717} Cannot change: Zero Data Retention enabled");
@@ -242,7 +231,6 @@ pub(super) fn set_coding_data_sharing(
     }
     let agent_id = coding_data_sharing_agent_id(app);
     let prev = !app.coding_data_retention_opt_out;
-    log_coding_data_consent_selected(source, opted_in, prev);
 
     // Coalesce on the pending write's own choice, not the mirror, which auth-meta refreshes rewrite mid-flight; a duplicate has nothing new to send
     if app.coding_data_pending_opted_in() == Some(opted_in) {
@@ -617,11 +605,7 @@ pub(in crate::app::dispatch) fn dispatch_privacy_banner_opt_in(app: &mut AppView
     if app.coding_data_pending_write.is_some() || !app.privacy_banner_should_show() {
         return vec![];
     }
-    set_coding_data_sharing(
-        app,
-        true,
-        xai_grok_telemetry::events::CodingDataConsentSource::PrivacyBanner,
-    )
+    set_coding_data_sharing(app, true)
 }
 
 /// `[Opt out]`: always writes (the local "out" may be the unconfirmed fail-safe default) and acks only after ACP success.
@@ -629,11 +613,7 @@ pub(in crate::app::dispatch) fn dispatch_privacy_banner_opt_out(app: &mut AppVie
     if app.coding_data_pending_write.is_some() || !app.privacy_banner_should_show() {
         return vec![];
     }
-    set_coding_data_sharing(
-        app,
-        false,
-        xai_grok_telemetry::events::CodingDataConsentSource::PrivacyBanner,
-    )
+    set_coding_data_sharing(app, false)
 }
 
 pub(super) fn handle_context_info_complete(

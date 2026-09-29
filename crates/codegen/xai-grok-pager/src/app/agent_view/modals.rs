@@ -6,11 +6,11 @@ use super::test_fixtures;
 use crate::app::actions::Action;
 use crate::app::app_view::InputOutcome;
 use crate::views::extensions_modal::ActionVerb;
+use crate::views::extensions_modal::ExtensionsInputMethod;
 use crate::views::feedback_modal::{FeedbackModalDisplacement, FeedbackModalOutcome};
 use crate::views::file_search::line_viewer::LineViewerState;
 use crate::views::managed_connectors_wait::{ManagedConnectorsWaitOutcome, WAIT_BACK_SHORTCUT_ID};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
-use xai_grok_telemetry::events::ExtensionsInputMethod;
 
 const MAX_CONCURRENT_FEEDBACK_TRACE_UPLOADS: usize = 8;
 
@@ -437,7 +437,7 @@ impl AgentView {
     fn log_extensions_modal_action(
         &self,
         action: &str,
-        input_method: xai_grok_telemetry::events::ExtensionsInputMethod,
+        input_method: crate::views::extensions_modal::ExtensionsInputMethod,
     ) {
         self.log_extensions_modal_action_with(action, input_method, None, None);
     }
@@ -445,19 +445,18 @@ impl AgentView {
     fn log_extensions_modal_action_with(
         &self,
         action: &str,
-        input_method: xai_grok_telemetry::events::ExtensionsInputMethod,
+        input_method: crate::views::extensions_modal::ExtensionsInputMethod,
         target: Option<String>,
         enabled: Option<bool>,
     ) {
-        if let Some(ref state) = self.extensions_modal {
-        }
+        if let Some(ref state) = self.extensions_modal {}
     }
 
     fn log_extensions_modal_resolved_action(
         &self,
         ch: char,
         action: &crate::views::extensions_modal::ButtonAction,
-        input_method: xai_grok_telemetry::events::ExtensionsInputMethod,
+        input_method: crate::views::extensions_modal::ExtensionsInputMethod,
     ) {
         if let Some(ref state) = self.extensions_modal
             && let Some(label) =
@@ -716,7 +715,7 @@ impl AgentView {
         {
             self.log_extensions_modal_action(
                 "open_connectors",
-                xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
             );
             return self.execute_modal_button_action(
                 crate::views::extensions_modal::ButtonAction::OpenManagedConnectors,
@@ -812,7 +811,7 @@ impl AgentView {
                     {
                         self.log_extensions_modal_action(
                             "collapse",
-                            xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                            crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                         );
                     }
                     return InputOutcome::Changed;
@@ -832,7 +831,7 @@ impl AgentView {
                             );
                             self.log_extensions_modal_action_with(
                                 "auth",
-                                xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                                crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                                 target,
                                 enabled,
                             );
@@ -843,7 +842,7 @@ impl AgentView {
                         if self.extensions_modal_set_collapsed(sel, &gk, false) {
                             self.log_extensions_modal_action(
                                 "expand",
-                                xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                                crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                             );
                         }
                     }
@@ -855,7 +854,7 @@ impl AgentView {
                     state.picker_state.scroll_offset = None;
                     self.log_extensions_modal_action(
                         "collapse",
-                        xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                        crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                     );
                     return InputOutcome::Changed;
                 }
@@ -865,7 +864,7 @@ impl AgentView {
                     state.picker_state.scroll_offset = None;
                     self.log_extensions_modal_action(
                         "expand",
-                        xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                        crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                     );
                     return InputOutcome::Changed;
                 }
@@ -995,7 +994,7 @@ impl AgentView {
                 if cycled {
                     self.log_extensions_modal_action(
                         "filter",
-                        xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                        crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                     );
                 }
                 InputOutcome::Changed
@@ -1009,7 +1008,7 @@ impl AgentView {
                     self.log_extensions_modal_resolved_action(
                         ch,
                         &action,
-                        xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                        crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                     );
                     self.execute_modal_button_action(action)
                 } else {
@@ -1019,18 +1018,18 @@ impl AgentView {
             crate::views::picker::PickerOutcome::Selected(_)
             | crate::views::picker::PickerOutcome::Expand(_) => self
                 .extensions_modal_expand_or_auth(
-                    xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                    crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                 ),
             crate::views::picker::PickerOutcome::Collapse(_) => {
                 self.extensions_modal_toggle_fold(
-                    xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                    crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                 );
                 InputOutcome::Changed
             }
             crate::views::picker::PickerOutcome::NonSelectableClick(idx) => {
                 self.extensions_modal_toggle_mcp_section_at(
                     idx,
-                    xai_grok_telemetry::events::ExtensionsInputMethod::Keyboard,
+                    crate::views::extensions_modal::ExtensionsInputMethod::Keyboard,
                 );
                 InputOutcome::Changed
             }
@@ -1233,7 +1232,7 @@ impl AgentView {
                 self.log_extensions_modal_resolved_action(
                     ch,
                     &action,
-                    xai_grok_telemetry::events::ExtensionsInputMethod::Mouse,
+                    crate::views::extensions_modal::ExtensionsInputMethod::Mouse,
                 );
                 return self.execute_modal_button_action(action);
             }
@@ -1348,7 +1347,7 @@ impl AgentView {
         {
             self.log_extensions_modal_action(
                 "open_connectors",
-                xai_grok_telemetry::events::ExtensionsInputMethod::Mouse,
+                crate::views::extensions_modal::ExtensionsInputMethod::Mouse,
             );
             return self.execute_modal_button_action(
                 crate::views::extensions_modal::ButtonAction::OpenManagedConnectors,
@@ -1395,7 +1394,7 @@ impl AgentView {
                 if cycled {
                     self.log_extensions_modal_action(
                         "filter",
-                        xai_grok_telemetry::events::ExtensionsInputMethod::Mouse,
+                        crate::views::extensions_modal::ExtensionsInputMethod::Mouse,
                     );
                 }
                 InputOutcome::Changed
@@ -1403,12 +1402,12 @@ impl AgentView {
             crate::views::picker::PickerOutcome::Selected(_)
             | crate::views::picker::PickerOutcome::Expand(_) => self
                 .extensions_modal_expand_or_auth(
-                    xai_grok_telemetry::events::ExtensionsInputMethod::Mouse,
+                    crate::views::extensions_modal::ExtensionsInputMethod::Mouse,
                 ),
             crate::views::picker::PickerOutcome::NonSelectableClick(idx) => {
                 self.extensions_modal_toggle_mcp_section_at(
                     idx,
-                    xai_grok_telemetry::events::ExtensionsInputMethod::Mouse,
+                    crate::views::extensions_modal::ExtensionsInputMethod::Mouse,
                 );
                 InputOutcome::Changed
             }
@@ -1423,7 +1422,7 @@ impl AgentView {
     fn extensions_modal_toggle_mcp_section_at(
         &mut self,
         entry_idx: usize,
-        input_method: xai_grok_telemetry::events::ExtensionsInputMethod,
+        input_method: crate::views::extensions_modal::ExtensionsInputMethod,
     ) {
         let Some(ref mut state) = self.extensions_modal else {
             return;
@@ -1510,7 +1509,7 @@ impl AgentView {
     /// Expand/collapse the selected row, or trigger MCP OAuth when the server needs auth.
     fn extensions_modal_expand_or_auth(
         &mut self,
-        input_method: xai_grok_telemetry::events::ExtensionsInputMethod,
+        input_method: crate::views::extensions_modal::ExtensionsInputMethod,
     ) -> InputOutcome {
         if self
             .extensions_modal
@@ -1541,7 +1540,7 @@ impl AgentView {
     /// Group headers toggle their collapsed state; leaf items toggle detail-field expansion.
     fn extensions_modal_toggle_fold(
         &mut self,
-        input_method: xai_grok_telemetry::events::ExtensionsInputMethod,
+        input_method: crate::views::extensions_modal::ExtensionsInputMethod,
     ) {
         let Some(ref mut state) = self.extensions_modal else {
             return;

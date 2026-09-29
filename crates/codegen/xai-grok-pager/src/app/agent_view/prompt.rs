@@ -537,11 +537,6 @@ impl AgentView {
                     return InputOutcome::Changed;
                 }
                 ActionId::InterjectPrompt => {
-                    crate::actions::log_shortcut_used(
-                        key,
-                        ActionId::InterjectPrompt,
-                        When::PromptFocused.telemetry_name(),
-                    );
                     // Editing-queued intercept lives in `queue_edit.rs`.
                     if let Some(outcome) = self.interject_editing_queued_intercept() {
                         return outcome;
@@ -586,11 +581,6 @@ impl AgentView {
                     let outcome = self.handle_stash_prompt_key();
                     // A declined chord falls through like an unclaimed key.
                     if !matches!(outcome, InputOutcome::Unchanged) {
-                        crate::actions::log_shortcut_used(
-                            key,
-                            ActionId::StashPrompt,
-                            When::PromptFocused.telemetry_name(),
-                        );
                         return outcome;
                     }
                 }
@@ -1854,10 +1844,10 @@ mod prompt_suggestion_key_tests {
 #[cfg(test)]
 mod apple_terminal_ctrl_o_upgrade_cta_tests {
     use super::*;
+    use crate::app::actions::AnnouncementCtaSurface;
     use crate::app::agent::AgentState;
     use crate::app::app_view::InputOutcome;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use xai_grok_telemetry::events::AnnouncementCtaSurface;
 
     fn ctrl_o() -> KeyEvent {
         KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)

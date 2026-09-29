@@ -581,11 +581,9 @@ async fn a_subagent_session_end_names_the_child() {
 
         let mut parent = Harness::new().await;
         parent.listen(&events);
-        let timer = xai_grok_telemetry::session_end::SessionEndTimer::new_shared();
         super::run_loop::fire_session_end_hooks(
             &parent.actor,
             "shutdown",
-            &timer,
             &mut super::run_loop::DeferredStart::new(),
         )
         .await;
@@ -593,11 +591,9 @@ async fn a_subagent_session_end_names_the_child() {
 
         let mut child = Harness::subagent().await;
         child.listen(&events);
-        let child_timer = xai_grok_telemetry::session_end::SessionEndTimer::new_shared();
         super::run_loop::fire_session_end_hooks(
             &child.actor,
             "shutdown",
-            &child_timer,
             &mut super::run_loop::DeferredStart::new(),
         )
         .await;

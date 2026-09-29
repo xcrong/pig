@@ -381,21 +381,6 @@ fn resolve_marketplace_root(
     }
 }
 
-fn install_kind(is_git: bool) -> xai_grok_telemetry::events::InstallKind {
-    if is_git {
-        xai_grok_telemetry::events::InstallKind::Git
-    } else {
-        xai_grok_telemetry::events::InstallKind::Local
-    }
-}
-
-fn log_plugin_installed(
-    install_kind: xai_grok_telemetry::events::InstallKind,
-    success: bool,
-    error_category: Option<String>,
-) {
-}
-
 fn cmd_install(source: &str, trust: bool) -> Result<()> {
     if let Some(mref) = xai_grok_plugin_marketplace::install_resolve::parse_marketplace_ref(source)
     {
@@ -419,7 +404,6 @@ fn cmd_install(source: &str, trust: bool) -> Result<()> {
             for w in &outcome.warnings {
                 tracing::warn!("{w}");
             }
-            log_plugin_installed(install_kind(!outcome.is_local), true, None);
             println!(
                 "Installed {} plugin(s) from {source}: {}",
                 outcome.plugin_names.len(),
@@ -428,12 +412,6 @@ fn cmd_install(source: &str, trust: bool) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            // On failure we don't know the kind; default to Git (matches canonical).
-            log_plugin_installed(
-                xai_grok_telemetry::events::InstallKind::Git,
-                false,
-                Some(e.category()),
-            );
             bail!("{e}");
         }
     }
@@ -466,11 +444,6 @@ fn cmd_install_marketplace(
                 tracing::warn!("{w}");
             }
             if outcome.already_installed {
-                log_plugin_installed(
-                    install_kind(outcome.source_is_git),
-                    false,
-                    Some("already_installed".to_string()),
-                );
                 let update_name = outcome
                     .plugin_names
                     .first()
@@ -483,7 +456,6 @@ fn cmd_install_marketplace(
                 );
                 return Ok(());
             }
-            log_plugin_installed(install_kind(outcome.source_is_git), true, None);
             if let Some(note) = &outcome.other_copies_note {
                 println!("{note}");
             }
@@ -496,12 +468,6 @@ fn cmd_install_marketplace(
             Ok(())
         }
         Err(e) => {
-            // On failure we don't know the kind; default to Git (matches canonical).
-            log_plugin_installed(
-                xai_grok_telemetry::events::InstallKind::Git,
-                false,
-                Some(e.category()),
-            );
             bail!("{e}");
         }
     }

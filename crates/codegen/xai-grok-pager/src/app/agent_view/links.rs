@@ -1137,7 +1137,7 @@ mod link_click_tests {
     #[test]
     fn header_upgrade_cta_rect_and_ctrl_o_override() {
         use crate::actions::ActionId;
-        use xai_grok_telemetry::events::AnnouncementCtaSurface;
+        use crate::app::actions::AnnouncementCtaSurface;
         let reg = ActionRegistry::defaults();
         let cta = || {
             Some(xai_grok_announcements::AnnouncementCta {

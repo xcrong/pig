@@ -1074,14 +1074,9 @@ impl AgentView {
             && self.surface() == ViewSurface::Root
             && registry.lookup(key, When::AgentScreen) == Some(ActionId::OpenExtensions)
         {
-            crate::actions::log_shortcut_used(
-                key,
-                ActionId::OpenExtensions,
-                When::AgentScreen.telemetry_name(),
-            );
             return InputOutcome::Action(Action::OpenExtensionsModal {
                 tab: crate::views::extensions_modal::ExtensionsTab::Plugins,
-                trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::KeyboardShortcut,
+                trigger: crate::app::actions::ExtensionsModalTrigger::KeyboardShortcut,
             });
         }
         if let Event::Key(key) = ev
@@ -1225,7 +1220,7 @@ impl AgentView {
             ActionId::ToggleYolo => {
                 if self.pinned_upgrade_cta_live {
                     InputOutcome::Action(Action::AnnouncementsOpenCta(
-                        xai_grok_telemetry::events::AnnouncementCtaSurface::Keyboard,
+                        crate::app::actions::AnnouncementCtaSurface::Keyboard,
                     ))
                 } else {
                     InputOutcome::Action(Action::SetYoloMode(!self.session.is_yolo()))

@@ -472,7 +472,7 @@ pub(super) fn toast_session_only_slash(app: &mut AppView, name: &str) {
 pub(super) fn dispatch_open_extensions_modal(
     app: &mut AppView,
     tab: crate::views::extensions_modal::ExtensionsTab,
-    trigger: xai_grok_telemetry::events::ExtensionsModalTrigger,
+    trigger: crate::app::actions::ExtensionsModalTrigger,
 ) -> Vec<Effect> {
     use crate::views::extensions_modal::ExtensionsModalState;
 

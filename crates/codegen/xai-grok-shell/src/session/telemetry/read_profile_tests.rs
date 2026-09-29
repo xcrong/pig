@@ -62,7 +62,7 @@ fn two_caps_project_to_multiple() {
         output_limit: detail.output_limit(),
         detail: ToolSourceDetail::Read(detail),
     };
-    let tool_id = xai_grok_telemetry::events::CanonicalToolId::from_qualified(&format!(
+    let tool_id = super::super::tool_call::CanonicalToolId::from_qualified(&format!(
         "{}:{}",
         ToolNamespace::GrokBuild,
         ReadFileTool.id()

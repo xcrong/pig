@@ -44,7 +44,7 @@ pub use pop_fence::{PopFence, PopFenceOutcome};
 pub use term_version::{TermVersion, TermVersionSource};
 
 /// Flat snapshot of terminal details for local logs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TerminalTelemetry {
     pub brand: String,
     pub multiplexer: String,

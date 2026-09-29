@@ -1,9 +1,9 @@
 //! `/workflows`: browse the workflow catalog in the extensions modal.
 
 use crate::app::actions::Action;
+use crate::app::actions::ExtensionsModalTrigger;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 use crate::views::extensions_modal::ExtensionsTab;
-use xai_grok_telemetry::events::ExtensionsModalTrigger;
 
 /// Open the extensions modal on the Workflows catalog tab.
 pub struct WorkflowsCommand;

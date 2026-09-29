@@ -10,12 +10,11 @@ use crate::app::agent::AgentState;
 use crate::app::agent_view::{AgentView, PromptMode};
 use crate::app::app_view::AppView;
 use crate::app::cancel_latency::TurnEnd;
-use crate::app::prompt_ack::{PromptAckDeadlines, PromptAckOutcome};
+use crate::app::prompt_ack::{
+    PromptAckDeadlines, PromptAckDisposition, PromptAckOutcome, PromptAckPromptKind,
+};
 use crate::scrollback::block::RenderBlock;
 use std::time::{Duration, Instant};
-use xai_grok_telemetry::events::{
-    PromptAckDisposition, PromptAckPromptKind, PromptAckSurface, PromptAckTimeoutFired,
-};
 
 const PROMPT_ACK_TIMEOUT_TOAST_RESTORED: &str = "Prompt not accepted, text restored";
 const PROMPT_ACK_TIMEOUT_TOAST_STOPPED: &str = "Prompt not accepted, turn stopped";

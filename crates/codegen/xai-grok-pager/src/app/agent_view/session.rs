@@ -8,7 +8,9 @@ use super::{
 };
 use crate::app::agent::{AgentSession, GoalDisplayStatus};
 use crate::app::app_view::InputOutcome;
-use crate::app::cancel_latency::{CancelLatency, CancelOrigin, TurnEnd};
+use crate::app::cancel_latency::{
+    CancelLatency, CancelOrigin, CancellationCompleted, CancellationScope, TurnEnd,
+};
 use crate::app::prompt_ack::{AckSignal, PromptAckWatch};
 use crate::scrollback::state::ScrollbackState;
 use crate::scrollback::text_selection::ResolvedSelectionModel;
@@ -490,8 +492,7 @@ impl AgentView {
         self.turn_start_ms_prompt = None;
         self.last_active_at = Some(now);
         self.note_prompt_ack(AckSignal::TurnEnded, now);
-        if let Some(event) = self.settle_cancel(end, now) {
-        }
+        let _ = self.settle_cancel(end, now);
     }
     /// Start the acknowledgment watch for a prompt this client just drained and sent.
     /// Chat sessions never arm: the gateway bridge has no queue broadcast, so their first signal is the first delta.

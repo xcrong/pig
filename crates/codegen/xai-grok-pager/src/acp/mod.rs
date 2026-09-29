@@ -22,6 +22,7 @@ use crate::client_identity::{HEADLESS_CLIENT_TYPE, PAGER_CLIENT_TYPE, PAGER_CLIE
 use agent_client_protocol as acp;
 use anyhow::Result;
 pub use model_state::ModelState;
+pub use startup::{AgentKind, Owner, PhaseSnapshot, StartupOutcome, StartupPhase, StartupTimer};
 use std::io::Write;
 use tokio_util::sync::CancellationToken;
 use xai_acp_lib::{AcpAgentTx, AcpClientRx, acp_send};
@@ -87,6 +88,15 @@ pub mod startup {
         Leader,
     }
 
+    impl AgentKind {
+        pub fn label(self) -> &'static str {
+            match self {
+                Self::Embedded => "embedded",
+                Self::Leader => "leader",
+            }
+        }
+    }
+
     /// Named startup phases, shared with the connect-failure UI.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum StartupPhase {
@@ -100,6 +110,23 @@ pub mod startup {
         EagerAuth,
         AppInit,
         SessionCreate,
+    }
+
+    impl StartupPhase {
+        pub fn label(self) -> &'static str {
+            match self {
+                Self::ConfigLoad => "config_load",
+                Self::ManagedPolicy => "managed_policy",
+                Self::Bootstrap => "bootstrap",
+                Self::ModelCatalog => "model_catalog",
+                Self::WorkerSpawn => "worker_spawn",
+                Self::LeaderConnect => "leader_connect",
+                Self::AcpInitialize => "acp_initialize",
+                Self::EagerAuth => "eager_auth",
+                Self::AppInit => "app_init",
+                Self::SessionCreate => "session_create",
+            }
+        }
     }
 
     /// How startup ended.
@@ -146,6 +173,21 @@ pub mod startup {
             )
         }
 
+        /// Elapsed wall time since the timer started.
+        pub fn elapsed(&self) -> std::time::Duration {
+            self.started.elapsed()
+        }
+
+        /// Point-in-time phase readout for the connect-failure report.
+        /// Phase timing is not recorded locally, so this is always empty;
+        /// the report renders that as "no steps" rather than invented timings.
+        pub fn phase_snapshot(&self) -> PhaseSnapshot {
+            PhaseSnapshot {
+                completed: Vec::new(),
+                open: None,
+            }
+        }
+
         /// Log a connect-attempt outcome locally.
         pub fn emit_telemetry(
             &self,
@@ -168,6 +210,61 @@ pub mod startup {
 
     /// Enter a named phase. Phases are UI labels; no timing is recorded.
     pub fn enter(_phase: StartupPhase) {}
+
+    /// Point-in-time startup-phase readout for the connect-failure report.
+    #[derive(Clone, Debug)]
+    pub struct PhaseSnapshot {
+        pub completed: Vec<(StartupPhase, std::time::Duration)>,
+        pub open: Option<(StartupPhase, std::time::Duration)>,
+    }
+
+    impl PhaseSnapshot {
+        pub fn stuck_in(&self) -> &'static str {
+            self.open.map_or("unknown", |(phase, _)| phase.label())
+        }
+
+        /// The slowest phase so far, including the one still open.
+        pub fn longest_step(&self) -> Option<StartupPhase> {
+            self.completed
+                .iter()
+                .copied()
+                .chain(self.open)
+                .max_by_key(|(_, elapsed)| *elapsed)
+                .map(|(phase, _)| phase)
+        }
+
+        /// Completed phases read `phase=dur`; the open one reads `phase>=dur`.
+        pub fn summary(&self) -> String {
+            use std::fmt::Write as _;
+            if self.completed.is_empty() && self.open.is_none() {
+                return "no phases entered".to_string();
+            }
+            let mut out = String::new();
+            for (phase, d) in &self.completed {
+                if !out.is_empty() {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "{}={}", phase.label(), format_duration(*d));
+            }
+            if let Some((phase, open)) = self.open {
+                if !out.is_empty() {
+                    out.push_str(", ");
+                }
+                let _ = write!(out, "{}>={}", phase.label(), format_duration(open));
+            }
+            out
+        }
+    }
+
+    /// Whole milliseconds under a second, one decimal seconds above.
+    pub fn format_duration(d: std::time::Duration) -> String {
+        let ms = d.as_millis();
+        if ms < 1000 {
+            format!("{ms}ms")
+        } else {
+            format!("{:.1}s", ms as f64 / 1000.0)
+        }
+    }
 
     /// Scope a phase to a region of work; logs on drop.
     pub fn phase_scope(phase: StartupPhase) -> PhaseScope {
@@ -550,7 +647,6 @@ pub async fn connect_via_leader(
         leader: LeaderMode::Attached,
         interactivity: Interactivity::Interactive,
     });
-    xai_grok_shell::agent::init::update_telemetry_config(&agent_config, &auth_manager);
     let endpoint = AgentEndpoint {
         tx: bridge.channel.tx,
         rx: bridge.channel.rx,
@@ -696,10 +792,7 @@ async fn initialize(tx: &AcpAgentTx, flags: &ConnectFlags) -> Result<Initialized
                 .meta(client_capabilities_meta(flags).as_object().cloned()),
         )
         .meta(meta);
-    let resp: acp::InitializeResponse = {
-        let _timer = xai_grok_telemetry::instrumentation::timer("acp_init.initialize_roundtrip");
-        acp_send(req, tx).await?
-    };
+    let resp: acp::InitializeResponse = { acp_send(req, tx).await? };
     let is_grok_shell = resp
         .meta
         .as_ref()

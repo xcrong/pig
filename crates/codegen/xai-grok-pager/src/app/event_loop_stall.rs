@@ -1,7 +1,5 @@
 use std::time::{Duration, Instant};
 
-use xai_grok_telemetry::events::EventLoopStall;
-
 pub(crate) const STALL_REPORT_WINDOW: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -12,12 +10,11 @@ pub(crate) struct StallActivity {
 }
 
 impl StallActivity {
+    /// Activity gauges lived in the removed telemetry crate; without them
+    /// every window reads idle. The rollup shape stays so the loop's
+    /// observe/flush cadence is unchanged.
     pub(crate) fn read() -> Self {
-        Self {
-            compaction_active: gauge_value(activity::COMPACTIONS_ACTIVE_KEY) > 0,
-            subagents_active: gauge_value(activity::SUBAGENTS_ACTIVE_KEY),
-            mcp_servers_connected: gauge_value(activity::MCP_SERVERS_CONNECTED_KEY),
-        }
+        Self::default()
     }
 }
 
@@ -27,17 +24,6 @@ pub(crate) struct StallWindow {
     pub(crate) window_ms: u64,
     pub(crate) events_handled: u32,
     pub(crate) activity: StallActivity,
-}
-
-pub(super) fn event_loop_stall_event(window: StallWindow) -> EventLoopStall {
-    EventLoopStall {
-        max_stall_ms: window.max_stall_ms,
-        window_ms: window.window_ms,
-        events_handled: window.events_handled,
-        stall_compaction_active: window.activity.compaction_active,
-        stall_subagents_active: window.activity.subagents_active,
-        stall_mcp_servers_connected: window.activity.mcp_servers_connected,
-    }
 }
 
 pub(crate) fn input_wait(

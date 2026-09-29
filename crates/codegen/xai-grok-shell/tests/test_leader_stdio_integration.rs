@@ -2861,58 +2861,6 @@ async fn raw_recv_acp(reader: &mut tokio::io::ReadHalf<UnixStream>) -> serde_jso
     }
 }
 
-/// Count `unified.jsonl` orphan-drop entries for `request_id`. Namespaced request ids are unique per process (global `ClientId` counter). The pid filter fences off other test processes appending to the same shared log.
-/// This binary does not sandbox GROK_HOME, so on a dev machine these entries land in the real `~/.grok` log — accepted: the server already writes `leader.client.*` lines there from every test in this file, and the pid+request-id fence keeps the counting sound regardless of what else is in the file. (Bazel sandboxes HOME, so CI writes stay test-scoped.)
-fn orphan_log_count(request_id: &str) -> usize {
-    let Some(bytes) = xai_grok_telemetry::unified_log::snapshot_log() else {
-        return 0;
-    };
-    String::from_utf8_lossy(&bytes)
-        .lines()
-        .filter(|line| {
-            serde_json::from_str::<serde_json::Value>(line).is_ok_and(|entry| {
-                entry["msg"] == "leader.response.orphaned"
-                    && entry["ctx"]["request_id"] == request_id
-                    && entry["pid"] == std::process::id()
-            })
-        })
-        .count()
-}
-
-/// Poll until `orphan_log_count(request_id) >= 1` or the budget elapses.
-async fn wait_for_orphan_log(request_id: &str) -> usize {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let count = orphan_log_count(request_id);
-        if count > 0 || tokio::time::Instant::now() >= deadline {
-            return count;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
-/// Poll until the server logged `leader.client.disconnected` for `client_id`.
-/// This is the deterministic disconnect signal for sessions that still have other subscribers (no `evict_sessions` is emitted for those).
-/// The same caveat about writing to the real home log and the same pid fence as [`orphan_log_count`] apply.
-async fn wait_for_client_disconnected_log(client_id: u64) -> bool {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        let seen = xai_grok_telemetry::unified_log::snapshot_log().is_some_and(|bytes| {
-            String::from_utf8_lossy(&bytes).lines().any(|line| {
-                serde_json::from_str::<serde_json::Value>(line).is_ok_and(|entry| {
-                    entry["msg"] == "leader.client.disconnected"
-                        && entry["ctx"]["client_id"] == client_id
-                        && entry["pid"] == std::process::id()
-                })
-            })
-        });
-        if seen || tokio::time::Instant::now() >= deadline {
-            return seen;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-}
-
 /// Hung agent: a prompt is forwarded but the agent never replies. The client must not receive a fabricated response. The transport must stay healthy: a later cancel still reaches the agent, and other traffic still flows.
 /// This is the client-visible state of the hung-turn class. Deadman semantics on top of it are a product change asserted by the ignored test below.
 #[tokio::test]
@@ -3032,11 +2980,9 @@ async fn test_sever_mid_rpc_orphans_response_and_replay_recovers() {
         ))
         .unwrap();
 
-    assert_eq!(
-        wait_for_orphan_log(&prompt_id).await,
-        1,
-        "the response to the severed client's RPC must be orphan-dropped exactly once"
-    );
+    // Orphan-drop of the severed client's response was previously asserted via
+    // `unified.jsonl` (`leader.response.orphaned`); that log is gone with telemetry,
+    // so only the wire-visible recovery below is asserted now.
 
     // Fresh client recovers the session via session/load.
     let (mut reader2, mut writer2) = raw_register(&sock_path, "sever-client-2").await;
@@ -3066,9 +3012,6 @@ async fn test_sever_mid_rpc_orphans_response_and_replay_recovers() {
     let update = raw_recv_acp(&mut reader2).await;
     assert_eq!(update["method"], "session/update");
     assert_eq!(update["params"]["update"]["stopReason"], "end_turn");
-
-    // Still exactly one orphan record for the severed RPC.
-    assert_eq!(orphan_log_count(&prompt_id), 1);
 
     drop(reader2);
     drop(writer2);
@@ -3240,16 +3183,13 @@ async fn test_driver_sever_mid_turn_viewer_sees_durable_terminal() {
     let viewer_chunk = raw_recv_acp(&mut viewer_reader).await;
     assert_eq!(viewer_chunk["params"]["update"]["content"]["text"], "one");
 
-    // Driver severs mid-turn
-    // The viewer still subscribes to the session, so no evict_sessions fires; wait on the disconnect log entry instead
-    let (driver_client_id, _) =
-        parse_namespaced_id(&prompt_id).expect("namespaced prompt id parses");
+    // Driver severs mid-turn.
+    // The viewer still subscribes to the session, so no evict_sessions fires.
+    // Disconnect processing was previously synchronized via `unified.jsonl`
+    // (`leader.client.disconnected`); that log is gone with telemetry, so the
+    // assertions below observe only wire-visible behavior.
     drop(driver_reader);
     drop(driver_writer);
-    assert!(
-        wait_for_client_disconnected_log(driver_client_id).await,
-        "server never recorded the driver disconnect"
-    );
 
     // The turn keeps streaming; the viewer still receives it.
     let chunk2 = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-handoff","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"two"}}}}"#;
@@ -3270,11 +3210,6 @@ async fn test_driver_sever_mid_turn_viewer_sees_durable_terminal() {
     assert_eq!(
         viewer_terminal["params"]["update"]["sessionUpdate"],
         "turn_completed"
-    );
-    assert_eq!(
-        wait_for_orphan_log(&prompt_id).await,
-        1,
-        "the severed driver's prompt response must be orphan-dropped exactly once"
     );
 
     // The viewer must NOT have been handed the driver's RPC response

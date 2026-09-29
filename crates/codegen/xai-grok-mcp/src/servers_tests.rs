@@ -3477,10 +3477,6 @@ async fn try_call_tool_reconnects_then_succeeds_after_retriable_transport_error(
         &*client.state.lock().await,
         ClientState::Ready { .. }
     ));
-    assert!(
-        MCP_SERVERS_CONNECTED.get() >= 1,
-        "a Ready client must hold a connected-gauge slot"
-    );
 }
 
 async fn watched_live_client(name: &str) -> Arc<McpClient> {
@@ -3545,10 +3541,7 @@ async fn watched_live_client(name: &str) -> Arc<McpClient> {
         None,
         None,
     ));
-    *client.state.lock().await = ClientState::Ready {
-        service,
-        _connected: MCP_SERVERS_CONNECTED.enter(),
-    };
+    *client.state.lock().await = ClientState::Ready { service };
     let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
     client.set_event_tx(Some(event_tx));
     assert!(
@@ -3754,67 +3747,6 @@ fn only_transport_service_errors_become_network_errors() {
             tool_error_for_service_error(&other).kind,
             xai_tool_runtime::ToolErrorKind::Custom,
             "{other}"
-        );
-    }
-}
-
-#[test]
-fn structured_label_takes_short_strings_only() {
-    let at_cap = "x".repeat(STRUCTURED_LABEL_MAX_LEN);
-    let structured = serde_json::json!({
-        "outcome": "session_busy",
-        "mode": "remote",
-        "versioned": "v1.2-rc.3",
-        "at_cap": at_cap,
-        "status": {"nested": true},
-        "count": 3,
-        "empty": "",
-        "long": "x".repeat(STRUCTURED_LABEL_MAX_LEN + 1),
-    });
-    assert_eq!(
-        structured_label(Some(&structured), "outcome").as_deref(),
-        Some("session_busy")
-    );
-    assert_eq!(
-        structured_label(Some(&structured), "mode").as_deref(),
-        Some("remote")
-    );
-    assert_eq!(
-        structured_label(Some(&structured), "versioned").as_deref(),
-        Some("v1.2-rc.3")
-    );
-    assert_eq!(
-        structured_label(Some(&structured), "at_cap").as_deref(),
-        Some(at_cap.as_str()),
-        "a label exactly at the cap is kept"
-    );
-    assert_eq!(
-        structured_label(Some(&structured), "status"),
-        None,
-        "objects are data, not labels"
-    );
-    assert_eq!(structured_label(Some(&structured), "count"), None);
-    assert_eq!(structured_label(Some(&structured), "empty"), None);
-    assert_eq!(structured_label(Some(&structured), "long"), None);
-    assert_eq!(structured_label(Some(&structured), "missing"), None);
-    assert_eq!(structured_label(None, "outcome"), None);
-}
-
-#[test]
-fn structured_label_drops_free_text() {
-    let structured = serde_json::json!({
-        "email": "jane@example.com",
-        "name": "Jane Doe",
-        "path": "/Users/user/file",
-        "control": "ok\n",
-        "unicode": "ok\u{e9}",
-        "token": "sk-abc123==",
-    });
-    for key in ["email", "name", "path", "control", "unicode", "token"] {
-        assert_eq!(
-            structured_label(Some(&structured), key),
-            None,
-            "{key} is not label-shaped"
         );
     }
 }

@@ -2977,7 +2977,7 @@ impl DashboardState {
         // `When::AgentScreen`-scoped and never resolves here.
         if self.pinned_upgrade_cta_live && key!('o', CONTROL).matches(key) {
             return InputOutcome::Action(Action::AnnouncementsOpenCta(
-                xai_grok_telemetry::events::AnnouncementCtaSurface::Keyboard,
+                crate::app::actions::AnnouncementCtaSurface::Keyboard,
             ));
         }
 
@@ -3626,7 +3626,7 @@ impl DashboardState {
             // A click on the header upgrade CTA `[label]` opens the promo url (resolved through the slot gate at dispatch time)
             if self.upgrade_cta_hit.contains(mouse.column, mouse.row) {
                 return InputOutcome::Action(Action::AnnouncementsOpenCta(
-                    xai_grok_telemetry::events::AnnouncementCtaSurface::Dashboard,
+                    crate::app::actions::AnnouncementCtaSurface::Dashboard,
                 ));
             }
 

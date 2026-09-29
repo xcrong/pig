@@ -541,35 +541,19 @@ impl FeedbackModalState {
         self.error = None;
     }
 
-    fn report_trace_outcome(
-        &mut self,
-        choice: xai_grok_telemetry::events::FeedbackTraceConsentChoice,
-    ) {
+    fn report_trace_outcome(&mut self) {
         if !self.trace_outcome_reported {
             self.trace_outcome_reported = true;
         }
     }
 
-    pub(crate) fn report_confirmed_trace_choice(&mut self, choice: FeedbackTraceChoice) {
-        let choice = match choice {
-            FeedbackTraceChoice::SendThisSession => {
-                xai_grok_telemetry::events::FeedbackTraceConsentChoice::SendThisSession
-            }
-            FeedbackTraceChoice::FeedbackOnly => {
-                xai_grok_telemetry::events::FeedbackTraceConsentChoice::NoUpload
-            }
-            FeedbackTraceChoice::NeverAsk => {
-                xai_grok_telemetry::events::FeedbackTraceConsentChoice::NeverAsk
-            }
-        };
-        self.report_trace_outcome(choice);
+    pub(crate) fn report_confirmed_trace_choice(&mut self, _choice: FeedbackTraceChoice) {
+        self.report_trace_outcome();
     }
 
     fn report_dismissed_trace_card(&mut self) {
         if self.in_trace_step() {
-            self.report_trace_outcome(
-                xai_grok_telemetry::events::FeedbackTraceConsentChoice::Dismissed,
-            );
+            self.report_trace_outcome();
         }
     }
 

@@ -27,6 +27,26 @@ pub enum SwitchModelError {
     /// Any other failure (network, auth, server error, etc.).
     Other(String),
 }
+/// How the extensions modal was opened (slash command, shortcut, or palette).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtensionsModalTrigger {
+    SlashCommand,
+    KeyboardShortcut,
+    CommandPalette,
+    AuthHandoff,
+}
+
+/// Which UI surface a promo announcement CTA was shown on or activated from.
+/// `Ord` so the pager can track which (announcement, surface) pairs already showed the CTA.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum AnnouncementCtaSurface {
+    Banner,
+    Welcome,
+    Header,
+    Dashboard,
+    Keyboard,
+}
+
 /// Synchronous, side-effect-free user intent.
 /// Produced by [`super::input`] from key/mouse events.
 /// Consumed by [`super::dispatch::dispatch`] to mutate state and return effects.
@@ -347,7 +367,7 @@ pub enum Action {
     /// Open the extensions modal dialog on a specific tab.
     OpenExtensionsModal {
         tab: crate::views::extensions_modal::ExtensionsTab,
-        trigger: xai_grok_telemetry::events::ExtensionsModalTrigger,
+        trigger: ExtensionsModalTrigger,
     },
     /// Open the agents modal (listing all agent definitions).
     /// Optionally opens directly on a specific tab.
@@ -420,8 +440,8 @@ pub enum Action {
     /// Show the announcements banner.
     AnnouncementsShow,
     /// Open the promo CTA link (url resolved from current state at dispatch time, mirroring how `AnnouncementsHide` resolves its target).
-    /// The payload records which UI element activated it, for telemetry.
-    AnnouncementsOpenCta(xai_grok_telemetry::events::AnnouncementCtaSurface),
+    /// The payload records which UI element activated it.
+    AnnouncementsOpenCta(AnnouncementCtaSurface),
     /// Cycle session mode (Shift+Tab): Normal, Plan, Auto, Always-Approve, then back to Normal (Auto skipped when the feature gate is off).
     /// Plan entered on top of a permission (Plan + Auto, Plan + Always-Approve) exits plan and keeps that permission.
     /// Plan mode sends a signal to the shell; always-approve is local.

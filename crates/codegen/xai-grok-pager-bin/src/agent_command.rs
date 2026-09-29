@@ -9,7 +9,7 @@ use xai_grok_pager::agent_runtime::AgentRuntime;
 use xai_grok_pager::signal_streams::SignalStreams;
 use xai_grok_shell::agent::config::Config;
 
-use crate::shutdown_and_flush_telemetry;
+use crate::shutdown_and_exit;
 
 const STDIO_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -40,7 +40,7 @@ pub(crate) fn spawn_signal_flush() -> AgentSignals {
             code = streams.next_code() => code,
         };
         if !defer_exit_for_listener.load(Ordering::Acquire) || sender.send(code).is_err() {
-            shutdown_and_flush_telemetry(code);
+            shutdown_and_exit(code);
         }
         // A graceful teardown gets one timer; a second signal ends it now
         let code = tokio::select! {
@@ -48,7 +48,7 @@ pub(crate) fn spawn_signal_flush() -> AgentSignals {
             () = tokio::time::sleep(STDIO_SHUTDOWN_TIMEOUT) => code,
             again = streams.next_code() => again,
         };
-        shutdown_and_flush_telemetry(code);
+        shutdown_and_exit(code);
     }));
     AgentSignals {
         defer_exit,
@@ -71,7 +71,7 @@ pub(crate) async fn run_stdio(
         result = runtime.run_stdio(agent_config) => result.map(|()| None),
     };
     if let Some(exit_code) = outcome? {
-        shutdown_and_flush_telemetry(exit_code);
+        shutdown_and_exit(exit_code);
     }
     Ok(())
 }

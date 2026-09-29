@@ -4,7 +4,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use xai_grok_telemetry::region::Parent;
 
 use crate::host::HostOs;
 use crate::terminal::{TerminalName, terminal_context};
@@ -131,9 +130,7 @@ fn spawn_cwd_git_refresh(cwd: PathBuf) {
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         return;
     };
-    let refresh_span = region!(debug, "git_info.refresh", Parent::Root);
     handle.spawn_blocking(move || {
-        let _region = refresh_span;
         // Guard against panics from the vendored libgit2 C bindings.
         let info =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| compute_cwd_git_info(&cwd)))

@@ -4,9 +4,9 @@
 //! All hook/plugin management (install, uninstall, trust, etc.) is done through the modal's UI; no subcommands are passed through to the shell.
 
 use crate::app::actions::Action;
+use crate::app::actions::ExtensionsModalTrigger;
 use crate::slash::command::{CommandExecCtx, CommandResult, SlashCommand, slash_meta};
 use crate::views::extensions_modal::ExtensionsTab;
-use xai_grok_telemetry::events::ExtensionsModalTrigger;
 
 /// Open the hooks/plugins modal on the Hooks tab.
 pub struct HooksCommand;

@@ -4753,36 +4753,6 @@ fn new_session_registers_root_identity() {
     });
 }
 #[test]
-fn new_session_records_setup_phases_for_bisection() {
-    xai_grok_telemetry::unified_log::redirect_to_temp_for_tests();
-    run_local_for_bridge_test(|| async {
-        let agent = build_minimal_agent_for_tests();
-        let cwd = tempfile::tempdir().unwrap();
-        let mark = xai_grok_telemetry::unified_log::snapshot_log()
-            .unwrap_or_default()
-            .len();
-        let sid = new_root_session(&agent, cwd.path()).await;
-        agent.remove_session(&sid);
-        let log = xai_grok_telemetry::unified_log::snapshot_log().unwrap_or_default();
-        let appended = String::from_utf8_lossy(log.get(mark.min(log.len())..).unwrap_or(&[]));
-        for phase in [
-            "resolve_workspace",
-            "plugin_registry",
-            "mcp_merge",
-            "persistence_init",
-            "spawn_session_actor",
-            "git_discovery",
-        ] {
-            let needle = format!("\"phase\":\"{phase}\"");
-            assert!(
-                appended.contains(needle.as_str()),
-                "session/new must record {phase} in unified.jsonl; got:\n{appended}"
-            );
-        }
-        assert!(appended.contains("\"msg\":\"session created\""));
-    });
-}
-#[test]
 fn cold_load_stamps_identity_exactly_once() {
     run_local_for_bridge_test(|| async {
         let agent = build_minimal_agent_for_tests();
@@ -7111,13 +7081,6 @@ fn drained_settings_update(
     }
     found
 }
-/// Re-open the process-global external-OTEL gate on drop so a closed gate never leaks into another test.
-struct RestoreOtelGate;
-impl Drop for RestoreOtelGate {
-    fn drop(&mut self) {
-        xai_grok_telemetry::external::mark_external_otel_settings_resolved();
-    }
-}
 /// Regression: `cfg.remote_settings` is not reset on an account switch, so the access gate must not read a previous identity's cached `allow_access`.
 /// A mismatched identity stays provisionally open (unknown), like the OTEL gate's `rearm_on_switch`.
 #[tokio::test]
@@ -7155,13 +7118,12 @@ async fn access_gate_does_not_leak_verdict_across_identities() {
     );
 }
 /// First-party xAI auth with `writeback_enabled` settings upgrades storage to Writeback.
-/// The settings arrival also emits `x.ai/settings/update` and opens the external-OTEL gate.
+/// The settings arrival also emits `x.ai/settings/update`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[serial_test::serial]
 async fn post_auth_settings_xai_upgrades_writeback_emits_and_opens_gate() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
-    let _restore = RestoreOtelGate;
     let _storage_env = crate::env::EnvVarGuard::remove("GROK_STORAGE_MODE");
     let server = xai_grok_test_support::MockInferenceServer::start()
         .await
@@ -7182,17 +7144,11 @@ async fn post_auth_settings_xai_upgrades_writeback_emits_and_opens_gate() {
         StorageMode::Local,
         "precondition: leader boots in Local storage mode"
     );
-    xai_grok_telemetry::external::suppress_external_otel_until_settings();
-    assert!(!xai_grok_telemetry::external::is_settings_gate_open());
     agent.maybe_fetch_post_auth_settings().await;
     assert_eq!(
         agent.storage_mode(),
         StorageMode::Writeback,
         "xai auth + writeback_enabled settings must upgrade storage to Writeback"
-    );
-    assert!(
-        xai_grok_telemetry::external::is_settings_gate_open(),
-        "a settings response must open the external-OTEL gate"
     );
     assert!(
         drained_settings_update(&mut rx),
@@ -7205,7 +7161,6 @@ async fn post_auth_settings_xai_upgrades_writeback_emits_and_opens_gate() {
 async fn post_auth_settings_non_xai_keeps_local_but_still_emits() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::{AuthMode, GrokAuth};
-    let _restore = RestoreOtelGate;
     let server = xai_grok_test_support::MockInferenceServer::start()
         .await
         .unwrap();
@@ -7223,16 +7178,11 @@ async fn post_auth_settings_non_xai_keeps_local_but_still_emits() {
     );
     let (agent, mut rx) =
         build_agent_with_auth_and_proxy(api_auth, server.url(), AgentMode::Leader);
-    xai_grok_telemetry::external::suppress_external_otel_until_settings();
     agent.maybe_fetch_post_auth_settings().await;
     assert_eq!(
         agent.storage_mode(),
         StorageMode::Local,
         "non-xai auth must stay Local even when writeback is advertised remotely"
-    );
-    assert!(
-        xai_grok_telemetry::external::is_settings_gate_open(),
-        "a settings response must open the gate regardless of auth kind"
     );
     assert!(
         drained_settings_update(&mut rx),
@@ -7244,7 +7194,6 @@ async fn post_auth_settings_non_xai_keeps_local_but_still_emits() {
 async fn post_auth_settings_failure_resolves_gate_onto_local_policy() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
-    let _restore = RestoreOtelGate;
     let server = xai_grok_test_support::MockInferenceServer::start()
         .await
         .unwrap();
@@ -7253,43 +7202,10 @@ async fn post_auth_settings_failure_resolves_gate_onto_local_policy() {
         ..GrokAuth::test_default()
     };
     let (agent, _rx) = build_agent_with_auth_and_proxy(xai_auth, server.url(), AgentMode::Leader);
-    xai_grok_telemetry::external::suppress_external_otel_until_settings();
-    assert!(!xai_grok_telemetry::external::is_settings_gate_open());
     agent.maybe_fetch_post_auth_settings().await;
-    assert!(
-        xai_grok_telemetry::external::is_settings_gate_open(),
-        "an exhausted fetch is a definitive answer: open on local policy"
-    );
     assert!(
         agent.cfg.borrow().remote_settings.is_none(),
         "opening the gate must not fabricate settings; none were fetched"
-    );
-}
-/// A same-credential refresh must NOT re-suppress a gate already resolved for that credential; the reason `OtelGate` remembers the identity.
-/// With the gate resolved-open for this identity, a later failing (`Retry`) refresh leaves it OPEN.
-/// Regressing the identity guard would re-close it forever.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[serial_test::serial]
-async fn same_credential_refresh_does_not_flap_resolved_gate() {
-    use crate::agent::config::AgentMode;
-    use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
-    let _restore = RestoreOtelGate;
-    let server = xai_grok_test_support::MockInferenceServer::start()
-        .await
-        .unwrap();
-    let xai_auth = GrokAuth {
-        oidc_issuer: Some(XAI_OAUTH2_ISSUER.to_string()),
-        ..GrokAuth::test_default()
-    };
-    let (agent, _rx) =
-        build_agent_with_auth_and_proxy(xai_auth.clone(), server.url(), AgentMode::Leader);
-    agent.otel_gate.set_resolved_for(&xai_auth.user_id);
-    xai_grok_telemetry::external::mark_external_otel_settings_resolved();
-    assert!(xai_grok_telemetry::external::is_settings_gate_open());
-    agent.refresh_remote_settings(&xai_auth).await;
-    assert!(
-        xai_grok_telemetry::external::is_settings_gate_open(),
-        "a same-credential refresh must not flap a gate already resolved for it"
     );
 }
 /// A `/settings` 401 from a token that rotated mid-flight must self-heal: refresh once and, if the token changed, re-fetch with it.
@@ -7300,7 +7216,6 @@ async fn settings_self_heal_refetches_after_token_rotation() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::refresh::{RefreshOutcome, TokenRefresher};
     use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
-    let _restore = RestoreOtelGate;
     let server = xai_grok_test_support::MockInferenceServer::start_with_required_auth(
         vec![xai_grok_test_support::MockModelEntry::new("grok-build")],
         "rotated-key",
@@ -7333,12 +7248,7 @@ async fn settings_self_heal_refetches_after_token_rotation() {
     agent
         .auth_manager
         .set_refresher(std::sync::Arc::new(RotatingRefresher));
-    xai_grok_telemetry::external::suppress_external_otel_until_settings();
     agent.refresh_remote_settings(&stale).await;
-    assert!(
-        xai_grok_telemetry::external::is_settings_gate_open(),
-        "the rotated-token re-fetch must land settings and open the gate"
-    );
     assert!(
         agent.cfg.borrow().remote_settings.is_some(),
         "the re-fetched settings must be stored"
@@ -7350,7 +7260,6 @@ async fn settings_self_heal_refetches_after_token_rotation() {
 async fn settings_not_cached_when_identity_logs_out_during_fetch() {
     use crate::agent::config::AgentMode;
     use xai_grok_login::{GrokAuth, XAI_OAUTH2_ISSUER};
-    let _restore = RestoreOtelGate;
     let server = xai_grok_test_support::MockInferenceServer::start()
         .await
         .unwrap();

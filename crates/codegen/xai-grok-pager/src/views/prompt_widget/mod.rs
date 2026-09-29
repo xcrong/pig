@@ -1901,41 +1901,29 @@ impl PromptWidget {
             PromptEvent::Edited
         } else {
             // Backspace/Delete pressed but produced no effect on non-empty text.
-            // This is the telemetry hook for diagnosing the "backspace lock" bug.
+            // Structured warn for diagnosing the "backspace lock" bug.
             let is_backspace_key = matches!(
                 key.code,
                 KeyCode::Backspace | KeyCode::Delete | KeyCode::Char('\x08' | '\x7f')
             ) || (key.code == KeyCode::Char('h')
                 && key.modifiers.contains(KeyModifiers::CONTROL));
             if is_backspace_key && !old_text.is_empty() {
-                use xai_grok_telemetry::events::BackspaceNoEffect;
-                let evt = BackspaceNoEffect {
-                    terminal: crate::terminal::terminal_context().telemetry_snapshot(),
-                    key_code: format!("{:?}", key.code),
-                    key_modifiers: format!("{:?}", key.modifiers),
-                    key_kind: format!("{:?}", key.kind),
-                    cursor_pos: old_cursor,
-                    text_len: old_text.len(),
-                    has_selection: old_selection.is_some(),
-                };
-                // Structured warn for the product telemetry pipeline.
+                let terminal = crate::terminal::terminal_context().telemetry_snapshot();
                 tracing::warn!(
-                    terminal.brand = %evt.terminal.brand,
-                    terminal.multiplexer = %evt.terminal.multiplexer,
-                    terminal.is_ssh = evt.terminal.is_ssh,
-                    terminal.term_var = %evt.terminal.term_var,
-                    terminal.term_version = %evt.terminal.term_version,
-                    terminal.term_version_source = %evt.terminal.term_version_source,
-                    key.code = %evt.key_code,
-                    key.modifiers = %evt.key_modifiers,
-                    key.kind = %evt.key_kind,
-                    textarea.cursor_pos = evt.cursor_pos,
-                    textarea.text_len = evt.text_len,
-                    textarea.has_selection = evt.has_selection,
+                    terminal.brand = %terminal.brand,
+                    terminal.multiplexer = %terminal.multiplexer,
+                    terminal.is_ssh = terminal.is_ssh,
+                    terminal.term_var = %terminal.term_var,
+                    terminal.term_version = %terminal.term_version,
+                    terminal.term_version_source = %terminal.term_version_source,
+                    key.code = ?key.code,
+                    key.modifiers = ?key.modifiers,
+                    key.kind = ?key.kind,
+                    textarea.cursor_pos = old_cursor,
+                    textarea.text_len = old_text.len(),
+                    textarea.has_selection = old_selection.is_some(),
                     "backspace_no_effect"
                 );
-                // Product analytics event (when telemetry is enabled).
-                log_event(evt);
             }
             PromptEvent::Ignored
         }

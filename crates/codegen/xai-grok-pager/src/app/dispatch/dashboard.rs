@@ -3,9 +3,6 @@ use super::ctx::{
     SwitchCause, surface_yolo_launch_block_notice, switch_to_agent,
     sync_active_permission_mode_mirror,
 };
-use super::dashboard_telemetry::{
-    log_dashboard_attached, log_dashboard_closed, log_dashboard_launched, log_dashboard_opened,
-};
 use super::modes::{dispatch_cycle_mode_and_sync, set_yolo_mode, yolo_enable_blocked};
 use super::permissions::resolve_permission_queue_transition;
 use super::queue::{maybe_drain_queue, note_peek_page_flip};
@@ -23,8 +20,8 @@ use crate::app::agent::{AgentId, DeferredModelSwitch};
 use crate::app::agent_view::AgentView;
 use crate::app::app_view::{ActiveView, AppView, DashboardReturn, TrustState};
 use crate::app::cancel_latency::CancelOrigin;
+use crate::app::cancel_latency::CancellationScope;
 use agent_client_protocol as acp;
-use xai_grok_telemetry::events::CancellationScope;
 /// Keeps v1 config layout separate from v2 workspace layout.
 fn dashboard_state_for_mode(app: &mut AppView) -> crate::views::dashboard::DashboardState {
     use crate::views::dashboard::{DashboardState, load_persisted};
@@ -212,7 +209,6 @@ pub(super) fn dispatch_open_dashboard(app: &mut AppView) -> Vec<Effect> {
     }
     configure_dashboard_state(app);
     app.active_view = ActiveView::AgentDashboard;
-    log_dashboard_opened(app);
     if app.workspace_dashboard_enabled {
         app.dashboard_sessions_loading = app.workspace_membership.snapshot().is_none();
         crate::app::workspace_sync::activate(app);
@@ -251,7 +247,6 @@ pub(super) fn dispatch_exit_dashboard(app: &mut AppView) -> Vec<Effect> {
             d.error_toast = None;
         }
     }
-    log_dashboard_closed(app);
     let preferred = app.dashboard_return.take();
     if matches!(preferred, Some(DashboardReturn::Welcome)) {
         app.active_view = ActiveView::Welcome;
@@ -371,7 +366,6 @@ fn dispatch_dashboard_load_session(
             app.welcome_history_load_as_build = false;
         }
         crate::app::workspace_sync::allow_loaded_session(app, &session_id);
-        log_dashboard_attached(&DashboardRowId::TopLevel(existing_id));
         return vec![];
     }
     let effects = dispatch_load_session(app, session_id, session_cwd, false);
@@ -383,7 +377,6 @@ fn dispatch_dashboard_load_session(
             dashboard.focus_row(DashboardRowId::TopLevel(new_id));
             dashboard.attached_agent = Some(new_id);
         }
-        log_dashboard_attached(&DashboardRowId::TopLevel(new_id));
     }
     effects
 }
@@ -429,7 +422,6 @@ pub(super) fn dispatch_dashboard_attach(
                 d.attached_agent = Some(agent_id);
             }
             switch_to_agent(app, agent_id, SwitchCause::Picker);
-            log_dashboard_attached(&DashboardRowId::TopLevel(agent_id));
             surface_yolo_launch_block_notice(app, agent_id);
         }
         DashboardRowId::Roster { session_id } => {
@@ -449,7 +441,6 @@ pub(super) fn dispatch_dashboard_attach(
             if let Some(existing_id) =
                 focus_if_session_already_open(app, session_id.as_str(), conversation_entry)
             {
-                log_dashboard_attached(&DashboardRowId::TopLevel(existing_id));
                 return vec![];
             }
             let effects = dispatch_load_session(app, session_id, session_cwd, conversation_entry);
@@ -461,7 +452,6 @@ pub(super) fn dispatch_dashboard_attach(
                     d.focus_row(DashboardRowId::TopLevel(new_id));
                     d.attached_agent = Some(new_id);
                 }
-                log_dashboard_attached(&DashboardRowId::TopLevel(new_id));
             }
             return effects;
         }
@@ -712,7 +702,6 @@ pub(super) fn dispatch_dashboard_create_new_agent_with_detail(app: &mut AppView)
     let pending_model = app.dashboard.as_ref().and_then(|d| d.pending_model.clone());
     let (pending_mode, policy_block) = resolve_pending_dispatch_mode(app);
     let model_id = pending_model.as_ref().map(|m| m.id.clone());
-    log_dashboard_launched("new_agent_button");
     let (new_id, mut effects) = dispatch_new_session_inner_with_id(app, model_id, false);
     set_create_permission_mode(&mut effects, pending_mode);
     if let Some(agent) = app.agents.get_mut(&new_id) {
@@ -1089,7 +1078,6 @@ pub(super) fn dispatch_dashboard_dispatch(
             )
         });
     let (prompt_text, mut pasted_images, chip_elements) = prompt_state.into_submission();
-    log_dashboard_launched("prompt");
     let (new_id, mut effects) = dispatch_new_session_inner_with_id(app, model_id, false);
     set_create_permission_mode(&mut effects, pending_mode);
     if let Some(agent) = app.agents.get_mut(&new_id) {
@@ -1156,17 +1144,6 @@ pub(super) fn dispatch_dashboard_dispatch_slash(app: &mut AppView, text: String)
             return vec![];
         };
         let reg = dashboard.dispatch.slash_controller.registry();
-        {
-            let source = if reg.is_builtin(invocation.token) {
-                PagerCommandSource::Builtin
-            } else {
-                PagerCommandSource::NonBuiltin
-            };
-            log_event(PagerSlashCommand {
-                command_name: invocation.token.to_string(),
-                source,
-            });
-        }
         if reg.is_restricted(invocation.token) {
             let token = invocation.token.to_string();
             if let Some(d) = app.dashboard.as_mut() {

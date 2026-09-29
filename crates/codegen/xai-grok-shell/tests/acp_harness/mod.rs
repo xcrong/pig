@@ -327,7 +327,6 @@ impl RestoreProcessGlobals {
         {
             xai_grok_shell::managed_config::clear_startup_profile_for_tests();
         }
-        xai_grok_telemetry::external::mark_external_otel_settings_resolved();
     }
 }
 
@@ -415,4 +414,3 @@ fn hold_global_env() -> MutexGuard<'static, ()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-

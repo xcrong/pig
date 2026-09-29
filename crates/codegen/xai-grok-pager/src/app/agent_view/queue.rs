@@ -627,8 +627,7 @@ impl AgentView {
                     }) {
                         return InputOutcome::Unchanged;
                     }
-                    // Same InterjectPrompt chord as the prompt; logged from the queue pane (not When::PromptFocused)
-                    crate::actions::log_shortcut_used(key, ActionId::InterjectPrompt, "queue");
+                    // Same InterjectPrompt chord as the prompt pane.
                     return self.force_interject_queue_row(id);
                 }
             }

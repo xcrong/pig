@@ -5553,6 +5553,7 @@ fn dashboard_rename_esc_keystroke_routes_to_cancel() {
 #[test]
 fn dashboard_upgrade_cta_paints_arms_rect_and_ctrl_o_override() {
     use crate::actions::ActionRegistry;
+    use crate::app::actions::AnnouncementCtaSurface;
     use crate::app::app_view::InputOutcome;
     use crate::views::dashboard::HeaderUpgradeCta;
     use crate::views::dashboard::render_dashboard;
@@ -5562,7 +5563,6 @@ fn dashboard_upgrade_cta_paints_arms_rect_and_ctrl_o_override() {
     };
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
-    use xai_grok_telemetry::events::AnnouncementCtaSurface;
     let registry = ActionRegistry::defaults();
     let mut agents: indexmap::IndexMap<AgentId, crate::app::agent_view::AgentView> =
         indexmap::IndexMap::new();

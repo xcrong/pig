@@ -469,15 +469,6 @@ impl ActionRegistry {
     }
 }
 
-/// Emit [`xai_grok_telemetry::events::ShortcutUsed`] for an allowlisted binding. See that event's docs for the
-/// product contract (intent-only allowlist). Call only on the commit path that handles the allowlisted id, not
-/// peeks.
-pub fn log_shortcut_used(key: &KeyEvent, action_id: ActionId, context: &str) {
-    let Some(action) = shortcut_used_action_label(action_id) else {
-        return;
-    };
-}
-
 /// Stable product-event labels for the allowlisted actions. `None` means do not emit.
 fn shortcut_used_action_label(id: ActionId) -> Option<&'static str> {
     match id {

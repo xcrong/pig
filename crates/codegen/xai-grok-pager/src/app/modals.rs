@@ -835,7 +835,8 @@ impl AgentView {
                                 self.active_modal = None;
                                 InputOutcome::Action(Action::OpenExtensionsModal {
                                     tab,
-                                    trigger: xai_grok_telemetry::events::ExtensionsModalTrigger::CommandPalette,
+                                    trigger:
+                                        crate::app::actions::ExtensionsModalTrigger::CommandPalette,
                                 })
                             }
                             PaletteCommand::OpenSettings => {

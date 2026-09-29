@@ -616,7 +616,7 @@ fn shown_banner_id(app: &AppView) -> Option<String> {
 #[serial_test::serial(GROK_TEST_OPEN_URL_FILE)]
 #[test]
 fn announcements_open_cta_opens_promo_and_noops_under_critical() {
-    use xai_grok_telemetry::events::AnnouncementCtaSurface;
+    use crate::app::actions::AnnouncementCtaSurface;
     let url_file = std::env::temp_dir().join(format!("grok-cta-open-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&url_file);
     unsafe { std::env::set_var("GROK_TEST_OPEN_URL_FILE", &url_file) };
@@ -667,8 +667,8 @@ fn announcements_open_cta_opens_promo_and_noops_under_critical() {
 /// The first frame with an armed CTA rect emits, later frames don't, and a NEW announcement id re-emits on the same surfaces.
 #[test]
 fn cta_impressions_latch_once_per_surface_and_reemit_for_new_id() {
+    use crate::app::actions::AnnouncementCtaSurface;
     use crate::app::app_view::ActiveView;
-    use xai_grok_telemetry::events::AnnouncementCtaSurface;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.active_view = ActiveView::Agent(id);
@@ -736,8 +736,8 @@ fn cta_impressions_respect_slot_gate_and_paint() {
 /// Impressions follow the same rule as OSC 8 links: an occluded CTA is not counted until an overlay-free frame shows it clean.
 #[test]
 fn cta_impressions_suppressed_while_rect_occluded() {
+    use crate::app::actions::AnnouncementCtaSurface;
     use crate::app::app_view::ActiveView;
-    use xai_grok_telemetry::events::AnnouncementCtaSurface;
     let mut app = test_app_with_agent();
     let id = AgentId(0);
     app.active_view = ActiveView::Agent(id);
@@ -767,9 +767,9 @@ fn cta_impressions_suppressed_while_rect_occluded() {
 /// The welcome hero and dashboard surfaces latch from their own armed rects (only the active view's rects are consulted).
 #[test]
 fn cta_impressions_cover_welcome_and_dashboard_surfaces() {
+    use crate::app::actions::AnnouncementCtaSurface;
     use crate::app::app_view::ActiveView;
     use crate::views::dashboard::state::DashboardState;
-    use xai_grok_telemetry::events::AnnouncementCtaSurface;
     let mut app = test_app();
     app.active_announcements = vec![promo_announcement("p")];
     let rect = Some(ratatui::layout::Rect::new(0, 0, 4, 1));

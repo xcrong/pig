@@ -30,6 +30,7 @@ use std::path::Path;
 use agent_client_protocol as acp;
 use tokio::task::JoinSet;
 use xai_acp_lib::{AcpAgentTx, acp_send};
+use crate::acp::startup::{self, StartupPhase};
 use actions::{
     ClipboardPasteTarget, Effect, SubagentKillOutcome, SwitchModelError, TaskResult,
     WorkspaceMutation, WorkspaceMutationFailure, WorkspaceWriteCompletion,
@@ -99,21 +100,14 @@ async fn create_session_in_backend_rpc(
     tx: &AcpAgentTx,
     action: &str,
 ) -> Result<acp::NewSessionResponse, helpers::SessionRpcError> {
-    let rpc_span = match startup::current_phase_span().as_ref() {
-        Some(parent) => {
-            xai_grok_telemetry::region!(
-            "startup.session_create.backend_rpc",
-            xai_grok_telemetry::region::Parent::Explicit(parent)
-        )
-        }
-        None => {
-            xai_grok_telemetry::region!(
-            "session.create.backend_rpc",
-            xai_grok_telemetry::region::Parent::Inherit
-        )
-        }
+    let rpc_span = match startup::current_phase_span() {
+        Some(parent) => tracing::info_span!(
+            parent: parent,
+            "startup.session_create.backend_rpc"
+        ),
+        None => tracing::info_span!("session.create.backend_rpc"),
     };
-    stamp_span_traceparent(&mut meta, rpc_span.span());
+    stamp_span_traceparent(&mut meta, &rpc_span);
     helpers::acp_send_bounded(request.meta(meta), tx, action).await
 }
 pub(crate) fn execute(

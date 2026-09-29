@@ -1616,20 +1616,16 @@ fn translate_local_submit(
                 persist_mode,
             })
         }
-        LocalQuestionKind::CreditLimitUpsell { choices } => {
+        LocalQuestionKind::CreditLimitUpsell => {
             let option = qv.questions.first().and_then(|q| q.options.get(*idx));
             let id = option.and_then(|o| o.id.as_deref());
             if id == Some(super::dispatch::CREDIT_LIMIT_RETRY_OPTION_ID) {
                 return InputOutcome::Action(Action::RetryCreditLimitPrompt);
             }
             let url = id.unwrap_or(super::dispatch::UPSELL_URL_PAYG);
-            let choice = choices
-                .get(*idx)
-                .copied()
-                .unwrap_or(xai_grok_telemetry::events::CreditLimitChoice::PayAsYouGo);
             InputOutcome::Action(Action::OpenUrl(url.to_string()))
         }
-        LocalQuestionKind::FreeUsageUpsell { source } => {
+        LocalQuestionKind::FreeUsageUpsell => {
             let url = qv
                 .questions
                 .first()

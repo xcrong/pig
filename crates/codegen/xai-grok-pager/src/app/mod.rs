@@ -20,7 +20,6 @@ pub(crate) mod command_catalog;
 pub mod consent;
 pub(crate) mod deferred_subagent_finishes;
 pub use crate::link_opener;
-use xai_grok_telemetry::region::Parent;
 /// Off-thread full-file syntax highlight upgrade for edit diffs.
 pub mod edit_highlight_worker;
 /// Off-thread Mermaid diagram render worker (out of process) + per-session cache.
@@ -594,7 +593,7 @@ async fn bounded_connect(
             xai_grok_version::full_version(),
             xai_grok_update::channel_label(),
         ),
-        log_path: xai_grok_telemetry::unified_log::path(),
+        log_path: None,
     };
     let started = std::time::Instant::now();
     let mut deadline = started + timeout;
@@ -723,13 +722,8 @@ pub async fn run(
     }
     let prefetch_wait_started = std::time::Instant::now();
     let remote_settings = if had_prefetch {
-        let _wait_span = region!("startup.prefetch_join_wait", Parent::Inherit);
         let warmed_auth = settings_query.auth().cloned();
         let wait = {
-            let _settings = region!(
-                "startup.prefetch_join_wait.settings",
-                Parent::Explicit(_wait_span.span())
-            );
             xai_grok_shell::agent::remote_config::settings_get::await_startup_settings(
                 settings_query,
                 EARLY_PREFETCH_WAIT,
@@ -1032,15 +1026,6 @@ pub async fn run(
     } else {
         crate::acp::AgentKind::Embedded
     };
-    xai_grok_telemetry::external::init(
-        xai_grok_shell::agent::config::resolve_external_otel_config(
-            xai_grok_telemetry::external::config::ExternalClientInfo {
-                service_version: xai_grok_version::full_version().to_owned(),
-                client_version: xai_grok_version::VERSION.to_owned(),
-                app_entrypoint: "tui".to_owned(),
-            },
-        ),
-    );
     let tracing_handle = crate::tracing::init_tracing();
     let pending_startup = crate::acp::startup::PendingStartup::new();
     let timer = crate::acp::startup::begin(crate::acp::Owner::Client);
@@ -1176,7 +1161,6 @@ pub async fn run(
         current_screen_mode(),
     );
     drop(agent_guard);
-    xai_grok_telemetry::session_ctx::drain_at_process_exit().await;
     xai_tty_utils::global_process_scope().kill_all();
     crate::app::status_line::metrics::global().report_health();
     let terminal_reading = !matches!(restore_result, Ok(WriterJoin::TimedOut));
