@@ -2,10 +2,23 @@
 //!
 //! pi generates its catalog at build time (`pi/packages/ai/scripts/generate-models.ts`
 //! from `models.dev`, OpenRouter, NVIDIA NIM, Vercel AI Gateway, Radius) and serves
-//! runtime overlays from `https://pi.dev/api/models/providers/<id>`. Running pi's
-//! Node generator inside `cargo build` would break offline builds, so pig reuses
-//! the *served* catalog instead: `data/*.json` are verbatim snapshots of pi's
-//! runtime API, refreshed by `scripts/sync-pi-vendors.sh` (see `manifest.json`).
+//! runtime overlays from `https://pi.dev/api/models/providers/<id>`. pig reuses
+//! the *served* catalog (no Node, no pi checkout) through three layers:
+//!
+//! 1. Build-time refresh: `build.rs` pulls the latest pi.dev slices into
+//!    `OUT_DIR` (same URLs and validation rules as
+//!    `scripts/sync-pi-vendors.sh`) and the binary embeds them. Offline or
+//!    sandboxed builds fall back to the checked-in `data/*.json`, so a missing
+//!    network never fails the build. The pulled version is logged via
+//!    `cargo:warning=`; `manifest.json` stays the manual-sync channel.
+//! 2. Runtime auto-cache: enabled builtin vendors refresh
+//!    `<grok_home>/vendors/<id>.json` in the background (see
+//!    [`spawn_vendor_snapshot_refresh`]). Load priority is explicit
+//!    `snapshot_file` > auto-cache file > embedded snapshot. The cache only
+//!    ever applies to builtin ids and only when the vendor is explicitly
+//!    enabled; it never enables anything and never touches `config.toml`.
+//! 3. Manual sync: `scripts/sync-pi-vendors.sh` refreshes `data/*.json` +
+//!    `manifest.json` for review, commit, and release.
 //!
 //! Mapping notes (pi model -> [`ModelEntry`]):
 //! * Only `type: "chat"` entries are mapped; image/classifier entries are ignored.
@@ -26,6 +39,8 @@
 //!   matches the wire slug. User `[model.*]` entries always win over vendor keys.
 
 use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use indexmap::IndexMap;
 
@@ -46,6 +61,59 @@ pub const OPENCODE_ENV_KEY: &str = "OPENCODE_API_KEY";
 pub const VENDOR_OPENCODE: &str = "opencode";
 pub const VENDOR_OPENCODE_GO: &str = "opencode-go";
 
+/// pi.dev runtime catalog this crate mirrors. Shared by build-time refresh
+/// (`build.rs`), the manual sync script, and the runtime auto-cache so all
+/// three pull the same slices.
+pub const VENDOR_CATALOG_URL_BASE: &str = "https://pi.dev/api/models/providers";
+/// UA for all three pull channels, so pi.dev sees one client shape.
+pub const VENDOR_SYNC_USER_AGENT: &str = "pig-vendor-sync/1.0";
+/// Subdirectory of `grok_home()` holding auto-refreshed snapshots
+/// (`<grok_home>/vendors/<id>.json`), mirroring how hand-written
+/// `snapshot_file` relative paths resolve.
+pub const VENDOR_CACHE_DIR_NAME: &str = "vendors";
+/// How long an auto-cached snapshot stays fresh before the background task
+/// pulls again. Missing cache always pulls.
+pub const VENDOR_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Delay before the first background check so startup / first paint wins the
+/// network. The check itself never blocks startup: it runs on a spawned task.
+const VENDOR_REFRESH_INITIAL_DELAY: Duration = Duration::from_secs(30);
+/// Interval between background checks after the first one.
+const VENDOR_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Upper bound of the per-loop schedule jitter.
+const VENDOR_REFRESH_JITTER: Duration = Duration::from_secs(30 * 60);
+/// Network timeout for one runtime snapshot fetch.
+const VENDOR_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Catalog URL for one vendor id (`?types=chat`, like the sync script).
+pub fn vendor_catalog_url(id: &str) -> String {
+    format!("{VENDOR_CATALOG_URL_BASE}/{id}?types=chat")
+}
+
+/// Directory holding auto-refreshed snapshots.
+pub fn vendor_cache_dir() -> PathBuf {
+    vendor_cache_dir_in(&crate::util::grok_home::grok_home())
+}
+
+fn vendor_cache_dir_in(home: &Path) -> PathBuf {
+    home.join(VENDOR_CACHE_DIR_NAME)
+}
+
+/// Auto-cache file for one builtin vendor id.
+pub fn vendor_cache_path(id: &str) -> PathBuf {
+    vendor_cache_path_in(&crate::util::grok_home::grok_home(), id)
+}
+
+fn vendor_cache_path_in(home: &Path, id: &str) -> PathBuf {
+    vendor_cache_dir_in(home).join(format!("{id}.json"))
+}
+
+/// API shapes pig's sampler speaks. Mirrors the match arms of
+/// [`api_backend_for`]; `build.rs` duplicates the list (standalone crate).
+const SUPPORTED_VENDOR_APIS: &[&str] = &[
+    "openai-completions",
+    "openai-responses",
+    "anthropic-messages",
+];
 /// API shapes pig's sampler cannot speak. Models on these are filtered out of
 /// vendor snapshots **by design** (`google-generative-ai` is deliberately
 /// unsupported -- its wire protocol is too exotic to map onto pig's three
@@ -67,8 +135,17 @@ pub struct Vendor {
     pub default_base_url: &'static str,
 }
 
-const OPENCODE_SNAPSHOT: &str = include_str!("data/opencode.json");
-const OPENCODE_GO_SNAPSHOT: &str = include_str!("data/opencode-go.json");
+/// Embedded snapshots, refreshed from pi.dev at build time by `build.rs`
+/// (offline builds fall back to the checked-in `data/*.json`; see the build
+/// script). `data/` stays the reviewable ground truth for manual sync.
+const OPENCODE_SNAPSHOT: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/pig-vendor-snapshots/opencode.json"
+));
+const OPENCODE_GO_SNAPSHOT: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/pig-vendor-snapshots/opencode-go.json"
+));
 
 /// Vendors in load order. Keys are namespaced per vendor, so order only matters
 /// for logs.
@@ -522,15 +599,324 @@ struct ResolvedVendor {
     session_header: Option<String>,
 }
 
-/// Resolve the snapshot source for an enabled vendor: builtin `include_str!`
-/// snapshot by default, a runtime `snapshot_file` when set (relative paths
-/// resolve against the pig home). `base_url` / `session_header` overrides win
-/// over builtin defaults; custom vendors fall back to no routing header.
-/// `None` means skip with a warning (fail closed, like a malformed snapshot).
+/// Coverage of one validated pi.dev snapshot: total entries, chat entries on
+/// backends pig speaks, per-api skip counts for chat entries (mirrors the
+/// sync script's `mappedModels` / `skippedApis`), and per-type skip counts
+/// for side types pi serves under `?types=chat` (e.g. `classifier`).
+pub(crate) struct VendorSnapshotStats {
+    pub total: usize,
+    pub mapped: usize,
+    pub skipped: Vec<(String, usize)>,
+    pub skipped_types: Vec<(String, usize)>,
+}
+
+/// Strict validation shared by build-time refresh, the runtime auto-cache,
+/// and the sync script's rules: the payload must parse and be a non-empty
+/// catalog; every `chat` entry must carry `id`/`api`/`baseUrl`/`contextWindow`;
+/// at least one entry must sit on a backend pig speaks. Side types pi serves
+/// under `?types=chat` (e.g. `classifier`) are skipped and counted -- the
+/// same leniency the mapping layer's `is_chat_model` has always applied.
+/// Anything else is rejected so a corrupt or shape-shifted payload can never
+/// poison the catalog.
+pub(crate) fn validate_vendor_snapshot(
+    snapshot_json: &str,
+    vendor_id: &str,
+) -> Result<VendorSnapshotStats, String> {
+    let parsed: serde_json::Value = serde_json::from_str(snapshot_json)
+        .map_err(|error| format!("{vendor_id}: snapshot is not valid JSON ({error})"))?;
+    let items: Vec<&serde_json::Value> = parsed
+        .as_array()
+        .map(|arr| arr.iter().collect())
+        .or_else(|| {
+            parsed
+                .get("models")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().collect())
+        })
+        .unwrap_or_default();
+    if items.is_empty() {
+        return Err(format!("{vendor_id}: empty catalog"));
+    }
+    // Side types are skipped and counted; only chat entries are validated.
+    let mut chat_count = 0;
+    let mut skipped_type_counts = std::collections::BTreeMap::new();
+    for model in &items {
+        let typ = model.get("type").and_then(|v| v.as_str()).unwrap_or("chat");
+        if typ != "chat" {
+            *skipped_type_counts.entry(typ.to_string()).or_insert(0) += 1;
+            continue;
+        }
+        chat_count += 1;
+        for field in ["id", "api", "baseUrl", "contextWindow"] {
+            if model.get(field).is_none() {
+                let mid = model.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                return Err(format!("{vendor_id}/{mid}: missing {field}"));
+            }
+        }
+    }
+    if chat_count == 0 {
+        return Err(format!("{vendor_id}: no chat entries"));
+    }
+    let is_chat = |m: &&serde_json::Value| is_chat_model(m);
+    let mapped = items
+        .iter()
+        .filter(|m| {
+            is_chat(m)
+                && m.get("api")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|api| SUPPORTED_VENDOR_APIS.contains(&api))
+        })
+        .count();
+    if mapped == 0 {
+        return Err(format!("{vendor_id}: no mappable entries"));
+    }
+    let mut skipped_counts = std::collections::BTreeMap::new();
+    for model in items.iter().filter(|m| is_chat(m)) {
+        let api = model.get("api").and_then(|v| v.as_str()).unwrap_or("?");
+        if !SUPPORTED_VENDOR_APIS.contains(&api) {
+            *skipped_counts.entry(api.to_string()).or_insert(0) += 1;
+        }
+    }
+    Ok(VendorSnapshotStats {
+        total: items.len(),
+        mapped,
+        skipped: skipped_counts.into_iter().collect(),
+        skipped_types: skipped_type_counts.into_iter().collect(),
+    })
+}
+
+/// Whether one vendor entry is eligible for the runtime auto-cache: a builtin
+/// id, explicitly enabled, without a hand-written `snapshot_file` (explicit
+/// files always win and opt out of the cache). Custom ids never qualify.
+/// Disabled vendors are never pulled, stored, or read -- the opt-in default
+/// stays closed.
+pub fn vendor_auto_refresh_eligible(id: &str, cfg: &VendorConfig) -> bool {
+    cfg.enabled
+        && VENDORS.iter().any(|v| v.id == id)
+        && cfg
+            .snapshot_file
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+}
+
+/// Builtin vendor ids due for a background pull, in config order.
+pub(crate) fn refresh_eligible_vendor_ids(vendors: &IndexMap<String, VendorConfig>) -> Vec<String> {
+    vendors
+        .iter()
+        .filter(|(id, cfg)| vendor_auto_refresh_eligible(id, cfg))
+        .map(|(id, _)| id.clone())
+        .collect()
+}
+
+/// Whether the auto-cache at `path` needs a pull: missing/unreadable metadata
+/// always pulls; otherwise only when older than [`VENDOR_CACHE_TTL`]. A
+/// future mtime counts as fresh (clock skew must not spin the fetcher).
+pub(crate) fn vendor_cache_needs_refresh(path: &Path) -> bool {
+    let mtime = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .ok();
+    match mtime {
+        None => true,
+        Some(stamp) => SystemTime::now()
+            .duration_since(stamp)
+            .is_ok_and(|age| age >= VENDOR_CACHE_TTL),
+    }
+}
+
+/// Read one builtin vendor's auto-cache. `None` means "use the embedded
+/// snapshot": the file is missing (first run, nothing pulled yet) or it
+/// fails strict validation, in which case a warning fires and the embedded
+/// snapshot wins -- a corrupt cache never empties the catalog.
+fn read_auto_cache(home: &Path, id: &str) -> Option<String> {
+    let path = vendor_cache_path_in(home, id);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(vendor = id, "no vendor auto-cache; using embedded snapshot");
+            return None;
+        }
+        Err(error) => {
+            tracing::debug!(
+                vendor = id,
+                %error,
+                "vendor auto-cache unreadable; using embedded snapshot"
+            );
+            return None;
+        }
+    };
+    match validate_vendor_snapshot(&text, id) {
+        Ok(_) => Some(text),
+        Err(reason) => {
+            tracing::warn!(
+                vendor = id,
+                path = %path.display(),
+                reason = reason.as_str(),
+                "vendor auto-cache invalid; using embedded snapshot"
+            );
+            None
+        }
+    }
+}
+
+/// Atomically replace the auto-cache file (write tmp + rename) with the
+/// verbatim pi.dev payload. Only data lands here: never `config.toml`, never
+/// the `enabled` flag.
+fn write_vendor_cache_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, contents)?;
+    std::fs::rename(&tmp, path)
+}
+
+async fn fetch_vendor_snapshot(id: &str) -> Result<String, String> {
+    let client = xai_grok_extra_ca::build_reqwest_client(|builder| {
+        builder
+            .timeout(VENDOR_FETCH_TIMEOUT)
+            .user_agent(VENDOR_SYNC_USER_AGENT)
+    })
+    .map_err(|error| format!("{id}: client build failed ({error})"))?;
+    let url = vendor_catalog_url(id);
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| format!("{id}: fetch failed ({error})"))?;
+    if !response.status().is_success() {
+        return Err(format!("{id}: HTTP {}", response.status()));
+    }
+    response
+        .text()
+        .await
+        .map_err(|error| format!("{id}: read body failed ({error})"))
+}
+
+/// Pull every eligible vendor whose auto-cache is missing or expired.
+/// Fail-closed throughout: offline / 404 / validation failures only warn and
+/// keep the previous cache (or the embedded snapshot). Returns the ids whose
+/// cache files were rewritten.
+pub async fn refresh_vendor_snapshots(vendors: &IndexMap<String, VendorConfig>) -> Vec<String> {
+    refresh_vendor_snapshots_in(vendors, &crate::util::grok_home::grok_home()).await
+}
+
+pub(crate) async fn refresh_vendor_snapshots_in(
+    vendors: &IndexMap<String, VendorConfig>,
+    home: &Path,
+) -> Vec<String> {
+    let mut refreshed = Vec::new();
+    for id in refresh_eligible_vendor_ids(vendors) {
+        let path = vendor_cache_path_in(home, &id);
+        if !vendor_cache_needs_refresh(&path) {
+            tracing::debug!(
+                vendor = id.as_str(),
+                "vendor auto-cache fresh; skipping pull"
+            );
+            continue;
+        }
+        let text = match fetch_vendor_snapshot(&id).await {
+            Ok(text) => text,
+            Err(reason) => {
+                tracing::warn!(
+                    vendor = id.as_str(),
+                    reason = reason.as_str(),
+                    "vendor snapshot pull failed (offline?); keeping previous cache or embedded snapshot"
+                );
+                continue;
+            }
+        };
+        let stats = match validate_vendor_snapshot(&text, &id) {
+            Ok(stats) => stats,
+            Err(reason) => {
+                tracing::warn!(
+                    vendor = id.as_str(),
+                    reason = reason.as_str(),
+                    "pulled vendor snapshot failed validation; keeping previous cache or embedded snapshot"
+                );
+                continue;
+            }
+        };
+        match write_vendor_cache_atomic(&path, &text) {
+            Ok(()) => {
+                tracing::info!(
+                    vendor = id.as_str(),
+                    total = stats.total,
+                    mapped = stats.mapped,
+                    skipped = ?stats.skipped,
+                    skipped_types = ?stats.skipped_types,
+                    path = %path.display(),
+                    "vendor auto-cache refreshed from pi.dev"
+                );
+                refreshed.push(id);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    vendor = id.as_str(),
+                    %error,
+                    "vendor auto-cache write failed; keeping previous cache or embedded snapshot"
+                );
+            }
+        }
+    }
+    refreshed
+}
+
+/// Kick off the background vendor snapshot refresh: one check shortly after
+/// startup, then every [`VENDOR_REFRESH_INTERVAL`] (plus jitter). The task
+/// never blocks startup and never throws: without a tokio runtime (or under
+/// `cfg(test)`) it logs and returns, and pulls only run for explicitly
+/// enabled builtin vendors without a hand-written `snapshot_file`. Call once
+/// per process (e.g. from agent bootstrap); extra calls just spawn extra
+/// loops that converge on the same cache files.
+pub fn spawn_vendor_snapshot_refresh(vendors: &IndexMap<String, VendorConfig>) {
+    let watched: IndexMap<String, VendorConfig> = vendors
+        .iter()
+        .filter(|(id, cfg)| vendor_auto_refresh_eligible(id, cfg))
+        .map(|(id, cfg)| (id.clone(), cfg.clone()))
+        .collect();
+    if watched.is_empty() {
+        tracing::debug!("no enabled builtin vendors; vendor auto-refresh idle");
+        return;
+    }
+    if cfg!(test) {
+        tracing::debug!("cfg(test): skipping vendor auto-refresh background task");
+        return;
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::debug!("no tokio runtime; skipping vendor auto-refresh background task");
+        return;
+    };
+    let home = crate::util::grok_home::grok_home();
+    // Schedule jitter spreads process starts so a fleet release does not
+    // thundering-herd pi.dev; derived from the pid so no extra dep is needed.
+    let jitter = Duration::from_secs(
+        u64::from(std::process::id() % 1000) * VENDOR_REFRESH_JITTER.as_secs() / 1000,
+    );
+    handle.spawn(async move {
+        tokio::time::sleep(VENDOR_REFRESH_INITIAL_DELAY).await;
+        loop {
+            refresh_vendor_snapshots_in(&watched, &home).await;
+            tokio::time::sleep(VENDOR_REFRESH_INTERVAL + jitter).await;
+        }
+    });
+}
+
+/// Resolve the snapshot source for an enabled vendor: a hand-written runtime
+/// `snapshot_file` when set (relative paths resolve against the pig home),
+/// else the background auto-cache file (`<grok_home>/vendors/<id>.json`) for
+/// builtin ids, else the embedded snapshot. `base_url` / `session_header`
+/// overrides win over builtin defaults; custom vendors fall back to no
+/// routing header. `None` means skip with a warning (fail closed, like a
+/// malformed snapshot).
+///
+/// `home` is the pig home injected by the caller (production: `grok_home()`)
+/// so tests can point the auto-cache at a temp dir without touching the
+/// process-global home.
 fn resolve_vendor_source(
     id: &str,
     cfg: &VendorConfig,
     builtin: Option<&Vendor>,
+    home: &Path,
 ) -> Option<ResolvedVendor> {
     let default_base_url = match cfg.base_url.as_deref().filter(|s| !s.trim().is_empty()) {
         Some(url) => url.to_string(),
@@ -551,7 +937,15 @@ fn resolve_vendor_source(
                 return None;
             }
         },
-        None => builtin.map(|b| b.snapshot_json.to_string())?,
+        None => match builtin {
+            // Explicit files opt out of the auto-cache; only builtin ids read
+            // it, and only as a fallback below the hand-written file.
+            Some(vendor) => {
+                read_auto_cache(home, id).unwrap_or_else(|| vendor.snapshot_json.to_string())
+            }
+            // Custom vendors without a readable explicit file stay skipped.
+            None => return None,
+        },
     };
     let session_header = match cfg
         .session_header
@@ -584,8 +978,9 @@ fn load_vendor_into(
     id: &str,
     cfg: &VendorConfig,
     builtin: Option<&Vendor>,
+    home: &Path,
 ) {
-    let Some(src) = resolve_vendor_source(id, cfg, builtin) else {
+    let Some(src) = resolve_vendor_source(id, cfg, builtin, home) else {
         return;
     };
     let (models, skipped) = map_vendor_snapshot(
@@ -624,13 +1019,22 @@ fn load_vendor_into(
 /// line, so what you see is what you can submit. Nameless entries keep `None` and
 /// fall back to their (already unique) id downstream.
 pub fn vendor_models(vendors: &IndexMap<String, VendorConfig>) -> IndexMap<String, ModelEntry> {
+    vendor_models_in(vendors, &crate::util::grok_home::grok_home())
+}
+
+/// Same as [`vendor_models`], with the pig home injected for the auto-cache
+/// (see [`resolve_vendor_source`]).
+pub(crate) fn vendor_models_in(
+    vendors: &IndexMap<String, VendorConfig>,
+    home: &Path,
+) -> IndexMap<String, ModelEntry> {
     let mut all = IndexMap::new();
     for vendor in VENDORS {
         let Some(cfg) = vendors.get(vendor.id).filter(|v| v.enabled) else {
             tracing::debug!(vendor = vendor.id, "vendor not enabled; skipping snapshot");
             continue;
         };
-        load_vendor_into(&mut all, vendor.id, cfg, Some(vendor));
+        load_vendor_into(&mut all, vendor.id, cfg, Some(vendor), home);
     }
     for (id, cfg) in vendors {
         if VENDORS.iter().any(|v| v.id == id.as_str()) || !cfg.enabled {
@@ -643,7 +1047,7 @@ pub fn vendor_models(vendors: &IndexMap<String, VendorConfig>) -> IndexMap<Strin
             );
             continue;
         }
-        load_vendor_into(&mut all, id, cfg, None);
+        load_vendor_into(&mut all, id, cfg, None, home);
     }
     all
 }
@@ -1205,5 +1609,198 @@ mod tests {
             Some(OPENCODE_SESSION_HEADER)
         );
         std::fs::remove_file(&snapshot).ok();
+    }
+
+    /// Distinctive one-model snapshot used to prove the auto-cache wins over
+    /// the embedded catalog (and vice versa for explicit files).
+    const AUTO_CACHE_FIXTURE: &str = r#"[
+        {"id": "cached-only-model", "name": "Cached Only", "api": "openai-completions",
+         "baseUrl": "https://cache.example/v1", "contextWindow": 128000}
+    ]"#;
+
+    /// Strict-validation success case: chat-only catalog with one unsupported
+    /// api (counts as skipped, not as failure).
+    const VALIDATION_FIXTURE: &str = r#"[
+        {"id": "chat-a", "api": "openai-completions",
+         "baseUrl": "https://a.example/v1", "contextWindow": 1000},
+        {"id": "gemini-x", "api": "google-generative-ai",
+         "baseUrl": "https://b.example/v1", "contextWindow": 2000}
+    ]"#;
+
+    fn temp_home(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "pig-vendor-home-{}-{}-{}.d",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed),
+            name
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp home");
+        dir
+    }
+
+    fn write_auto_cache(home: &std::path::Path, id: &str, contents: &str) {
+        let dir = home.join(VENDOR_CACHE_DIR_NAME);
+        std::fs::create_dir_all(&dir).expect("create cache dir");
+        std::fs::write(dir.join(format!("{id}.json")), contents).expect("write cache");
+    }
+
+    fn enabled_builtin(id: &str) -> IndexMap<String, VendorConfig> {
+        let mut vendors = IndexMap::new();
+        vendors.insert(
+            id.to_string(),
+            VendorConfig {
+                enabled: true,
+                env_key: Some(EnvKeys::single(OPENCODE_ENV_KEY)),
+                ..Default::default()
+            },
+        );
+        vendors
+    }
+
+    #[test]
+    fn auto_cache_beats_embedded_snapshot() {
+        let home = temp_home("priority");
+        write_auto_cache(&home, VENDOR_OPENCODE, AUTO_CACHE_FIXTURE);
+        let models = vendor_models_in(&enabled_builtin(VENDOR_OPENCODE), &home);
+        // The cache replaces the embedded snapshot; nothing merges.
+        assert_eq!(models.len(), 1, "unexpected keys: {:?}", models.keys());
+        let cached = models
+            .get("opencode/cached-only-model")
+            .expect("cached model");
+        assert_eq!(cached.info.base_url, "https://cache.example/v1");
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn illegal_auto_cache_falls_back_to_embedded() {
+        for (name, contents) in [
+            ("garbage", "{not json"),
+            // Valid JSON but failing strict validation: empty catalog...
+            ("empty", "[]"),
+            // ...or missing required fields.
+            ("missing-fields", r#"[{"id": "x"}]"#),
+        ] {
+            let home = temp_home(name);
+            write_auto_cache(&home, VENDOR_OPENCODE, contents);
+            let models = vendor_models_in(&enabled_builtin(VENDOR_OPENCODE), &home);
+            assert!(!models.is_empty(), "{name}: must fall back to embedded");
+            assert!(
+                models.keys().all(|k| k.starts_with("opencode/")),
+                "{name}: unexpected keys: {:?}",
+                models.keys()
+            );
+            assert!(
+                !models.contains_key("opencode/cached-only-model"),
+                "{name}: corrupt cache must not leak entries"
+            );
+            std::fs::remove_dir_all(&home).ok();
+        }
+    }
+
+    #[test]
+    fn explicit_snapshot_file_beats_auto_cache() {
+        let home = temp_home("explicit-wins");
+        write_auto_cache(&home, VENDOR_OPENCODE, AUTO_CACHE_FIXTURE);
+        let snapshot = write_temp_snapshot("explicit", CUSTOM_SNAPSHOT_FIXTURE);
+        let mut vendors = enabled_builtin(VENDOR_OPENCODE);
+        vendors
+            .get_mut(VENDOR_OPENCODE)
+            .expect("entry")
+            .snapshot_file = Some(snapshot.to_string_lossy().into_owned());
+        let models = vendor_models_in(&vendors, &home);
+        assert_eq!(models.len(), 2, "unexpected keys: {:?}", models.keys());
+        assert!(models.contains_key("opencode/custom-chat"));
+        assert!(!models.contains_key("opencode/cached-only-model"));
+        std::fs::remove_file(&snapshot).ok();
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn disabled_vendors_are_never_refresh_eligible() {
+        // Nothing configured: nothing to pull.
+        assert!(refresh_eligible_vendor_ids(&IndexMap::new()).is_empty());
+        // Disabled builtin: never pulled, stored, or read -- even with a
+        // cache file sitting on disk.
+        let home = temp_home("disabled");
+        write_auto_cache(&home, VENDOR_OPENCODE, AUTO_CACHE_FIXTURE);
+        let mut vendors = IndexMap::new();
+        vendors.insert(
+            VENDOR_OPENCODE.to_string(),
+            VendorConfig {
+                enabled: false,
+                ..Default::default()
+            },
+        );
+        assert!(refresh_eligible_vendor_ids(&vendors).is_empty());
+        assert!(vendor_models_in(&vendors, &home).is_empty());
+        // Enabled but hand-overridden: the explicit file opts out of the cache.
+        let cfg = vendors.get_mut(VENDOR_OPENCODE).expect("entry");
+        cfg.enabled = true;
+        cfg.snapshot_file = Some("/tmp/pig-vendor-test-explicit.json".to_string());
+        assert!(refresh_eligible_vendor_ids(&vendors).is_empty());
+        // Enabled builtin without override: the only pullable shape.
+        vendors
+            .get_mut(VENDOR_OPENCODE)
+            .expect("entry")
+            .snapshot_file = None;
+        assert_eq!(
+            refresh_eligible_vendor_ids(&vendors),
+            vec![VENDOR_OPENCODE.to_string()]
+        );
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn vendor_cache_staleness_gate() {
+        let home = temp_home("staleness");
+        let path = home.join(VENDOR_CACHE_DIR_NAME).join("opencode.json");
+        // Missing cache always pulls.
+        assert!(vendor_cache_needs_refresh(&path));
+        write_auto_cache(&home, VENDOR_OPENCODE, AUTO_CACHE_FIXTURE);
+        // Just-written cache is fresh.
+        assert!(!vendor_cache_needs_refresh(&path));
+        std::fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn snapshot_validation_mirrors_sync_script() {
+        // Chat-only catalog: unsupported apis pass validation (they only
+        // affect the mapped/skip counts, like the sync script).
+        let stats = validate_vendor_snapshot(VALIDATION_FIXTURE, "test").expect("valid");
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.mapped, 1);
+        assert_eq!(stats.skipped, vec![("google-generative-ai".to_string(), 1)]);
+        assert!(stats.skipped_types.is_empty());
+        // Non-chat entries are skipped and counted, not fatal -- pi serves
+        // side types (e.g. `classifier`) under `?types=chat`.
+        let stats = validate_vendor_snapshot(
+            r#"[{"id": "c", "api": "openai-completions", "baseUrl": "https://c.example/v1", "contextWindow": 5},
+                {"id": "cl", "type": "classifier", "api": "typesafe-system-one", "baseUrl": "https://c.example/v1", "contextWindow": 5}]"#,
+            "test",
+        )
+        .expect("valid");
+        assert_eq!(stats.total, 2);
+        assert_eq!(stats.mapped, 1);
+        assert_eq!(stats.skipped_types, vec![("classifier".to_string(), 1)]);
+        for invalid in [
+            "{not json",
+            "[]",
+            // Chat entry missing required fields (`fallback-chat` has no
+            // baseUrl: explicit snapshot files still map it leniently via
+            // the vendor default, but the auto-cache requires full fields).
+            r#"[{"id": "x"}]"#,
+            CUSTOM_SNAPSHOT_FIXTURE,
+            // No chat entries at all.
+            r#"[{"id": "x", "api": "openai-completions", "baseUrl": "https://x/v1", "contextWindow": 1, "type": "image"}]"#,
+            // Chat entries, but nothing on a backend pig speaks.
+            r#"[{"id": "x", "api": "google-generative-ai", "baseUrl": "https://x/v1", "contextWindow": 1}]"#,
+        ] {
+            assert!(
+                validate_vendor_snapshot(invalid, "test").is_err(),
+                "must reject {invalid}"
+            );
+        }
     }
 }

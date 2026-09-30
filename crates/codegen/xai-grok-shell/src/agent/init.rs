@@ -432,6 +432,14 @@ fn init_process(cfg: &AgentConfig, _auth_manager: &AuthManager) {
         if cfg.resolve_official_marketplace_auto_register().value {
             crate::extensions::marketplace::ensure_official_marketplace_source(&grok_home);
         }
+        // Vendor catalog auto-cache: background refresh only, never blocks
+        // startup. Pulls solely for explicitly enabled builtin vendors and
+        // writes only `<grok_home>/vendors/<id>.json` -- never config.toml,
+        // never the enabled flag (remote/`--config` patches cannot enable
+        // vendors; see PATCH_STRIP_KEYS).
+        if !cfg!(test) {
+            crate::agent::vendors::spawn_vendor_snapshot_refresh(&cfg.vendors);
+        }
         let feedback = cfg.feature(config::Feature::Feedback);
         let feedback_url = cfg.endpoints.resolve_feedback_base_url();
         tracing::info!(

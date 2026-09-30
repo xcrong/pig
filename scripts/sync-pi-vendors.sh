@@ -59,15 +59,23 @@ for pid in $PROVIDERS; do
   curl -fsSL -m 60 -A "$UA" --retry 3 "$url" -o "$TMP/${pid}.json"
   python3 - "$TMP/${pid}.json" "$pid" <<'EOF'
 import json, sys
+from collections import Counter
 path, pid = sys.argv[1], sys.argv[2]
 items = json.load(open(path))
 items = items if isinstance(items, list) else items.get("models", [])
 assert items, f"{pid}: empty catalog"
-for m in items:
+# pi serves side types (e.g. `classifier`) under `?types=chat`; skip and
+# count them like pig's mapping layer does, and only validate chat entries.
+chat = [m for m in items if m.get("type", "chat") == "chat"]
+skipped_types = Counter(m.get("type") for m in items if m.get("type", "chat") != "chat")
+assert chat, f"{pid}: no chat entries"
+for m in chat:
     for field in ("id", "api", "baseUrl", "contextWindow"):
         assert field in m, f"{pid}/{m.get('id')}: missing {field}"
-    assert m.get("type", "chat") == "chat", f"{pid}/{m.get('id')}: non-chat entry"
-print(f"{pid}: {len(items)} models validated")
+supported = ("openai-completions", "openai-responses", "anthropic-messages")
+mapped = sum(1 for m in chat if m.get("api") in supported)
+assert mapped, f"{pid}: no mappable entries"
+print(f"{pid}: {len(items)} models validated ({len(chat)} chat, {mapped} mapped, skipped types {dict(sorted(skipped_types.items()))})")
 EOF
   cp "$TMP/${pid}.json" "$DATA_DIR/${pid}.json"
 done
@@ -84,10 +92,12 @@ for pid, info in manifest["providers"].items():
     items = items if isinstance(items, list) else items.get("models", [])
     chat = [m for m in items if m.get("type", "chat") == "chat"]
     skipped = Counter(m.get("api") for m in chat if m.get("api") not in supported)
+    skipped_types = Counter(m.get("type") for m in items if m.get("type", "chat") != "chat")
     info["sha256"] = hashlib.sha256(raw).hexdigest()
     info["totalModels"] = len(items)
     info["mappedModels"] = sum(1 for m in chat if m.get("api") in supported)
     info["skippedApis"] = dict(sorted(skipped.items()))
+    info["skippedTypes"] = dict(sorted(skipped_types.items()))
 manifest["fetchedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 json.dump(manifest, open(manifest_path, "w"), indent=2)
 open(manifest_path, "a").write("\n")

@@ -324,9 +324,11 @@ required-features = ["test-support"]
 [lints]
 workspace = true
 [build-dependencies]
-# build.rs only downloads ripgrep — no rmcp involvement. Workspace reqwest
-# (0.12) is plenty.
+# build.rs downloads ripgrep and refreshes vendor snapshots — no rmcp
+# involvement. Workspace reqwest (0.12) is plenty.
 reqwest = { workspace = true, features = ["blocking"] }
+serde_json = { workspace = true }
+xai-grok-extra-ca = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 
