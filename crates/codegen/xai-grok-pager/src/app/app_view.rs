@@ -3256,8 +3256,18 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
         if let Event::Paste(text) = ev {
             return outcome_to_input(wizard.insert_paste(text, &detect));
         }
-        if let Event::Mouse(_) = ev {
-            return InputOutcome::Unchanged;
+        if let Event::Mouse(mouse) = ev {
+            return outcome_to_input(wizard.handle_mouse(
+                mouse.kind,
+                mouse.column,
+                mouse.row,
+                &detect,
+            ));
+        }
+        if matches!(ev, Event::Resize(_, _)) {
+            // Drop stale hit rects; the next render recomputes them.
+            wizard.clear_hit_areas();
+            return InputOutcome::Changed;
         }
         return InputOutcome::Unchanged;
     }
@@ -3848,9 +3858,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                 // for mixed states where a method exists. `q` above still
                 // cancels a mid-session login first.
                 if !ctx.has_login_method {
-                    if key!('s').matches(key)
-                        || key!('l').matches(key)
-                        || key!(Enter).matches(key)
+                    if key!('s').matches(key) || key!('l').matches(key) || key!(Enter).matches(key)
                     {
                         return InputOutcome::Action(Action::OpenSetupWizard);
                     }
@@ -4729,7 +4737,7 @@ impl AppView {
                                     dialog,
                                 );
                             }
-                            if let Some(wizard) = self.setup_wizard.as_ref() {
+                            if let Some(wizard) = self.setup_wizard.as_mut() {
                                 crate::views::setup_wizard::render_setup_wizard(
                                     view_area,
                                     f.buffer_mut(),

@@ -9,7 +9,7 @@
 //! OpenAI-compatible endpoint (provider id, base URL, model, backend,
 //! credential) plus a hint for the advanced pi-snapshot mirror path.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Modifier, Style};
@@ -47,14 +47,22 @@ pub struct SetupEnvPresence {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SetupStep {
-    ChooseVendor { selected: usize },
-    EnterKey { vendor_index: usize },
-    CustomMenu { selected: usize },
+    ChooseVendor {
+        selected: usize,
+    },
+    EnterKey {
+        vendor_index: usize,
+    },
+    CustomMenu {
+        selected: usize,
+    },
     CustomProviderId,
     CustomBaseUrl,
     CustomModelKey,
     CustomWireModel,
-    CustomBackend { selected: usize },
+    CustomBackend {
+        selected: usize,
+    },
     CustomKey,
     CustomConfirm,
     SnapshotHint,
@@ -63,7 +71,9 @@ pub enum SetupStep {
         config_path: String,
         follow_up: Option<String>,
     },
-    Failed { error: String },
+    Failed {
+        error: String,
+    },
 }
 
 pub struct SetupWizardState {
@@ -78,6 +88,21 @@ pub struct SetupWizardState {
     pub custom_model_key: String,
     pub custom_wire_model: String,
     pub custom_backend: usize,
+    /// Hit-test rects from the last render (dialog + selectable rows).
+    /// Populated by `render_setup_wizard`; `None` until the first draw or
+    /// when the dialog is too small to render. Read by `handle_mouse` so
+    /// hover/click maps use the exact same layout as painting.
+    pub hit_areas: Option<SetupWizardHitRects>,
+}
+
+/// Hit-test rects for the setup wizard dialog.
+#[derive(Debug, Clone, Default)]
+pub struct SetupWizardHitRects {
+    /// Centered dialog rect (border included).
+    pub dialog: Rect,
+    /// One rect per selectable list row, in list order.
+    /// Empty for non-list steps (input/confirm/hint/saving/done/failed).
+    pub rows: Vec<Rect>,
 }
 
 /// Persist request emitted on confirm. Exactly one credential is set.
@@ -145,6 +170,7 @@ impl SetupWizardState {
             custom_model_key: String::new(),
             custom_wire_model: String::new(),
             custom_backend: 0,
+            hit_areas: None,
         }
     }
 
@@ -403,8 +429,7 @@ impl SetupWizardState {
                     SetupWizardOutcome::Changed
                 }
                 KeyCode::Down => {
-                    selected =
-                        (selected + 1).min(custom_backend_ids().len().saturating_sub(1));
+                    selected = (selected + 1).min(custom_backend_ids().len().saturating_sub(1));
                     self.custom_backend = selected;
                     self.step = SetupStep::CustomBackend { selected };
                     SetupWizardOutcome::Changed
@@ -534,10 +559,7 @@ impl SetupWizardState {
         text: &str,
         detect: &impl Fn(&str) -> SetupEnvPresence,
     ) -> SetupWizardOutcome {
-        if !matches!(
-            self.step,
-            SetupStep::EnterKey { .. } | SetupStep::CustomKey
-        ) {
+        if !matches!(self.step, SetupStep::EnterKey { .. } | SetupStep::CustomKey) {
             return SetupWizardOutcome::Unchanged;
         }
         let outcome = self.input.insert_paste(text);
@@ -680,23 +702,21 @@ fn masked_input(text: &str) -> String {
 const DIALOG_MIN_WIDTH: u16 = 58;
 const DIALOG_HEIGHT: u16 = 16;
 const INNER_PAD: u16 = 4;
+/// Rows from the dialog top to the first selectable list row:
+/// title (1) + blank (1) + subtitle (1) + 1-based offset.
+const LIST_START_OFFSET: u16 = 4;
 
 fn dialog_width_for(area_width: u16) -> u16 {
     DIALOG_MIN_WIDTH.min(area_width.saturating_sub(4)).max(20)
 }
 
-/// Render the wizard centered over the welcome screen.
-pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &SetupWizardState) {
-    let theme = Theme::current();
+/// Centered dialog rect, shared by render and hit-testing so hover never
+/// drifts from painting. `None` when the terminal is too small for the
+/// dialog (the `[Esc] to close` fallback). Must stay in sync with
+/// `render_setup_wizard`'s early-return guard.
+fn setup_dialog_rect(area: Rect) -> Option<Rect> {
     if area.height < DIALOG_HEIGHT || area.width < 30 {
-        if area.height >= 1 && area.width >= 16 {
-            let hint = Line::from(Span::styled(
-                "[Esc] to close",
-                Style::default().fg(theme.gray_dim),
-            ));
-            hint.render(Rect::new(area.x, area.y, area.width.min(16), 1), buf);
-        }
-        return;
+        return None;
     }
     let width = dialog_width_for(area.width);
     let [_, dialog_h, _] = Layout::horizontal([
@@ -713,6 +733,193 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &SetupWizardStat
     ])
     .flex(Flex::Center)
     .areas(dialog_h);
+    Some(dialog)
+}
+
+/// One hit rect per selectable row, using the same `inner_x`/`inner_w` as
+/// painting (`dialog.x + 2`, `dialog.width - INNER_PAD`).
+fn setup_list_rows(dialog: Rect, count: usize) -> Vec<Rect> {
+    let inner_x = dialog.x + 2;
+    let inner_w = dialog.width.saturating_sub(INNER_PAD);
+    let start_y = dialog.y + LIST_START_OFFSET;
+    (0..count)
+        .map(|i| Rect::new(inner_x, start_y + i as u16, inner_w, 1))
+        .collect()
+}
+
+/// Full hit layout for the current step. `rows` is empty for non-list
+/// steps (the dialog rect alone still swallows clicks). Returns `None`
+/// when the dialog itself cannot render.
+fn compute_setup_layout(area: Rect, state: &SetupWizardState) -> Option<SetupWizardHitRects> {
+    let dialog = setup_dialog_rect(area)?;
+    let count = match &state.step {
+        SetupStep::ChooseVendor { .. } => state.choose_len(),
+        SetupStep::CustomMenu { .. } => SetupWizardState::custom_menu_len(),
+        SetupStep::CustomBackend { .. } => custom_backend_ids().len(),
+        _ => 0,
+    };
+    Some(SetupWizardHitRects {
+        dialog,
+        rows: setup_list_rows(dialog, count),
+    })
+}
+
+impl SetupWizardState {
+    /// Clear stale hit rects (e.g. on resize before the next render).
+    pub fn clear_hit_areas(&mut self) {
+        self.hit_areas = None;
+    }
+
+    fn list_selection(&self) -> Option<(usize, usize)> {
+        match &self.step {
+            SetupStep::ChooseVendor { selected } => Some((*selected, self.choose_len())),
+            SetupStep::CustomMenu { selected } => Some((*selected, Self::custom_menu_len())),
+            SetupStep::CustomBackend { selected } => Some((*selected, custom_backend_ids().len())),
+            _ => None,
+        }
+    }
+
+    fn set_list_selection(&mut self, index: usize) {
+        match &mut self.step {
+            SetupStep::ChooseVendor { selected } => *selected = index,
+            SetupStep::CustomMenu { selected } => *selected = index,
+            SetupStep::CustomBackend { selected } => {
+                *selected = index;
+                self.custom_backend = index;
+            }
+            _ => {}
+        }
+    }
+
+    /// Activate the given list row as if Enter was pressed on it.
+    fn activate_list_row(
+        &mut self,
+        index: usize,
+        detect: &impl Fn(&str) -> SetupEnvPresence,
+    ) -> SetupWizardOutcome {
+        match self.step.clone() {
+            SetupStep::ChooseVendor { .. } => {
+                if index < self.vendors.len() {
+                    self.enter_vendor(index, |name| detect(name));
+                    SetupWizardOutcome::Changed
+                } else {
+                    self.step = SetupStep::CustomMenu { selected: 0 };
+                    self.error = None;
+                    SetupWizardOutcome::Changed
+                }
+            }
+            SetupStep::CustomMenu { .. } => {
+                if index == 0 {
+                    self.input.set_text(&self.custom_provider_id);
+                    self.error = None;
+                    self.step = SetupStep::CustomProviderId;
+                } else {
+                    self.error = None;
+                    self.step = SetupStep::SnapshotHint;
+                }
+                SetupWizardOutcome::Changed
+            }
+            SetupStep::CustomBackend { .. } => {
+                self.custom_backend = index;
+                self.start_custom_key(detect);
+                SetupWizardOutcome::Changed
+            }
+            _ => SetupWizardOutcome::Unchanged,
+        }
+    }
+
+    fn hit_row_index(&self, column: u16, row: u16) -> Option<usize> {
+        let hits = self.hit_areas.as_ref()?;
+        hits.rows.iter().position(|r| {
+            column >= r.x
+                && column < r.x.saturating_add(r.width)
+                && row >= r.y
+                && row < r.y.saturating_add(r.height)
+        })
+    }
+
+    /// Mouse handling for the wizard. Mirrors the keyboard list nav:
+    /// hover moves selection, click selects, click on the selected row
+    /// confirms. Clicks anywhere (inside or outside the dialog) are
+    /// swallowed so they never reach the welcome menu underneath.
+    /// Returns `Unchanged` when nothing visibly changed, still consumed
+    /// by the caller via early-return.
+    pub fn handle_mouse(
+        &mut self,
+        kind: MouseEventKind,
+        column: u16,
+        row: u16,
+        detect: &impl Fn(&str) -> SetupEnvPresence,
+    ) -> SetupWizardOutcome {
+        match kind {
+            MouseEventKind::Moved => {
+                let Some((selected, _)) = self.list_selection() else {
+                    return SetupWizardOutcome::Unchanged;
+                };
+                // No layout yet (small terminal / pre-first-render): no hover.
+                if self.hit_areas.is_none() {
+                    return SetupWizardOutcome::Unchanged;
+                }
+                match self.hit_row_index(column, row) {
+                    Some(i) if i != selected => {
+                        self.set_list_selection(i);
+                        SetupWizardOutcome::Changed
+                    }
+                    _ => SetupWizardOutcome::Unchanged,
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some((selected, _)) = self.list_selection() else {
+                    // Non-list steps: swallow the click (no pass-through).
+                    return SetupWizardOutcome::Unchanged;
+                };
+                // No layout yet: swallow without acting (never panic).
+                if self.hit_areas.is_none() {
+                    return SetupWizardOutcome::Unchanged;
+                }
+                match self.hit_row_index(column, row) {
+                    Some(i) if i == selected => self.activate_list_row(i, detect),
+                    Some(i) => {
+                        self.set_list_selection(i);
+                        SetupWizardOutcome::Changed
+                    }
+                    // Inside dialog but off the rows, or outside the dialog:
+                    // consume to block the welcome menu underneath.
+                    None => SetupWizardOutcome::Unchanged,
+                }
+            }
+            // Short lists need no scrolling; swallow so the welcome
+            // underneath never sees the wheel.
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => SetupWizardOutcome::Unchanged,
+            _ => SetupWizardOutcome::Unchanged,
+        }
+    }
+}
+
+/// Render the wizard centered over the welcome screen.
+/// Stores hit rects on `state` for `handle_mouse`; callers must pass
+/// `&mut` (mirrors `ImportClaudeModalState::content_area`).
+pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizardState) {
+    let theme = Theme::current();
+    if area.height < DIALOG_HEIGHT || area.width < 30 {
+        // No dialog to hit-test; drop stale rects so mouse handlers
+        // cannot act on positions from a previous (larger) render.
+        state.hit_areas = None;
+        if area.height >= 1 && area.width >= 16 {
+            let hint = Line::from(Span::styled(
+                "[Esc] to close",
+                Style::default().fg(theme.gray_dim),
+            ));
+            hint.render(Rect::new(area.x, area.y, area.width.min(16), 1), buf);
+        }
+        return;
+    }
+    let Some(layout) = compute_setup_layout(area, state) else {
+        state.hit_areas = None;
+        return;
+    };
+    state.hit_areas = Some(layout.clone());
+    let dialog = layout.dialog;
 
     let bg = Style::default().bg(theme.bg_dark);
     for y in dialog.y..dialog.y + dialog.height {
@@ -952,7 +1159,12 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &SetupWizardStat
         }
         SetupStep::CustomProviderId => {
             render_custom_field(
-                buf, inner_x, &mut row, inner_w, &theme, state,
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                &theme,
+                state,
                 "Step 1/6 — Provider id",
                 "Short name for [model_providers.<id>]:",
                 "Provider id: ",
@@ -960,7 +1172,12 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &SetupWizardStat
         }
         SetupStep::CustomBaseUrl => {
             render_custom_field(
-                buf, inner_x, &mut row, inner_w, &theme, state,
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                &theme,
+                state,
                 "Step 2/6 — Base URL",
                 "OpenAI-compatible endpoint (https://…/v1):",
                 "Base URL: ",
@@ -968,7 +1185,12 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &SetupWizardStat
         }
         SetupStep::CustomModelKey => {
             render_custom_field(
-                buf, inner_x, &mut row, inner_w, &theme, state,
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                &theme,
+                state,
                 "Step 3/6 — Model",
                 "Catalog key for [model.<key>] and /model:",
                 "Model: ",
@@ -976,7 +1198,12 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &SetupWizardStat
         }
         SetupStep::CustomWireModel => {
             render_custom_field(
-                buf, inner_x, &mut row, inner_w, &theme, state,
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                &theme,
+                state,
                 "Step 4/6 — Wire model id (optional)",
                 "Id sent to the API. Empty = same as key:",
                 "Wire id: ",
@@ -1037,7 +1264,12 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &SetupWizardStat
                     Style::default().fg(theme.text_primary),
                 )),
                 Line::from(Span::styled(
-                    format!("[model.{}] {} via {}", state.custom_model_key.trim(), wire, backend),
+                    format!(
+                        "[model.{}] {} via {}",
+                        state.custom_model_key.trim(),
+                        wire,
+                        backend
+                    ),
                     Style::default().fg(theme.text_primary),
                 )),
                 Line::from(Span::styled(cred, Style::default().fg(theme.gray))),
@@ -1134,7 +1366,10 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &SetupWizardStat
                     inner_x,
                     &mut row,
                     inner_w,
-                    Line::from(Span::styled(short_hint, Style::default().fg(theme.gray_bright))),
+                    Line::from(Span::styled(
+                        short_hint,
+                        Style::default().fg(theme.gray_bright),
+                    )),
                 );
             }
             paint_line(
@@ -1630,5 +1865,212 @@ mod tests {
         let outcome = state.handle_key(&key(KeyCode::Enter), &|_| SetupEnvPresence::default());
         assert!(matches!(outcome, SetupWizardOutcome::Changed));
         assert!(state.error.is_some());
+    }
+
+    fn render_mouse_layout(state: &mut SetupWizardState) -> SetupWizardHitRects {
+        let area = Rect::new(0, 0, 100, 30);
+        let mut buf = Buffer::empty(area);
+        render_setup_wizard(area, &mut buf, state);
+        state.hit_areas.clone().expect("dialog should render")
+    }
+
+    fn no_detect(_: &str) -> SetupEnvPresence {
+        SetupEnvPresence::default()
+    }
+
+    #[test]
+    fn mouse_hover_moves_selection() {
+        let mut state = SetupWizardState::new(options());
+        let hits = render_mouse_layout(&mut state);
+        assert_eq!(hits.rows.len(), 3);
+        // Hover row 1 moves selection from 0 -> 1.
+        let row = hits.rows[1];
+        let outcome = state.handle_mouse(MouseEventKind::Moved, row.x + 1, row.y, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(
+            state.step,
+            SetupStep::ChooseVendor { selected: 1 }
+        ));
+        // Hover same row again: no change.
+        let outcome = state.handle_mouse(MouseEventKind::Moved, row.x + 1, row.y, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        // Hover outside rows: no change, no panic.
+        let outcome = state.handle_mouse(MouseEventKind::Moved, 0, 0, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        assert!(matches!(
+            state.step,
+            SetupStep::ChooseVendor { selected: 1 }
+        ));
+    }
+
+    #[test]
+    fn mouse_click_selects_then_confirms() {
+        let mut state = SetupWizardState::new(options());
+        let hits = render_mouse_layout(&mut state);
+        // Click unselected row 1: selects.
+        let row = hits.rows[1];
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(
+            state.step,
+            SetupStep::ChooseVendor { selected: 1 }
+        ));
+        // Click selected row 1 again: confirms into EnterKey.
+        let hits = render_mouse_layout(&mut state);
+        let row = hits.rows[1];
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(
+            state.step,
+            SetupStep::EnterKey { vendor_index: 1 }
+        ));
+    }
+
+    #[test]
+    fn mouse_click_outside_dialog_is_swallowed() {
+        let mut state = SetupWizardState::new(options());
+        let hits = render_mouse_layout(&mut state);
+        // Outside the dialog (top-left corner).
+        let outcome = state.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        assert!(matches!(
+            state.step,
+            SetupStep::ChooseVendor { selected: 0 }
+        ));
+        // Inside the dialog but off the rows (title row): also swallowed.
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.dialog.x + 1,
+            hits.dialog.y + 1,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        assert!(matches!(
+            state.step,
+            SetupStep::ChooseVendor { selected: 0 }
+        ));
+    }
+
+    #[test]
+    fn mouse_without_render_is_swallowed() {
+        let mut state = SetupWizardState::new(options());
+        assert!(state.hit_areas.is_none());
+        let outcome = state.handle_mouse(MouseEventKind::Moved, 10, 10, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        let outcome =
+            state.handle_mouse(MouseEventKind::Down(MouseButton::Left), 10, 10, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        assert!(matches!(
+            state.step,
+            SetupStep::ChooseVendor { selected: 0 }
+        ));
+    }
+
+    #[test]
+    fn mouse_custom_menu_hover_and_click() {
+        let mut state = SetupWizardState::new(options());
+        state.step = SetupStep::CustomMenu { selected: 0 };
+        let hits = render_mouse_layout(&mut state);
+        assert_eq!(hits.rows.len(), 2);
+        let row = hits.rows[1];
+        let outcome = state.handle_mouse(MouseEventKind::Moved, row.x + 2, row.y, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(state.step, SetupStep::CustomMenu { selected: 1 }));
+        // Click selected snapshot row -> SnapshotHint.
+        let hits = render_mouse_layout(&mut state);
+        let row = hits.rows[1];
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 2,
+            row.y,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(state.step, SetupStep::SnapshotHint));
+    }
+
+    #[test]
+    fn mouse_custom_backend_hover_and_click() {
+        let mut state = SetupWizardState::new(options());
+        state.step = SetupStep::CustomBackend { selected: 0 };
+        state.custom_backend = 0;
+        let hits = render_mouse_layout(&mut state);
+        assert!(!hits.rows.is_empty());
+        let last = hits.rows.len() - 1;
+        let row = hits.rows[last];
+        let outcome = state.handle_mouse(MouseEventKind::Moved, row.x + 1, row.y, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(
+            state.step,
+            SetupStep::CustomBackend { selected } if selected == last
+        ));
+        assert_eq!(state.custom_backend, last);
+        // Click selected backend row -> CustomKey.
+        let hits = render_mouse_layout(&mut state);
+        let row = hits.rows[last];
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(state.step, SetupStep::CustomKey));
+    }
+
+    #[test]
+    fn mouse_non_list_steps_swallow() {
+        let mut state = SetupWizardState::new(options());
+        state.handle_key(&key(KeyCode::Enter), &|_| SetupEnvPresence::default());
+        assert!(matches!(state.step, SetupStep::EnterKey { .. }));
+        let hits = render_mouse_layout(&mut state);
+        assert!(hits.rows.is_empty());
+        // Hover and click inside the dialog change nothing but are consumed.
+        let outcome = state.handle_mouse(
+            MouseEventKind::Moved,
+            hits.dialog.x + 5,
+            hits.dialog.y + 5,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            hits.dialog.x + 5,
+            hits.dialog.y + 5,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        assert!(matches!(state.step, SetupStep::EnterKey { .. }));
+        // Scroll is also swallowed, never panics.
+        let outcome = state.handle_mouse(MouseEventKind::ScrollUp, 0, 0, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        let outcome = state.handle_mouse(MouseEventKind::ScrollDown, 0, 0, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+    }
+
+    #[test]
+    fn small_terminal_clears_hits_without_panic() {
+        let mut state = SetupWizardState::new(options());
+        let _ = render_mouse_layout(&mut state);
+        assert!(state.hit_areas.is_some());
+        let small = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(small);
+        render_setup_wizard(small, &mut buf, &mut state);
+        assert!(state.hit_areas.is_none());
+        // Mouse after the fallback render must not panic and stays swallowed.
+        let outcome = state.handle_mouse(MouseEventKind::Moved, 5, 5, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
+        let outcome = state.handle_mouse(MouseEventKind::Down(MouseButton::Left), 5, 5, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Unchanged));
     }
 }
