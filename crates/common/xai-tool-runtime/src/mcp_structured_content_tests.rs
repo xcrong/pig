@@ -1,5 +1,4 @@
 use super::render_structured_content;
-use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 
 const SUMMARY: &str = "7 product folders, 2 custom folders";

@@ -53,6 +53,20 @@ pub trait ToolMetadata: Send + Sync {
         self.kind().is_read_only()
     }
 
+    /// The canonical input field naming the workspace path this call touches
+    /// (`file_path` on `search_replace`, `filePath` on opencode `edit`, ...).
+    ///
+    /// The tool server advertises it (under the client-facing name, post-rename)
+    /// as `lock_path_param:<name>` so a client can serialize same-path writers
+    /// from the arguments it sends, without a hand-kept table. The server itself
+    /// does not lock: the client that issues the batch owns ordering, as the
+    /// production dispatchers do. Default `None`: the tool has no single path
+    /// key (shells, `apply_patch`, `todo_write`, directory listings whose
+    /// `path` is a directory).
+    fn lock_path_param(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Notification variant tags this tool may emit during execution.
     /// Default: none. Tags match `ToolNotification`'s serde `type` discriminator
     /// (the keys of [`notification_schema_catalog`](crate::notification::notification_schema_catalog)).

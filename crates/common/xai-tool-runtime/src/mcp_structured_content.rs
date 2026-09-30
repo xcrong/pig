@@ -1,13 +1,15 @@
-//! Compact JSON to append for an MCP `tools/call` result's `structuredContent`.
+//! Compact JSON to render for an MCP `tools/call` result's `structuredContent`.
 
 use serde::Deserialize;
 use serde_json::Value;
 
-/// The compact JSON to append for `structuredContent`, or `None` when a rendered `content` part
+/// The compact JSON to render for `structuredContent`, or `None` when a rendered `content` part
 /// already carries it: the document at the part's first `{`/`[` equals the payload, or for a
 /// scalar (spec >= 2026-07-28) the whole part is its JSON or the string itself. The spec only says
 /// servers SHOULD inline it, so a structured-first server would otherwise leave the model with the
-/// summary line alone. Callers append the result last so truncation cuts it first.
+/// summary line alone. Position is the caller's: the text renderers (local MCP client, `use_tool`,
+/// the workspace daemon) append it last so truncation cuts it first; `extract_content_blocks`
+/// leads with it, keeping the block order its callers already budget for.
 pub fn render_structured_content<'a>(
     structured: Option<&Value>,
     parts: impl IntoIterator<Item = &'a str>,

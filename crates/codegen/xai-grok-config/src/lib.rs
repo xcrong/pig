@@ -25,6 +25,7 @@ mod loader;
 mod macos_managed;
 mod managed_cache;
 pub mod managed_text;
+mod mcp_bearer_token_file;
 mod paths;
 pub mod shell;
 pub mod signed_policy;
@@ -74,6 +75,7 @@ pub use managed_cache::{
     managed_policy_compromised_for, mark_managed_config_synced, mark_managed_config_synced_at,
     normalize_identity,
 };
+pub use mcp_bearer_token_file::{BearerTokenPath, BearerTokenPathError};
 pub use paths::{
     claude_managed_settings_path, claude_managed_settings_probe_path, create_dir_all_owner_only,
     decode_cwd_from_dirname, default_grok_home, encode_cwd_dirname, ensure_sessions_cwd_dir,

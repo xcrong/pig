@@ -10,9 +10,9 @@ use crate::permission::bash_command_splitting::{
 };
 use crate::permission::exec_risk::is_accepted_long_option_prefix;
 use crate::permission::policy::{
-    CompiledPolicy, GateDecision, InlineShellScript, ShellWord, SymlinkFollow,
-    combine_gate_decisions, follow_absolute_symlink, resolve_following_symlinks,
-    shell_dash_c_script,
+    CompiledPolicy, GateDecision, InlineShellScript, RuleBase, ShellWord, SymlinkFollow,
+    combine_gate_decisions, follow_absolute_symlink, path_has_parent_dir,
+    resolve_following_symlinks, shell_dash_c_script,
 };
 use crate::permission::types::{AccessKind, Decision};
 
@@ -33,13 +33,14 @@ impl CompiledPolicy {
         if !self.has_file_restrictions {
             return None;
         }
-        self.evaluate_shell_file_access_inner(cmd, cwd, MAX_INLINE_SHELL_DEPTH, false, false)
+        let base = RuleBase::new(cwd);
+        self.evaluate_shell_file_access_inner(cmd, &base, MAX_INLINE_SHELL_DEPTH, false, false)
     }
 
     fn evaluate_shell_file_access_inner(
         &self,
         cmd: &str,
-        cwd: &Path,
+        base: &RuleBase<'_>,
         inline_depth_remaining: usize,
         cwd_unpinned: bool,
         entered_inline: bool,
@@ -68,7 +69,7 @@ impl CompiledPolicy {
                     || cwd_unpinned_before(&cwd_changes, redirect.start_byte, redirect.scope);
                 decision = combine_gate_decisions(
                     decision,
-                    self.evaluate_shell_path(&path, cwd, redirect.mode, path_cwd_unpinned),
+                    self.evaluate_shell_path(&path, base, redirect.mode, path_cwd_unpinned),
                 );
             }
         }
@@ -97,7 +98,7 @@ impl CompiledPolicy {
                             decision,
                             self.evaluate_shell_file_access_inner(
                                 inner,
-                                cwd,
+                                base,
                                 inline_depth_remaining - 1,
                                 invocation_cwd_unpinned,
                                 true,
@@ -138,7 +139,7 @@ impl CompiledPolicy {
                 }
                 decision = combine_gate_decisions(
                     decision,
-                    self.evaluate_shell_path(&path, cwd, mode, invocation_cwd_unpinned),
+                    self.evaluate_shell_path(&path, base, mode, invocation_cwd_unpinned),
                 );
             }
             if program_lower == "dd" {
@@ -151,7 +152,7 @@ impl CompiledPolicy {
                     }
                     decision = combine_gate_decisions(
                         decision,
-                        self.evaluate_shell_path(path, cwd, mode, invocation_cwd_unpinned),
+                        self.evaluate_shell_path(path, base, mode, invocation_cwd_unpinned),
                     );
                 }
                 continue;
@@ -171,7 +172,7 @@ impl CompiledPolicy {
                 for &mode in modes {
                     decision = combine_gate_decisions(
                         decision,
-                        self.evaluate_shell_path(token, cwd, mode, invocation_cwd_unpinned),
+                        self.evaluate_shell_path(token, base, mode, invocation_cwd_unpinned),
                     );
                 }
             }
@@ -185,18 +186,25 @@ impl CompiledPolicy {
     fn evaluate_shell_path(
         &self,
         token: &str,
-        cwd: &Path,
+        base: &RuleBase<'_>,
         mode: ShellFileMode,
         cwd_unpinned: bool,
     ) -> Option<GateDecision> {
+        let cwd = base.lexical;
         let path = normalize_shell_path(token);
+        let raw = normalize_shell_path_raw(token);
         let is_absolute = is_absolute_shell_path(&path);
         // Cwd-aware rule match mirrors the direct Read/Edit tool gate
         // A rooted rule like `Read(src/**)` also keys on the same file spelled absolutely
         // An unpinned cwd anchors nothing: relative operands then keep text-only matching (absolute operands are cwd-independent)
-        let rule_cwd = (is_absolute || !cwd_unpinned).then_some(cwd);
+        let rule_base = (is_absolute || !cwd_unpinned).then_some(base);
+        // As for a native `..` path, the collapsed text gets physical-cwd forms only from the resolved re-check
+        let has_parent_dir = path_has_parent_dir(Path::new(&raw));
+        let lexical_base = has_parent_dir.then(|| base.without_physical());
+        let path_rule_base = rule_base.map(|base| lexical_base.as_ref().unwrap_or(base));
         // Escalate only: drop Allow so a file allow-rule can't auto-approve here.
-        let escalate = |access: &AccessKind| match self.evaluate_lexical_with_cwd(access, rule_cwd)
+        let escalate = |access: &AccessKind, rule_base: Option<&RuleBase<'_>>| match self
+            .evaluate_rules_with_base(access, rule_base)
         {
             Some(Decision::Reject(reason)) => Some(GateDecision::Reject(reason)),
             Some(Decision::Ask) => Some(GateDecision::AskRuleMatch),
@@ -204,7 +212,6 @@ impl CompiledPolicy {
         };
         // Also re-check the resolved symlink target so a deny keyed on the real path can't be dodged via an in-workspace symlink (`ln -s /etc x`)
         // Resolve the *uncollapsed* operand so a `..` after a link is applied physically, not erased textually before the link is followed
-        let raw = normalize_shell_path_raw(token);
         let raw_absolute = if is_absolute_shell_path(&raw) {
             Some(raw)
         } else if cwd_unpinned {
@@ -219,12 +226,17 @@ impl CompiledPolicy {
                 normalize_shell_path(&cwd.join(&path).to_string_lossy())
             };
             match follow_absolute_symlink(&raw_absolute, &absolute) {
-                SymlinkFollow::Target(resolved) => escalate(&shell_access(mode, resolved)),
+                SymlinkFollow::Target(resolved) => {
+                    escalate(&shell_access(mode, resolved), rule_base)
+                }
+                SymlinkFollow::None if has_parent_dir => {
+                    escalate(&shell_access(mode, absolute), rule_base)
+                }
                 SymlinkFollow::Unresolvable => Some(GateDecision::AskFailClosed),
                 SymlinkFollow::None => None,
             }
         });
-        let path_decision = escalate(&shell_access(mode, path.clone()));
+        let path_decision = escalate(&shell_access(mode, path.clone()), path_rule_base);
         // WHY: unknown cwd permits text matches only, never original-cwd resolution.
         let anchored_decision = if cwd_unpinned && !is_absolute {
             None
@@ -234,7 +246,10 @@ impl CompiledPolicy {
             } else {
                 normalize_shell_path(&cwd.join(&path).to_string_lossy())
             };
-            combine_gate_decisions(escalate(&shell_access(mode, absolute)), resolved_decision)
+            combine_gate_decisions(
+                escalate(&shell_access(mode, absolute), path_rule_base),
+                resolved_decision,
+            )
         };
         let decision = combine_gate_decisions(path_decision, anchored_decision);
         combine_gate_decisions(

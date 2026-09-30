@@ -6,6 +6,7 @@ edition.workspace = true
 description = "Shared config loading for Grok — grok_home, effective config (requirements > user > managed), TOML merge"
 
 [dependencies]
+agent-client-protocol = { workspace = true }
 base64 = { workspace = true }
 blake3 = { workspace = true }
 dunce = { workspace = true }

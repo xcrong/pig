@@ -19,9 +19,8 @@ use xai_grok_mcp::servers::{
     InitClaimGuard, LivenessCheck, MCP_TOOL_NAME_DELIMITER, McpClient, McpClientTimeoutOverrides,
     McpSpawnCtx, OauthInteractivity, SharedMcpState, parse_mcp_qualified_name,
 };
-use xai_grok_tools::util::mcp_structured_content::render_structured_content;
 use xai_tool_protocol::{SessionId, ToolId};
-use xai_tool_runtime::{ToolCallContext, ToolStream, TypedToolOutput};
+use xai_tool_runtime::{ToolCallContext, ToolStream, TypedToolOutput, render_structured_content};
 use xai_tool_types::ToolDescription;
 
 use crate::error::{WorkspaceError, WorkspaceResult};
