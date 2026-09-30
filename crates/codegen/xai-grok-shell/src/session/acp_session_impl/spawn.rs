@@ -430,7 +430,7 @@ pub(crate) async fn spawn_session_actor(
     }
         .instrument(permission_setup_span)
         .await;
-    drop(permission_setup_timer);
+    let _ = permission_setup_timer;
     let history_scan = spawn_step!(
         "history_scan",
         history_items = conversation.len() as i64,
@@ -602,7 +602,7 @@ pub(crate) async fn spawn_session_actor(
     }
     .instrument(chat_state_span)
     .await;
-    drop(chat_state_timer);
+    let _ = chat_state_timer;
     chat_state_handle.update_credentials(credentials);
     let state = TokioMutex::new(State {
         running_task: None,
@@ -771,7 +771,7 @@ pub(crate) async fn spawn_session_actor(
     } else {
         drop(terminal_backend_span);
     }
-    drop(terminal_backend_timer);
+    let _ = terminal_backend_timer;
     let fs_backend: std::sync::Arc<dyn xai_grok_tools::computer::types::AsyncFileSystem> =
         if client_fs_capable && tool_context.gateway.is_some() {
             std::sync::Arc::new(xai_grok_workspace::file_system::AcpFsAdapter::new(
@@ -995,7 +995,7 @@ pub(crate) async fn spawn_session_actor(
         None
     };
     drop(memory_init_span);
-    drop(memory_init_timer);
+    let _ = memory_init_timer;
     let context_window_tokens = context_window_override
         .map(|c| c.get())
         .unwrap_or(sampling_config.context_window);
@@ -1038,7 +1038,7 @@ pub(crate) async fn spawn_session_actor(
         .join_plugin_registry()
         .instrument(plugin_registry_wait_span)
         .await;
-    drop(plugin_registry_wait_timer);
+    let _ = plugin_registry_wait_timer;
     let (forked_tool_override, forked_selection) = forked_tool_override
         .map(|snapshot| (snapshot.specs, snapshot.task_model_selection))
         .unzip();
@@ -1149,7 +1149,7 @@ pub(crate) async fn spawn_session_actor(
             );
             e
         })?;
-    drop(agent_build_timer);
+    let _ = agent_build_timer;
     let tool_setup_span = tracing::info_span!("tool_setup");
     let (tool_setup_timer, tool_setup_step_span) = spawn_await_step!("tool_setup");
     let (scheduler_handle_for_handle, toolset) = async {
@@ -1199,7 +1199,7 @@ pub(crate) async fn spawn_session_actor(
     }
     .instrument(tool_setup_step_span)
     .await;
-    drop(tool_setup_timer);
+    let _ = tool_setup_timer;
     drop(tool_setup_span);
     crate::waterfall::mark(&wf_sid, crate::waterfall::stage::SB_AGENT_BUILT);
     let prefix_build = spawn_step!("prefix_build");
@@ -1990,7 +1990,7 @@ pub(crate) async fn spawn_session_actor(
     }
     .instrument(actor_setup_span)
     .await;
-    drop(actor_setup_timer);
+    let _ = actor_setup_timer;
     if let Some(storage) = session
         .memory
         .storage()

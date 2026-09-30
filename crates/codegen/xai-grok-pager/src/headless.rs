@@ -1182,7 +1182,6 @@ pub async fn run_single_turn(
     let mut background_lifecycle = BackgroundLifecycleState::default();
     let mut prompt_done_at: Option<Instant> = None;
     let mut connection_closed = false;
-    let mut prompt_unacknowledged = false;
     let mut terminated_by_signal = None;
     if let Some(mut prompt_fut) = prompt_fut {
         let deferred_exit = signals.defer_exit();
@@ -1311,7 +1310,6 @@ pub async fn run_single_turn(
                     )
                     .await;
                     prompt_result = Some(Err(err));
-                    prompt_unacknowledged = true;
                     break;
                 }
             }

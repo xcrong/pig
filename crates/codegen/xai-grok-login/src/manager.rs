@@ -473,13 +473,11 @@ impl AuthManager {
     }
     /// Inner of [`force_reload_from_disk`] with the retry budget injectable so the disk-anomaly branch is unit-testable without real sleeps.
     fn force_reload_from_disk_with(&self, tries: usize, backoff: StdDuration) {
-        let mut last_state = DiskAuthState::FileMissing;
         for attempt in 0..tries.max(1) {
             if attempt > 0 && !backoff.is_zero() {
                 std::thread::sleep(backoff);
             }
             let (auth, state) = self.read_disk_auth_with_state();
-            last_state = state;
             match state {
                 DiskAuthState::Ok => {
                     *self.inner.write() = auth;
@@ -1239,18 +1237,13 @@ impl AuthManager {
                     if let Some(key) = tried_key.or(attempted_key) {
                         self.record_permanent_failure(key, error);
                     }
-                    let mut disk_mutation = "unchanged";
                     if clear_disk {
-                        disk_mutation = match self.write_scope_removal(&self.scope) {
-                            Ok(m) => m.label(),
-                            Err(e) => {
-                                tracing::warn!(
-                                    error = %e,
-                                    "auth: failed to clear credentials after permanent refresh failure"
-                                );
-                                "write_failed"
-                            }
-                        };
+                        if let Err(e) = self.write_scope_removal(&self.scope) {
+                            tracing::warn!(
+                                error = %e,
+                                "auth: failed to clear credentials after permanent refresh failure"
+                            );
+                        }
                     }
                     if clear_mem {
                         self.clear_inner();

@@ -5,35 +5,35 @@ use std::sync::OnceLock;
 
 /// Host invocation id. Only a UUID is representable, so a provider call id or a path cannot be written here.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvocationId(String);
+pub(crate) struct InvocationId(String);
 
 impl InvocationId {
-    pub fn generate() -> Self {
+    pub(crate) fn generate() -> Self {
         Self(uuid::Uuid::now_v7().to_string())
     }
 
-    pub fn from_host(id: &str) -> Option<Self> {
+    pub(crate) fn from_host(id: &str) -> Option<Self> {
         uuid::Uuid::parse_str(id).ok().map(|_| Self(id.to_owned()))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 /// Qualified registry id, or the one opaque class for unknown, custom, and dynamic names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalToolId(String);
+pub(crate) struct CanonicalToolId(String);
 
 impl CanonicalToolId {
-    pub const OPAQUE: &'static str = "opaque";
+    pub(crate) const OPAQUE: &'static str = "opaque";
 
-    pub fn opaque() -> Self {
+    pub(crate) fn opaque() -> Self {
         Self(Self::OPAQUE.to_owned())
     }
 
     /// `Namespace:id` from a finalized registration. Rejects aliases, MCP names, and paths.
-    pub fn from_qualified(id: &str) -> Option<Self> {
+    pub(crate) fn from_qualified(id: &str) -> Option<Self> {
         let (namespace, tool) = id.split_once(':')?;
         if namespace.is_empty()
             || tool.is_empty()
@@ -51,43 +51,43 @@ impl CanonicalToolId {
         Some(Self(id.to_owned()))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
 
 /// Managed behavior version. Anything else is omitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ToolContractVersion(&'static str);
+pub(crate) struct ToolContractVersion(&'static str);
 
 impl ToolContractVersion {
-    pub const ALLOWED: &'static [&'static str] = &["current", "legacy-0.4.10"];
+    pub(crate) const ALLOWED: &'static [&'static str] = &["current", "legacy-0.4.10"];
 
-    pub fn from_registered(version: &str) -> Option<Self> {
+    pub(crate) fn from_registered(version: &str) -> Option<Self> {
         Self::ALLOWED
             .iter()
             .find(|known| **known == version)
             .map(|known| Self(known))
     }
 
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         self.0
     }
 }
 
 /// Requested model that already reads as a grok model id. Custom names stay absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProductModelId(String);
+pub(crate) struct ProductModelId(String);
 
 impl ProductModelId {
-    pub fn from_requested(model: &str) -> Option<Self> {
+    pub(crate) fn from_requested(model: &str) -> Option<Self> {
         if !is_approved_model_id(model) {
             return None;
         }
         Some(Self(model.to_owned()))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -233,7 +233,7 @@ pub enum CapDisposition {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReadProfile {
+pub(crate) struct ReadProfile {
     pub read_file_role: ReadFileRole,
     pub read_skill_match: ReadSkillMatch,
     pub read_skill_source: Option<ReadSkillSource>,

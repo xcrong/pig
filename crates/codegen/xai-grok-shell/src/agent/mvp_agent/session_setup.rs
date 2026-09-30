@@ -119,7 +119,7 @@ pub(super) enum AttachOperation {
     Resume,
 }
 impl AttachOperation {
-    pub(super) fn start_kind(self) -> SessionStartKind {
+    fn start_kind(self) -> SessionStartKind {
         match self {
             Self::Load => SessionStartKind::Load,
             Self::Resume => SessionStartKind::Resume,
