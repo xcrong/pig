@@ -38,3 +38,10 @@
 - vendor 快照只用 `scripts/sync-pi-vendors.sh` 更新（含 `--check` 漂移门禁），提交前务必人工审 diff；`manifest.json` 记录来源与哈希。
 - `google-generative-ai` 明确不支持并过滤；若 pi 出现新 api 形状，`vendors` 的收敛测试会失败，此时必须有意识地决定映射或加名单，不得静默丢弃。
 - 提交信息用中文，不带 `Co-authored-by`。
+
+## TUI 鼠标约定（硬性）
+
+- 凡键盘可选中/确认的列表与按钮，必须同时支持鼠标：`Moved` hover 高亮改 `selected`，`Down(Left)` 选中，落在已选项则等价 `Enter` 确认；行为与键盘一致，不得只有键盘能走通。
+- 实现三件套缺一不可：`render` 返回 hit-rects → `AppView` 存下来 → `handle_mouse` 消费。`render` 与 hit-test 必须共用同一套 layout 计算，禁止各算各的。
+- 模态打开时鼠标不得穿透到底层；对话框外点击也要消费掉。resize 后清过期 rects（参考 `shortcut_hits.clear()`）。
+- 新增浮层必须补鼠标单测：`Moved→selected`、`Down→选中/确认`、越界点击、未渲染时无 rect。
