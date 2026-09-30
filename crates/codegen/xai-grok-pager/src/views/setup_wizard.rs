@@ -5,9 +5,11 @@
 //! table so new snapshots appear automatically, detects the suggested
 //! `env_key` only after the user picks a vendor (presence + length, value
 //! never logged or echoed), and persists via the trusted `config.toml`
-//! rewrite path. Custom providers get a step-by-step form for an
-//! OpenAI-compatible endpoint (provider id, base URL, model, backend,
-//! credential) plus a hint for the advanced pi-snapshot mirror path.
+//! rewrite path. Custom providers get a step-by-step form for a custom
+//! endpoint (provider id, base URL, model, wire id, display name, backend,
+//! credential) with a messages-auth branch (gateway Bearer vs Anthropic
+//! direct `x-api-key` + `anthropic-version`), plus a hint for the advanced
+//! pi-snapshot mirror path.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -60,9 +62,14 @@ pub enum SetupStep {
     CustomBaseUrl,
     CustomModelKey,
     CustomWireModel,
+    CustomDisplayName,
     CustomBackend {
         selected: usize,
     },
+    CustomMessagesAuth {
+        selected: usize,
+    },
+    CustomAnthropicVersion,
     CustomKey,
     CustomConfirm,
     SnapshotHint,
@@ -87,7 +94,15 @@ pub struct SetupWizardState {
     pub custom_base_url: String,
     pub custom_model_key: String,
     pub custom_wire_model: String,
+    pub custom_display_name: String,
     pub custom_backend: usize,
+    /// Messages-auth branch: false = gateway (Bearer, default), true =
+    /// Anthropic direct (`x-api-key` on the model layer + version header).
+    pub custom_messages_direct: bool,
+    pub custom_anthropic_version: String,
+    /// Stashed credential draft when stepping back from the key step to the
+    /// version step (direct branch), restored on the way forward.
+    pub custom_cred_draft: String,
     /// Hit-test rects from the last render (dialog + selectable rows).
     /// Populated by `render_setup_wizard`; `None` until the first draw or
     /// when the dialog is too small to render. Read by `handle_mouse` so
@@ -118,12 +133,18 @@ pub enum SetupConfirmRequest {
         base_url: String,
         model_key: String,
         wire_model: String,
+        display_name: String,
         api_backend: String,
+        /// `Some("x_api_key")` for the messages-direct branch, else `None`.
+        auth_scheme: Option<String>,
+        /// `anthropic-version` header, non-empty only for messages-direct.
+        anthropic_version: String,
         env_key: Option<String>,
         api_key: Option<String>,
     },
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum SetupWizardOutcome {
     Changed,
@@ -156,6 +177,15 @@ fn valid_table_key(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// `true` when the wizard's selected backend is Anthropic Messages.
+fn is_messages_backend(selected: usize) -> bool {
+    custom_backend_ids().get(selected).copied() == Some("messages")
+}
+
+fn default_anthropic_version() -> String {
+    xai_grok_shell::util::config::DEFAULT_ANTHROPIC_VERSION.to_string()
+}
+
 impl SetupWizardState {
     pub fn new(vendors: Vec<SetupVendorOption>) -> Self {
         Self {
@@ -169,12 +199,21 @@ impl SetupWizardState {
             custom_base_url: String::new(),
             custom_model_key: String::new(),
             custom_wire_model: String::new(),
+            custom_display_name: String::new(),
             custom_backend: 0,
+            custom_messages_direct: false,
+            custom_anthropic_version: String::new(),
+            custom_cred_draft: String::new(),
             hit_areas: None,
         }
     }
 
     pub fn custom_menu_len() -> usize {
+        2
+    }
+
+    /// Row count on the messages-auth branch step.
+    pub fn custom_messages_auth_len() -> usize {
         2
     }
 
@@ -344,7 +383,9 @@ impl SetupWizardState {
                 KeyCode::Enter if key.modifiers.is_empty() => {
                     let value = self.input.text().trim().to_string();
                     if !valid_table_key(&value) {
-                        self.error = Some("Use [A-Za-z0-9_-], max 64.".to_string());
+                        self.error = Some(
+                            "Use [A-Za-z0-9_-], max 64.（仅限字母数字、-、_，最长 64）".to_string(),
+                        );
                         return SetupWizardOutcome::Changed;
                     }
                     self.custom_provider_id = value;
@@ -365,7 +406,8 @@ impl SetupWizardState {
                 KeyCode::Enter if key.modifiers.is_empty() => {
                     let value = self.input.text().trim().to_string();
                     if !(value.starts_with("http://") || value.starts_with("https://")) {
-                        self.error = Some("Must start with http(s)://.".to_string());
+                        self.error =
+                            Some("Must start with http(s)://.（须以 http(s):// 开头）".to_string());
                         return SetupWizardOutcome::Changed;
                     }
                     self.custom_base_url = value;
@@ -386,7 +428,9 @@ impl SetupWizardState {
                 KeyCode::Enter if key.modifiers.is_empty() => {
                     let value = self.input.text().trim().to_string();
                     if !valid_table_key(&value) {
-                        self.error = Some("Use [A-Za-z0-9_-], max 64.".to_string());
+                        self.error = Some(
+                            "Use [A-Za-z0-9_-], max 64.（仅限字母数字、-、_，最长 64）".to_string(),
+                        );
                         return SetupWizardOutcome::Changed;
                     }
                     self.custom_model_key = value;
@@ -406,7 +450,34 @@ impl SetupWizardState {
                 }
                 KeyCode::Enter if key.modifiers.is_empty() => {
                     // Empty means the wire id equals the catalog key.
-                    self.custom_wire_model = self.input.text().trim().to_string();
+                    let value = self.input.text().trim().to_string();
+                    if !value.is_empty()
+                        && (value.contains(char::is_whitespace) || value.len() > 128)
+                    {
+                        self.error = Some(
+                            "Wire id must not contain spaces, max 128.（不能含空白，最长 128）"
+                                .to_string(),
+                        );
+                        return SetupWizardOutcome::Changed;
+                    }
+                    self.custom_wire_model = value;
+                    self.input.set_text(&self.custom_display_name);
+                    self.error = None;
+                    self.step = SetupStep::CustomDisplayName;
+                    SetupWizardOutcome::Changed
+                }
+                _ => self.edit_line(key, detect),
+            },
+            SetupStep::CustomDisplayName => match key.code {
+                KeyCode::Esc => {
+                    self.input.set_text(&self.custom_wire_model);
+                    self.error = None;
+                    self.step = SetupStep::CustomWireModel;
+                    SetupWizardOutcome::Changed
+                }
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    // Optional: empty means no `name` is written.
+                    self.custom_display_name = self.input.text().trim().to_string();
                     self.error = None;
                     self.step = SetupStep::CustomBackend {
                         selected: self.custom_backend,
@@ -417,9 +488,9 @@ impl SetupWizardState {
             },
             SetupStep::CustomBackend { mut selected } => match key.code {
                 KeyCode::Esc => {
-                    self.input.set_text(&self.custom_wire_model);
+                    self.input.set_text(&self.custom_display_name);
                     self.error = None;
-                    self.step = SetupStep::CustomWireModel;
+                    self.step = SetupStep::CustomDisplayName;
                     SetupWizardOutcome::Changed
                 }
                 KeyCode::Up => {
@@ -436,8 +507,17 @@ impl SetupWizardState {
                 }
                 KeyCode::Enter if key.modifiers.is_empty() => {
                     self.custom_backend = selected;
-                    self.start_custom_key(detect);
-                    SetupWizardOutcome::Changed
+                    if is_messages_backend(selected) {
+                        self.error = None;
+                        self.step = SetupStep::CustomMessagesAuth {
+                            selected: usize::from(self.custom_messages_direct),
+                        };
+                        SetupWizardOutcome::Changed
+                    } else {
+                        self.custom_messages_direct = false;
+                        self.start_custom_key(detect);
+                        SetupWizardOutcome::Changed
+                    }
                 }
                 _ => {
                     let len = custom_backend_ids().len();
@@ -449,7 +529,95 @@ impl SetupWizardState {
                     SetupWizardOutcome::Unchanged
                 }
             },
+            SetupStep::CustomMessagesAuth { mut selected } => match key.code {
+                KeyCode::Esc => {
+                    self.error = None;
+                    self.step = SetupStep::CustomBackend {
+                        selected: self.custom_backend,
+                    };
+                    SetupWizardOutcome::Changed
+                }
+                KeyCode::Up => {
+                    selected = selected.saturating_sub(1);
+                    self.step = SetupStep::CustomMessagesAuth { selected };
+                    SetupWizardOutcome::Changed
+                }
+                KeyCode::Down => {
+                    selected =
+                        (selected + 1).min(Self::custom_messages_auth_len().saturating_sub(1));
+                    self.step = SetupStep::CustomMessagesAuth { selected };
+                    SetupWizardOutcome::Changed
+                }
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    if selected == 1 {
+                        self.custom_messages_direct = true;
+                        let version = if self.custom_anthropic_version.trim().is_empty() {
+                            default_anthropic_version()
+                        } else {
+                            self.custom_anthropic_version.trim().to_string()
+                        };
+                        self.custom_anthropic_version = version.clone();
+                        self.input.set_text(&version);
+                        self.error = None;
+                        self.step = SetupStep::CustomAnthropicVersion;
+                    } else {
+                        self.custom_messages_direct = false;
+                        self.start_custom_key(detect);
+                    }
+                    SetupWizardOutcome::Changed
+                }
+                _ => {
+                    let len = Self::custom_messages_auth_len();
+                    if let Some(outcome) = handle_list_nav(key, &mut selected, len) {
+                        self.step = SetupStep::CustomMessagesAuth { selected };
+                        return outcome;
+                    }
+                    SetupWizardOutcome::Unchanged
+                }
+            },
+            SetupStep::CustomAnthropicVersion => match key.code {
+                KeyCode::Esc => {
+                    self.error = None;
+                    self.step = SetupStep::CustomMessagesAuth { selected: 1 };
+                    SetupWizardOutcome::Changed
+                }
+                KeyCode::Enter if key.modifiers.is_empty() => {
+                    let value = self.input.text().trim().to_string();
+                    if value.is_empty() {
+                        self.error = Some(
+                            "Enter anthropic-version, e.g. 2023-06-01.（请输入版本号）".to_string(),
+                        );
+                        return SetupWizardOutcome::Changed;
+                    }
+                    if value.contains(char::is_whitespace) || value.len() > 64 {
+                        self.error = Some(
+                            "Version must not contain spaces, max 64.（不能含空白，最长 64）"
+                                .to_string(),
+                        );
+                        return SetupWizardOutcome::Changed;
+                    }
+                    self.custom_anthropic_version = value;
+                    // Forward to the credential step, restoring any stashed draft.
+                    let draft = self.custom_cred_draft.clone();
+                    self.input.set_text(&draft);
+                    self.custom_cred_draft.clear();
+                    self.refresh_detection(detect);
+                    self.error = None;
+                    self.step = SetupStep::CustomKey;
+                    SetupWizardOutcome::Changed
+                }
+                _ => self.edit_line(key, detect),
+            },
             SetupStep::CustomKey => match key.code {
+                KeyCode::Esc if self.custom_messages_direct => {
+                    // Stash the credential draft; the version step owns `input`.
+                    self.custom_cred_draft = self.input.text().to_string();
+                    let version = self.custom_anthropic_version.clone();
+                    self.input.set_text(&version);
+                    self.error = None;
+                    self.step = SetupStep::CustomAnthropicVersion;
+                    SetupWizardOutcome::Changed
+                }
                 KeyCode::Esc => {
                     self.step = SetupStep::CustomBackend {
                         selected: self.custom_backend,
@@ -549,6 +717,7 @@ impl SetupWizardState {
     fn start_custom_key(&mut self, detect: &impl Fn(&str) -> SetupEnvPresence) {
         self.key_mode = SetupKeyMode::UseEnv;
         self.input.set_text("");
+        self.custom_cred_draft.clear();
         self.refresh_detection(detect);
         self.error = None;
         self.step = SetupStep::CustomKey;
@@ -581,11 +750,13 @@ impl SetupWizardState {
             SetupKeyMode::UseEnv => {
                 let name = self.input.text().trim().to_string();
                 if name.is_empty() {
-                    self.error = Some("Enter an env var name.".to_string());
+                    self.error = Some("Enter an env var name.（请输入环境变量名）".to_string());
                     return None;
                 }
-                if name.contains(char::is_whitespace) || name.contains('=') {
-                    self.error = Some("Env var name looks invalid.".to_string());
+                if name.contains(char::is_whitespace) || name.contains('=') || name.contains('"') {
+                    self.error = Some(
+                        "Env var name looks invalid.（变量名不能含空白、= 或 \"）".to_string(),
+                    );
                     return None;
                 }
                 Some((Some(name), None))
@@ -593,7 +764,7 @@ impl SetupWizardState {
             SetupKeyMode::PasteKey => {
                 let secret = self.input.text().trim().to_string();
                 if secret.is_empty() {
-                    self.error = Some("Paste an API key.".to_string());
+                    self.error = Some("Paste an API key.（请粘贴 API key）".to_string());
                     return None;
                 }
                 // Clear the secret from the in-memory editor the moment we emit
@@ -624,7 +795,7 @@ impl SetupWizardState {
             || self.custom_base_url.trim().is_empty()
             || self.custom_model_key.trim().is_empty()
         {
-            self.error = Some("Missing provider details; go back.".to_string());
+            self.error = Some("Missing provider details; go back.（信息缺失，请返回）".to_string());
             return SetupWizardOutcome::Changed;
         }
         // CustomConfirm reviews what was typed; CustomKey collects it.
@@ -641,13 +812,28 @@ impl SetupWizardState {
             .copied()
             .unwrap_or("chat_completions")
             .to_string();
+        let direct = self.custom_messages_direct && backend == "messages";
+        let anthropic_version = if direct {
+            let version = self.custom_anthropic_version.trim().to_string();
+            if version.is_empty() {
+                self.error =
+                    Some("Missing anthropic-version; go back.（缺少版本号，请返回）".to_string());
+                return SetupWizardOutcome::Changed;
+            }
+            version
+        } else {
+            String::new()
+        };
         self.error = None;
         SetupWizardOutcome::Confirm(SetupConfirmRequest::CustomProvider {
             provider_id: self.custom_provider_id.trim().to_string(),
             base_url: self.custom_base_url.trim().to_string(),
             model_key: self.custom_model_key.trim().to_string(),
             wire_model: self.custom_wire_model.trim().to_string(),
+            display_name: self.custom_display_name.trim().to_string(),
             api_backend: backend,
+            auth_scheme: direct.then(|| "x_api_key".to_string()),
+            anthropic_version,
             env_key,
             api_key,
         })
@@ -756,6 +942,7 @@ fn compute_setup_layout(area: Rect, state: &SetupWizardState) -> Option<SetupWiz
         SetupStep::ChooseVendor { .. } => state.choose_len(),
         SetupStep::CustomMenu { .. } => SetupWizardState::custom_menu_len(),
         SetupStep::CustomBackend { .. } => custom_backend_ids().len(),
+        SetupStep::CustomMessagesAuth { .. } => SetupWizardState::custom_messages_auth_len(),
         _ => 0,
     };
     Some(SetupWizardHitRects {
@@ -775,6 +962,9 @@ impl SetupWizardState {
             SetupStep::ChooseVendor { selected } => Some((*selected, self.choose_len())),
             SetupStep::CustomMenu { selected } => Some((*selected, Self::custom_menu_len())),
             SetupStep::CustomBackend { selected } => Some((*selected, custom_backend_ids().len())),
+            SetupStep::CustomMessagesAuth { selected } => {
+                Some((*selected, Self::custom_messages_auth_len()))
+            }
             _ => None,
         }
     }
@@ -787,6 +977,7 @@ impl SetupWizardState {
                 *selected = index;
                 self.custom_backend = index;
             }
+            SetupStep::CustomMessagesAuth { selected } => *selected = index,
             _ => {}
         }
     }
@@ -821,7 +1012,31 @@ impl SetupWizardState {
             }
             SetupStep::CustomBackend { .. } => {
                 self.custom_backend = index;
-                self.start_custom_key(detect);
+                if is_messages_backend(index) {
+                    self.step = SetupStep::CustomMessagesAuth {
+                        selected: usize::from(self.custom_messages_direct),
+                    };
+                } else {
+                    self.custom_messages_direct = false;
+                    self.start_custom_key(detect);
+                }
+                SetupWizardOutcome::Changed
+            }
+            SetupStep::CustomMessagesAuth { .. } => {
+                if index == 1 {
+                    self.custom_messages_direct = true;
+                    let version = if self.custom_anthropic_version.trim().is_empty() {
+                        default_anthropic_version()
+                    } else {
+                        self.custom_anthropic_version.trim().to_string()
+                    };
+                    self.custom_anthropic_version = version.clone();
+                    self.input.set_text(&version);
+                    self.step = SetupStep::CustomAnthropicVersion;
+                } else {
+                    self.custom_messages_direct = false;
+                    self.start_custom_key(detect);
+                }
                 SetupWizardOutcome::Changed
             }
             _ => SetupWizardOutcome::Unchanged,
@@ -1139,7 +1354,7 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                 )),
             );
             for (i, label) in [
-                "OpenAI-compatible endpoint (guided)",
+                "Custom endpoint (Chat / Responses / Messages)",
                 "pi snapshot mirror (advanced)",
             ]
             .iter()
@@ -1165,7 +1380,7 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                 inner_w,
                 &theme,
                 state,
-                "Step 1/6 — Provider id",
+                "Step 1/7 — Provider id",
                 "Short name for [model_providers.<id>]:",
                 "Provider id: ",
             );
@@ -1178,8 +1393,8 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                 inner_w,
                 &theme,
                 state,
-                "Step 2/6 — Base URL",
-                "OpenAI-compatible endpoint (https://…/v1):",
+                "Step 2/7 — Base URL",
+                "Endpoint URL (Messages backends usually end with /v1):",
                 "Base URL: ",
             );
         }
@@ -1191,7 +1406,7 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                 inner_w,
                 &theme,
                 state,
-                "Step 3/6 — Model",
+                "Step 3/7 — Model",
                 "Catalog key for [model.<key>] and /model:",
                 "Model: ",
             );
@@ -1204,9 +1419,22 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                 inner_w,
                 &theme,
                 state,
-                "Step 4/6 — Wire model id (optional)",
+                "Step 4/7 — Wire model id (optional)",
                 "Id sent to the API. Empty = same as key:",
                 "Wire id: ",
+            );
+        }
+        SetupStep::CustomDisplayName => {
+            render_custom_field(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                &theme,
+                state,
+                "Step 5/7 — Display name (optional)",
+                "Picker label for [model.<key>]. Empty = key:",
+                "Name: ",
             );
         }
         SetupStep::CustomBackend { selected } => {
@@ -1216,8 +1444,28 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                 &mut row,
                 inner_w,
                 Line::from(Span::styled(
-                    "Step 5/6 — API backend:",
+                    "Step 6/7 — API backend:",
                     Style::default().fg(theme.gray_bright),
+                )),
+            );
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                Line::from(Span::styled(
+                    "Unsure? Keep chat_completions. responses = OpenAI Responses API.",
+                    Style::default().fg(theme.gray),
+                )),
+            );
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                Line::from(Span::styled(
+                    "messages = Anthropic Messages (gateway, or Anthropic direct next).",
+                    Style::default().fg(theme.gray),
                 )),
             );
             for i in 0..custom_backend_ids().len() {
@@ -1233,6 +1481,56 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
             row += 1;
             paint_hints(buf, Rect::new(inner_x, row, inner_w, 1), &theme);
         }
+        SetupStep::CustomMessagesAuth { selected } => {
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                Line::from(Span::styled(
+                    "Messages auth — gateway or direct?",
+                    Style::default().fg(theme.gray_bright),
+                )),
+            );
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                Line::from(Span::styled(
+                    "Gateway sends Bearer; Anthropic direct sends x-api-key.",
+                    Style::default().fg(theme.gray),
+                )),
+            );
+            for (i, label) in ["Gateway (Bearer, default)", "Anthropic direct (x-api-key)"]
+                .iter()
+                .enumerate()
+            {
+                paint_list_row(
+                    buf,
+                    Rect::new(inner_x, row, inner_w, 1),
+                    *selected == i,
+                    &theme,
+                    label,
+                );
+                row += 1;
+            }
+            row += 1;
+            paint_hints(buf, Rect::new(inner_x, row, inner_w, 1), &theme);
+        }
+        SetupStep::CustomAnthropicVersion => {
+            render_custom_field(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                &theme,
+                state,
+                "Anthropic API version",
+                "Sent as the anthropic-version header:",
+                "Version: ",
+            );
+        }
         SetupStep::CustomKey => {
             render_custom_key(buf, inner_x, &mut row, inner_w, &theme, state);
         }
@@ -1246,15 +1544,46 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                 .get(state.custom_backend)
                 .copied()
                 .unwrap_or("chat_completions");
-            let cred = match state.key_mode {
-                SetupKeyMode::UseEnv => format!("env_key = \"{}\"", state.input.text().trim()),
+            let direct = state.custom_messages_direct && backend == "messages";
+            let auth_line = if direct {
+                format!(
+                    "auth: x-api-key + anthropic-version {}",
+                    state.custom_anthropic_version.trim()
+                )
+            } else {
+                "auth: Bearer (Authorization)".to_string()
+            };
+            let cred_line = match state.key_mode {
+                SetupKeyMode::UseEnv => {
+                    let name = state.input.text().trim().to_string();
+                    let status = match (state.detected.present, state.detected.len) {
+                        (true, Some(len)) => format!("found ({} chars, hidden)", len),
+                        (true, None) => "found".to_string(),
+                        (false, _) => format!("NOT FOUND — export {name}=... and restart"),
+                    };
+                    format!("env_key = \"{name}\" ({status})")
+                }
                 SetupKeyMode::PasteKey => "api_key = ••• (hidden)".to_string(),
             };
-            for line in [
+            let cred_fg = match state.key_mode {
+                SetupKeyMode::UseEnv if !state.detected.present => theme.warning,
+                _ => theme.gray,
+            };
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
                 Line::from(Span::styled(
-                    "Step 6/6 — Confirm:",
+                    "Confirm custom provider:",
                     Style::default().fg(theme.gray_bright),
                 )),
+            );
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
                 Line::from(Span::styled(
                     format!(
                         "[model_providers.{}] {}",
@@ -1263,25 +1592,77 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                     ),
                     Style::default().fg(theme.text_primary),
                 )),
+            );
+            let mut model_line = format!(
+                "[model.{}] {} via {}",
+                state.custom_model_key.trim(),
+                wire,
+                backend
+            );
+            if !state.custom_display_name.trim().is_empty() {
+                model_line.push_str(&format!(" \"{}\"", state.custom_display_name.trim()));
+            }
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
                 Line::from(Span::styled(
-                    format!(
-                        "[model.{}] {} via {}",
-                        state.custom_model_key.trim(),
-                        wire,
-                        backend
-                    ),
+                    model_line,
                     Style::default().fg(theme.text_primary),
                 )),
-                Line::from(Span::styled(cred, Style::default().fg(theme.gray))),
+            );
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                Line::from(Span::styled(
+                    auth_line,
+                    Style::default().fg(theme.gray_bright),
+                )),
+            );
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                Line::from(Span::styled(cred_line, Style::default().fg(cred_fg))),
+            );
+            if backend == "responses" {
+                paint_line(
+                    buf,
+                    inner_x,
+                    &mut row,
+                    inner_w,
+                    Line::from(Span::styled(
+                        "reasoning_summary defaults to concise; use none if rejected (see guide).",
+                        Style::default().fg(theme.gray),
+                    )),
+                );
+            }
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
+                Line::from(Span::styled(
+                    "Advanced (session_header/context_window/...): see 11-custom-models.md.",
+                    Style::default().fg(theme.gray_dim),
+                )),
+            );
+            paint_line(
+                buf,
+                inner_x,
+                &mut row,
+                inner_w,
                 Line::from(vec![
                     Span::styled("enter", bold_accent(&theme)),
                     Span::styled(" = save   ", Style::default().fg(theme.gray)),
                     Span::styled("esc", bold_accent(&theme)),
                     Span::styled(" = back", Style::default().fg(theme.gray)),
                 ]),
-            ] {
-                paint_line(buf, inner_x, &mut row, inner_w, line);
-            }
+            );
             if let Some(err) = state.error.as_deref() {
                 paint_line(
                     buf,
@@ -1299,19 +1680,23 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                     Style::default().fg(theme.text_primary),
                 )),
                 Line::from(Span::styled(
-                    "Save pi.dev /api/models/providers/<id>",
+                    "curl -fsSL https://pi.dev/api/models/providers/<id>?types=chat \\",
                     Style::default().fg(theme.gray),
                 )),
                 Line::from(Span::styled(
-                    "to ~/.config/pig/vendors/<id>.json, then:",
+                    "  -o ~/.config/pig/vendors/<id>.json",
                     Style::default().fg(theme.gray),
                 )),
                 Line::from(Span::styled(
-                    "[vendors.acme] base_url + snapshot_file",
+                    "[vendors.<id>] enabled=true base_url=<url>",
                     Style::default().fg(theme.gray_bright),
                 )),
                 Line::from(Span::styled(
-                    "+ env_key. See 11-custom-models.md.",
+                    "snapshot_file=vendors/<id>.json env_key=<VAR>",
+                    Style::default().fg(theme.gray_bright),
+                )),
+                Line::from(Span::styled(
+                    "See 11-custom-models.md (Custom vendors).",
                     Style::default().fg(theme.gray_dim),
                 )),
                 Line::from(vec![
@@ -1533,8 +1918,8 @@ fn render_custom_key(
     state: &SetupWizardState,
 ) {
     let mode_label = match state.key_mode {
-        SetupKeyMode::UseEnv => "Step 6/6 — Credential: env var (recommended)  [Tab] paste instead",
-        SetupKeyMode::PasteKey => "Step 6/6 — Credential: paste key  [Tab] use env var instead",
+        SetupKeyMode::UseEnv => "Step 7/7 — Credential: env var (recommended)  [Tab] paste instead",
+        SetupKeyMode::PasteKey => "Step 7/7 — Credential: paste key  [Tab] use env var instead",
     };
     paint_line(
         buf,
@@ -1753,12 +2138,36 @@ mod tests {
         state.set_input(text);
     }
 
+    /// Drive the wizard to the messages-auth branch step.
+    fn enter_custom_messages(
+        state: &mut SetupWizardState,
+        no_detect: &impl Fn(&str) -> SetupEnvPresence,
+    ) {
+        enter_custom_openai(state);
+        type_text(state, "anthropic");
+        state.handle_key(&key(KeyCode::Enter), no_detect);
+        type_text(state, "https://api.anthropic.com");
+        state.handle_key(&key(KeyCode::Enter), no_detect);
+        type_text(state, "claude");
+        state.handle_key(&key(KeyCode::Enter), no_detect);
+        // Wire empty (= key), display empty (= key).
+        state.handle_key(&key(KeyCode::Enter), no_detect);
+        state.handle_key(&key(KeyCode::Enter), no_detect);
+        assert!(matches!(state.step, SetupStep::CustomBackend { .. }));
+        state.handle_key(&key(KeyCode::Down), no_detect);
+        state.handle_key(&key(KeyCode::Down), no_detect);
+        assert_eq!(state.custom_backend, 2);
+        state.handle_key(&key(KeyCode::Enter), no_detect);
+        assert!(matches!(state.step, SetupStep::CustomMessagesAuth { .. }));
+    }
+
     #[test]
     fn custom_openai_flow_confirms_provider() {
         let mut state = SetupWizardState::new(options());
         let no_detect = |_: &str| SetupEnvPresence::default();
         enter_custom_openai(&mut state);
-        // Provider id -> base URL -> model key -> wire (empty = key) -> backend.
+        // Provider id -> base URL -> model key -> wire (empty = key)
+        // -> display name (empty = key) -> backend.
         type_text(&mut state, "acme");
         state.handle_key(&key(KeyCode::Enter), &no_detect);
         assert!(matches!(state.step, SetupStep::CustomBaseUrl));
@@ -1768,6 +2177,9 @@ mod tests {
         type_text(&mut state, "acme-model");
         state.handle_key(&key(KeyCode::Enter), &no_detect);
         assert!(matches!(state.step, SetupStep::CustomWireModel));
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomDisplayName));
+        type_text(&mut state, "Acme Model");
         state.handle_key(&key(KeyCode::Enter), &no_detect);
         assert!(matches!(state.step, SetupStep::CustomBackend { .. }));
         state.handle_key(&key(KeyCode::Enter), &no_detect);
@@ -1784,7 +2196,10 @@ mod tests {
                 base_url,
                 model_key,
                 wire_model,
+                display_name,
                 api_backend,
+                auth_scheme,
+                anthropic_version,
                 env_key,
                 api_key,
             }) => {
@@ -1792,7 +2207,10 @@ mod tests {
                 assert_eq!(base_url, "https://api.acme.example/v1");
                 assert_eq!(model_key, "acme-model");
                 assert_eq!(wire_model, "", "empty wire defaults shell-side");
+                assert_eq!(display_name, "Acme Model");
                 assert_eq!(api_backend, "chat_completions");
+                assert!(auth_scheme.is_none(), "gateway keeps Bearer");
+                assert_eq!(anthropic_version, "");
                 assert_eq!(env_key.as_deref(), Some("ACME_API_KEY"));
                 assert!(api_key.is_none());
             }
@@ -1815,6 +2233,15 @@ mod tests {
         state.handle_key(&key(KeyCode::Enter), &no_detect);
         assert!(matches!(state.step, SetupStep::CustomBaseUrl));
         assert!(state.error.is_some());
+        type_text(&mut state, "https://api.acme.example/v1");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        type_text(&mut state, "m");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        // Wire id with whitespace is rejected in the wizard, like shell-side.
+        type_text(&mut state, "has space");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomWireModel));
+        assert!(state.error.is_some());
     }
 
     #[test]
@@ -1828,6 +2255,8 @@ mod tests {
         state.handle_key(&key(KeyCode::Enter), &no_detect);
         type_text(&mut state, "m");
         state.handle_key(&key(KeyCode::Enter), &no_detect);
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomDisplayName));
         state.handle_key(&key(KeyCode::Enter), &no_detect);
         state.handle_key(&key(KeyCode::Down), &no_detect);
         assert_eq!(state.custom_backend, 1);
@@ -1843,6 +2272,111 @@ mod tests {
             }) => assert_eq!(api_backend, "responses"),
             other => panic!("expected custom confirm, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn custom_messages_gateway_keeps_bearer() {
+        let mut state = SetupWizardState::new(options());
+        let no_detect = |_: &str| SetupEnvPresence::default();
+        enter_custom_messages(&mut state, &no_detect);
+        // Default row is the gateway: straight to the credential step.
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomKey));
+        type_text(&mut state, "GW_KEY");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        let outcome = state.handle_key(&key(KeyCode::Enter), &no_detect);
+        match outcome {
+            SetupWizardOutcome::Confirm(SetupConfirmRequest::CustomProvider {
+                api_backend,
+                auth_scheme,
+                anthropic_version,
+                ..
+            }) => {
+                assert_eq!(api_backend, "messages");
+                assert!(auth_scheme.is_none());
+                assert_eq!(anthropic_version, "");
+            }
+            other => panic!("expected custom confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_messages_direct_emits_x_api_key_and_version() {
+        let mut state = SetupWizardState::new(options());
+        let no_detect = |_: &str| SetupEnvPresence::default();
+        enter_custom_messages(&mut state, &no_detect);
+        state.handle_key(&key(KeyCode::Down), &no_detect);
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomAnthropicVersion));
+        // Default version is prefilled; accept it.
+        assert_eq!(
+            state.input.text(),
+            xai_grok_shell::util::config::DEFAULT_ANTHROPIC_VERSION
+        );
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomKey));
+        type_text(&mut state, "ANTHROPIC_API_KEY");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomConfirm));
+        let outcome = state.handle_key(&key(KeyCode::Enter), &no_detect);
+        match outcome {
+            SetupWizardOutcome::Confirm(SetupConfirmRequest::CustomProvider {
+                api_backend,
+                auth_scheme,
+                anthropic_version,
+                env_key,
+                ..
+            }) => {
+                assert_eq!(api_backend, "messages");
+                assert_eq!(auth_scheme.as_deref(), Some("x_api_key"));
+                assert_eq!(
+                    anthropic_version,
+                    xai_grok_shell::util::config::DEFAULT_ANTHROPIC_VERSION
+                );
+                assert_eq!(env_key.as_deref(), Some("ANTHROPIC_API_KEY"));
+            }
+            other => panic!("expected custom confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn custom_direct_back_nav_preserves_credential_draft() {
+        let mut state = SetupWizardState::new(options());
+        let no_detect = |_: &str| SetupEnvPresence::default();
+        enter_custom_messages(&mut state, &no_detect);
+        state.handle_key(&key(KeyCode::Down), &no_detect);
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        type_text(&mut state, "PARTIAL_KEY");
+        // Esc stashes the draft and returns to the version step.
+        state.handle_key(&key(KeyCode::Esc), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomAnthropicVersion));
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomKey));
+        assert_eq!(state.input.text(), "PARTIAL_KEY");
+    }
+
+    #[test]
+    fn quoted_env_name_blocked_like_shell() {
+        let mut state = SetupWizardState::new(options());
+        let no_detect = |_: &str| SetupEnvPresence::default();
+        enter_custom_openai(&mut state);
+        type_text(&mut state, "acme");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        type_text(&mut state, "https://api.acme.example/v1");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        type_text(&mut state, "m");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomKey));
+        type_text(&mut state, "BAD\"NAME");
+        state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(state.step, SetupStep::CustomConfirm));
+        let outcome = state.handle_key(&key(KeyCode::Enter), &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(state.error.is_some());
     }
 
     #[test]
@@ -2015,7 +2549,7 @@ mod tests {
             SetupStep::CustomBackend { selected } if selected == last
         ));
         assert_eq!(state.custom_backend, last);
-        // Click selected backend row -> CustomKey.
+        // Click selected backend row -> CustomKey for chat, branch for messages.
         let hits = render_mouse_layout(&mut state);
         let row = hits.rows[last];
         let outcome = state.handle_mouse(
@@ -2025,7 +2559,61 @@ mod tests {
             &no_detect,
         );
         assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(state.step, SetupStep::CustomMessagesAuth { .. }));
+        // First row (chat_completions) still goes straight to the key step.
+        let mut state = SetupWizardState::new(options());
+        state.step = SetupStep::CustomBackend { selected: 1 };
+        state.custom_backend = 1;
+        let hits = render_mouse_layout(&mut state);
+        let row = hits.rows[0];
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(
+            state.step,
+            SetupStep::CustomBackend { selected: 0 }
+        ));
+        let hits = render_mouse_layout(&mut state);
+        let row = hits.rows[0];
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
         assert!(matches!(state.step, SetupStep::CustomKey));
+    }
+
+    #[test]
+    fn mouse_messages_auth_hover_and_click() {
+        let mut state = SetupWizardState::new(options());
+        state.step = SetupStep::CustomMessagesAuth { selected: 0 };
+        let hits = render_mouse_layout(&mut state);
+        assert_eq!(hits.rows.len(), 2);
+        let row = hits.rows[1];
+        let outcome = state.handle_mouse(MouseEventKind::Moved, row.x + 1, row.y, &no_detect);
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(
+            state.step,
+            SetupStep::CustomMessagesAuth { selected: 1 }
+        ));
+        // Click the selected direct row -> version step.
+        let hits = render_mouse_layout(&mut state);
+        let row = hits.rows[1];
+        let outcome = state.handle_mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            row.x + 1,
+            row.y,
+            &no_detect,
+        );
+        assert!(matches!(outcome, SetupWizardOutcome::Changed));
+        assert!(matches!(state.step, SetupStep::CustomAnthropicVersion));
+        assert!(state.custom_messages_direct);
     }
 
     #[test]

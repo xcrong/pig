@@ -3296,6 +3296,10 @@ pub struct ConfigModelOverride {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub api_backend: Option<ApiBackend>,
+    /// Auth header scheme for this model's endpoint: unset (default) sends
+    /// `Authorization: Bearer`; `x_api_key` sends `x-api-key` (Anthropic direct).
+    /// Set by the custom-provider wizard's messages-direct branch.
+    pub auth_scheme: Option<AuthScheme>,
     #[serde(default)]
     pub extra_headers: IndexMap<String, String>,
     /// Vendor-specific per-conversation routing header name (e.g. `x-opencode-session`).
@@ -3372,6 +3376,9 @@ impl ConfigModelOverride {
         }
         if let Some(ref v) = self.api_backend {
             entry.info.api_backend = v.clone();
+        }
+        if let Some(ref v) = self.auth_scheme {
+            entry.info.auth_scheme = *v;
         }
         if !self.extra_headers.is_empty() {
             entry.info.extra_headers = self.extra_headers.clone();

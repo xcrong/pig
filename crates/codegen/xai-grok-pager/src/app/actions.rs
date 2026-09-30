@@ -1708,14 +1708,17 @@ pub enum Effect {
         env_key: Option<String>,
         api_key: Option<String>,
     },
-    /// Persist the wizard's custom OpenAI-compatible provider + model;
+    /// Persist the wizard's custom endpoint + model;
     /// completes as [`TaskResult::CustomProviderPersisted`].
     PersistCustomProvider {
         provider_id: String,
         base_url: String,
         model_key: String,
         wire_model: String,
+        display_name: String,
         api_backend: String,
+        auth_scheme: Option<String>,
+        anthropic_version: String,
         env_key: Option<String>,
         api_key: Option<String>,
     },

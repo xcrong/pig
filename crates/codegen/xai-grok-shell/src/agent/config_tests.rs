@@ -1621,6 +1621,49 @@ fn auth_scheme_defaults_to_bearer_when_not_set_in_config() {
     let info = client.auth_info();
     assert_eq!(info.auth_type, "bearer");
 }
+/// Wizard messages-direct shape: `[model.*]` `auth_scheme` + version header
+/// survive provider inheritance and reach the sampler as `x-api-key`.
+#[test]
+fn wizard_messages_direct_resolves_x_api_key_through_provider() {
+    let _guard = EnvGuard::set("ANTHROPIC_API_KEY", "sk-ant-test");
+    let raw: toml::Value = toml::from_str(
+        r#"
+            [model_providers.anthropic]
+            base_url = "https://api.anthropic.com/v1"
+            api_backend = "messages"
+            env_key = "ANTHROPIC_API_KEY"
+
+            [model.claude]
+            model = "claude-opus-4-6"
+            model_provider = "anthropic"
+            auth_scheme = "x_api_key"
+
+            [model.claude.extra_headers]
+            anthropic-version = "2023-06-01"
+            "#,
+    )
+    .unwrap();
+    let cfg = Config::new_from_toml_cfg(&raw).expect("config should parse");
+    let models = resolve_model_list(&cfg, None);
+    let model = models.get("claude").expect("model should exist");
+    assert_eq!(model.info.api_backend, ApiBackend::Messages);
+    assert_eq!(model.info.auth_scheme, AuthScheme::XApiKey);
+    assert_eq!(
+        model
+            .info
+            .extra_headers
+            .get("anthropic-version")
+            .map(String::as_str),
+        Some("2023-06-01")
+    );
+    assert_eq!(model.info.base_url, "https://api.anthropic.com/v1");
+    let creds = resolve_credentials(model, None);
+    assert_eq!(creds.auth_scheme, AuthScheme::XApiKey);
+    let config = sampling_config_for_model(model, creds, None, None, None, None);
+    assert_eq!(config.auth_scheme, AuthScheme::XApiKey);
+    let client = xai_grok_sampler::SamplingClient::new(config).expect("client should build");
+    assert_eq!(client.auth_info().auth_type, "x-api-key");
+}
 #[test]
 fn has_own_credentials_guards_session_vs_external_key() {
     let endpoints = EndpointsConfig::default();

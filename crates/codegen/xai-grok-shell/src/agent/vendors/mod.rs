@@ -330,8 +330,9 @@ fn api_backend_for(pi_api: &str) -> Option<ApiBackend> {
 
 /// pig appends only `messages` for the Messages backend, while pi's Anthropic
 /// base URLs omit `/v1` (their SDK appends `/v1/messages`). Normalize so vendor
-/// snapshots route correctly.
-fn normalize_base_url(base_url: &str, api_backend: &ApiBackend) -> String {
+/// snapshots route correctly. Also reused by the custom-provider wizard so
+/// `https://x` and `https://x/v1` behave identically under `messages`.
+pub(crate) fn normalize_base_url(base_url: &str, api_backend: &ApiBackend) -> String {
     let base = base_url.trim_end_matches('/').to_string();
     if *api_backend == ApiBackend::Messages && !base.ends_with("/v1") {
         format!("{base}/v1")
