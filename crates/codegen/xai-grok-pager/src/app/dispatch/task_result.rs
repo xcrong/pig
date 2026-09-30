@@ -2274,5 +2274,11 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
         TaskResult::FeatureOverridePersisted { feature, result } => {
             settings::handle_feature_override_persisted(app, feature, result)
         }
+        TaskResult::VendorSetupPersisted { vendor_id, result } => {
+            super::setup_wizard::dispatch_vendor_setup_persisted(app, vendor_id, result)
+        }
+        TaskResult::CustomProviderPersisted { model_key, result } => {
+            super::setup_wizard::dispatch_custom_provider_persisted(app, model_key, result)
+        }
     }
 }

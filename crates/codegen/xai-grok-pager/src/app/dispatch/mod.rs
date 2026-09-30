@@ -29,6 +29,7 @@ mod rewind;
 mod router;
 mod session;
 mod settings;
+mod setup_wizard;
 mod status;
 mod task_result;
 mod transcript;

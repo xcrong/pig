@@ -10,8 +10,10 @@ mod mcp_reenable;
 mod permissions;
 mod persist;
 mod resolve;
+mod custom_provider_setup;
 mod settings_writes;
 mod tips;
+mod vendor_setup;
 mod worktree;
 
 pub use announcements::*;
@@ -30,8 +32,10 @@ pub use permissions::*;
 pub use persist::*;
 // These types live in `xai-grok-config-types`; the re-export keeps `crate::util::config::{RemoteSettings, GoalRoleModel}` working
 pub use resolve::*;
+pub use custom_provider_setup::*;
 pub use settings_writes::*;
 pub use tips::*;
+pub use vendor_setup::*;
 pub use worktree::*;
 pub use xai_grok_config_types::{
     CampaignOverride, ConsentGate, ContextualHintsRemote, DisplayRefreshSettings,

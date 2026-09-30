@@ -800,14 +800,14 @@ pub fn render_welcome(
                 usage_warning_critical: false,
             };
             // No browser login: without a configured provider there is no login action.
-            // Show vendor guidance with Quit only; with a provider label keep the login entry.
+            // Offer the setup wizard instead of a dead end; with a provider label keep the login entry.
             let login_text;
             let menu: &[(&str, &str)] = match params.login_label {
                 Some(label) => {
                     login_text = format!("Login with {}", label);
                     &[("l", login_text.as_str()), ("q", "Quit")]
                 }
-                None => &[("q", "Quit")],
+                None => &[("s", "Setup provider"), ("q", "Quit")],
             };
             let (menu_rects, post_flush_escapes) = render_welcome_blocked(
                 content_area,

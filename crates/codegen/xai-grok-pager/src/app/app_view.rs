@@ -1108,6 +1108,9 @@ pub struct AppView {
     pub has_claude_import: bool,
     /// When set, the welcome screen renders an interactive import modal instead of normal content.
     pub import_claude_modal: Option<crate::views::import_claude_modal::ImportClaudeModalState>,
+    /// First-run provider setup wizard (no credentials configured).
+    /// Overlays the welcome screen like the import modal; `None` when closed.
+    pub setup_wizard: Option<crate::views::setup_wizard::SetupWizardState>,
     /// Doc viewer overlay for the welcome screen (release notes via Ctrl+L).
     pub welcome_doc_viewer: Option<crate::views::modal::ActiveModal>,
     /// Whether the pager uses fullscreen (alt-screen) or inline mode.
@@ -1603,6 +1606,7 @@ impl AppView {
             relaunch: None,
             has_claude_import: false,
             import_claude_modal: None,
+            setup_wizard: None,
             welcome_doc_viewer: None,
             screen_mode: ScreenMode::Inline,
             pending_screen_mode_switch: None,
@@ -2460,6 +2464,8 @@ impl AppView {
                     prompt: &mut self.welcome_prompt,
                     prompt_focused: &mut self.welcome_prompt_focused,
                     new_worktree_dialog: &mut self.new_worktree_dialog,
+                    setup_wizard: &mut self.setup_wizard,
+                    has_login_method: self.login_method_id.is_some(),
                     menu_index: &mut self.welcome_menu_index,
                     menu_rects: &self.welcome_menu_rects,
                     menu_count: if zdr_blocked {
@@ -3117,6 +3123,10 @@ struct WelcomeInputCtx<'a> {
     prompt: &'a mut PromptWidget,
     prompt_focused: &'a mut bool,
     new_worktree_dialog: &'a mut Option<NewWorktreeDialogState>,
+    setup_wizard: &'a mut Option<crate::views::setup_wizard::SetupWizardState>,
+    /// False when no login method is advertised (no credentials configured).
+    /// The pending screen then offers Setup instead of Login.
+    has_login_method: bool,
     menu_index: &'a mut Option<usize>,
     menu_rects: &'a [ratatui::layout::Rect],
     menu_count: usize,
@@ -3214,6 +3224,40 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
         }
         if let Event::Mouse(mouse) = ev {
             return outcome_to_input(modal.handle_mouse(mouse.kind, mouse.column, mouse.row));
+        }
+        return InputOutcome::Unchanged;
+    }
+    if let Some(wizard) = ctx.setup_wizard.as_mut() {
+        use crate::views::setup_wizard::SetupWizardOutcome;
+        // Explicit, name-driven env reads only: detection runs after the user
+        // picked a vendor (choose -> enter) or typed a name (keystroke).
+        // Values never leave the wizard except as the confirm request.
+        let detect = |name: &str| {
+            let presence = xai_grok_shell::util::config::detect_env_presence(name);
+            crate::views::setup_wizard::SetupEnvPresence {
+                present: presence.present,
+                len: presence.len,
+            }
+        };
+        let outcome_to_input = |o: SetupWizardOutcome| match o {
+            SetupWizardOutcome::Confirm(req) => {
+                InputOutcome::Action(Action::SetupWizardConfirm(req))
+            }
+            SetupWizardOutcome::Cancelled => InputOutcome::Action(Action::SetupWizardCancel),
+            SetupWizardOutcome::Changed => InputOutcome::Changed,
+            SetupWizardOutcome::Unchanged => InputOutcome::Unchanged,
+        };
+        if let Event::Key(key) = ev {
+            if key.kind == crossterm::event::KeyEventKind::Release {
+                return InputOutcome::Unchanged;
+            }
+            return outcome_to_input(wizard.handle_key(key, &detect));
+        }
+        if let Event::Paste(text) = ev {
+            return outcome_to_input(wizard.insert_paste(text, &detect));
+        }
+        if let Event::Mouse(_) = ev {
+            return InputOutcome::Unchanged;
         }
         return InputOutcome::Unchanged;
     }
@@ -3799,6 +3843,18 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     }
                     return InputOutcome::Action(Action::QuitConfirmed);
                 }
+                // No credential configured: offer the setup wizard instead of a
+                // dead login button. `s`/Enter opens it; `l` still attempts
+                // login for mixed states where a method exists.
+                if !ctx.has_login_method && !ctx.mid_session_login {
+                    if key!('s').matches(key) || key!(Enter).matches(key) {
+                        return InputOutcome::Action(Action::OpenSetupWizard);
+                    }
+                    if key!('l').matches(key) {
+                        return InputOutcome::Action(Action::Login);
+                    }
+                    return InputOutcome::Unchanged;
+                }
                 if key!('l').matches(key) || key!(Enter).matches(key) {
                     return InputOutcome::Action(Action::Login);
                 }
@@ -3898,6 +3954,9 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         && mouse.row < rect.y + rect.height
                     {
                         if matches!(ctx.auth_state, AuthState::Pending { .. }) {
+                            if !ctx.has_login_method && !ctx.mid_session_login {
+                                return dispatch_no_credential_menu_action(i);
+                            }
                             return dispatch_pending_menu_action(i);
                         }
                         if ctx.is_zdr_blocked {
@@ -4142,6 +4201,15 @@ fn handle_menu_nav(
 fn dispatch_pending_menu_action(index: usize) -> InputOutcome {
     match index {
         0 => InputOutcome::Action(Action::Login),
+        1 => InputOutcome::Action(Action::Quit),
+        _ => InputOutcome::Unchanged,
+    }
+}
+/// Dispatch when no credential is configured (no login method advertised).
+/// Menu layout: item 0 is Setup, item 1 is Quit.
+fn dispatch_no_credential_menu_action(index: usize) -> InputOutcome {
+    match index {
+        0 => InputOutcome::Action(Action::OpenSetupWizard),
         1 => InputOutcome::Action(Action::Quit),
         _ => InputOutcome::Unchanged,
     }
@@ -4658,6 +4726,13 @@ impl AppView {
                                     view_area,
                                     f.buffer_mut(),
                                     dialog,
+                                );
+                            }
+                            if let Some(wizard) = self.setup_wizard.as_ref() {
+                                crate::views::setup_wizard::render_setup_wizard(
+                                    view_area,
+                                    f.buffer_mut(),
+                                    wizard,
                                 );
                             }
                             if let Some(crate::views::modal::ActiveModal::DocViewer {

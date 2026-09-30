@@ -2326,6 +2326,52 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::PersistVendorSetup {
+            vendor_id,
+            env_key,
+            api_key,
+        } => {
+            tasks.spawn(async move {
+                let result = xai_grok_shell::util::config::enable_builtin_vendor(
+                    xai_grok_shell::util::config::VendorSetupRequest {
+                        vendor_id: vendor_id.clone(),
+                        env_key,
+                        api_key,
+                    },
+                )
+                .await
+                .map(|path| path.display().to_string())
+                .map_err(|e| e.to_string());
+                TaskResult::VendorSetupPersisted { vendor_id, result }
+            });
+        }
+        Effect::PersistCustomProvider {
+            provider_id,
+            base_url,
+            model_key,
+            wire_model,
+            api_backend,
+            env_key,
+            api_key,
+        } => {
+            tasks.spawn(async move {
+                let result = xai_grok_shell::util::config::enable_custom_provider(
+                    xai_grok_shell::util::config::CustomProviderRequest {
+                        provider_id,
+                        base_url,
+                        model_key: model_key.clone(),
+                        wire_model,
+                        api_backend,
+                        env_key,
+                        api_key,
+                    },
+                )
+                .await
+                .map(|path| path.display().to_string())
+                .map_err(|e| e.to_string());
+                TaskResult::CustomProviderPersisted { model_key, result }
+            });
+        }
         Effect::Authenticate {
             request_seq,
             method_id,

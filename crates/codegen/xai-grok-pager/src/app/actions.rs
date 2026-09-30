@@ -138,6 +138,12 @@ pub enum Action {
     /// Doesn't import anything, doesn't change runtime fallback behavior.
     /// The menu reappears only if `.claude/` content changes.
     DismissClaudeImport,
+    /// Open the first-run provider setup wizard on the welcome screen.
+    OpenSetupWizard,
+    /// Close the setup wizard without saving.
+    SetupWizardCancel,
+    /// Persist the wizard's vendor choice (effect runs async; result returns via TaskResult).
+    SetupWizardConfirm(crate::views::setup_wizard::SetupConfirmRequest),
     /// Load (resume) an existing session by ID (strict: never create).
     /// `chat_kind` is the **conversation-entry** bit only (`source == "conversation"` / restore preserve), **not** sticky `--chat`.
     /// Under `--chat`, local Build disk rows are refused in dispatch (never coerced).
@@ -1695,6 +1701,24 @@ pub enum Effect {
         feature: xai_grok_shell::agent::config::Feature,
         saved: Option<bool>,
     },
+    /// Persist the setup wizard's vendor opt-in to the trusted `config.toml`;
+    /// completes as [`TaskResult::VendorSetupPersisted`].
+    PersistVendorSetup {
+        vendor_id: String,
+        env_key: Option<String>,
+        api_key: Option<String>,
+    },
+    /// Persist the wizard's custom OpenAI-compatible provider + model;
+    /// completes as [`TaskResult::CustomProviderPersisted`].
+    PersistCustomProvider {
+        provider_id: String,
+        base_url: String,
+        model_key: String,
+        wire_model: String,
+        api_backend: String,
+        env_key: Option<String>,
+        api_key: Option<String>,
+    },
     /// Toggle mouse reporting off and on to unwedge xterm.js's button tracker
     /// (see `AgentView::reset_wedged_mouse_reporting`). An effect so it rides the escape
     /// writer; `process_effects` re-checks capture so a toggle-off in the same batch wins.
@@ -3231,6 +3255,16 @@ pub enum TaskResult {
     FeatureOverridePersisted {
         feature: xai_grok_shell::agent::config::Feature,
         result: Result<Option<bool>, String>,
+    },
+    /// One [`Effect::PersistVendorSetup`] write finished; `Ok` carries the config path written.
+    VendorSetupPersisted {
+        vendor_id: String,
+        result: Result<String, String>,
+    },
+    /// One [`Effect::PersistCustomProvider`] write finished; `Ok` carries the config path.
+    CustomProviderPersisted {
+        model_key: String,
+        result: Result<String, String>,
     },
     /// Off-thread clipboard attachment probe finished (see [`Effect::ProbeClipboardAttachment`]); dispatch attaches the chip.
     ClipboardAttachmentProbed {

@@ -97,6 +97,9 @@ use super::settings::ui::{
     dispatch_toggle_mouse_capture, dispatch_toggle_multiline, dispatch_toggle_timestamps,
     dispatch_toggle_vim_mode,
 };
+use super::setup_wizard::{
+    dispatch_open_setup_wizard, dispatch_setup_wizard_cancel, dispatch_setup_wizard_confirm,
+};
 use super::status::{
     dispatch_copy_session_id, dispatch_manage_billing, dispatch_open_gboom, dispatch_open_tutorial,
     dispatch_privacy_banner_opt_in, dispatch_privacy_banner_opt_out, dispatch_share_session,
@@ -281,6 +284,9 @@ fn dispatch_inner(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ImportClaudeConfirm => dispatch_import_claude_confirm(app),
         Action::ImportClaudeCancel => dispatch_import_claude_cancel(app),
         Action::DismissClaudeImport => dispatch_dismiss_claude_import(app),
+        Action::OpenSetupWizard => dispatch_open_setup_wizard(app),
+        Action::SetupWizardCancel => dispatch_setup_wizard_cancel(app),
+        Action::SetupWizardConfirm(req) => dispatch_setup_wizard_confirm(app, req),
         Action::LoadSession(session_id, session_cwd, chat_kind) => {
             dispatch_load_session(app, session_id, session_cwd, chat_kind)
         }

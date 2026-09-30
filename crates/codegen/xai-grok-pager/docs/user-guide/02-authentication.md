@@ -18,7 +18,7 @@ export OPENCODE_API_KEY="..."
 pig
 ```
 
-No credentials on a fresh machine means the TUI starts directly with vendor guidance instead of a browser popup. `~/.grok/auth.json` still stores API-key and external-provider credentials with owner-only permissions (`0600` on Unix).
+No credentials on a fresh machine means the TUI starts directly with vendor guidance instead of a browser popup. Press `s` for the guided setup: pick a builtin vendor (`opencode` / `opencode-go`), confirm the detected `env_key` or paste a key, and pig writes `[vendors.<id>]` to your trusted `config.toml` (restart to load models). For any other endpoint choose Custom provider: the wizard walks through provider id, base URL, model, backend, and credential, writing `[model_providers.<id>]` + `[model.<key>]` for you (restart, then `/model <key>`); the advanced pi-snapshot mirror stays a hand-written `[vendors.<id>]` entry (see [Custom models](11-custom-models.md)). `~/.grok/auth.json` still stores API-key and external-provider credentials with owner-only permissions (`0600` on Unix).
 
 ### Credential storage
 

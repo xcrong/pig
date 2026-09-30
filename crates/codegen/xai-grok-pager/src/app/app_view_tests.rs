@@ -138,6 +138,7 @@ pub(crate) fn test_app() -> AppView {
         welcome_history_load_as_build: false,
         mouse_captured: true,
         new_worktree_dialog: None,
+        setup_wizard: None,
         contextual_hints: Default::default(),
         remote_contextual_hints: None,
         tip_seen_counts: Default::default(),
@@ -4816,8 +4817,29 @@ fn welcome_pending_enter_triggers_login() {
     let mut app = test_app();
     app.auth_state = AuthState::Pending { error: None };
     app.welcome_prompt_focused = false;
+    // A login method is advertised: Enter attempts login.
+    app.login_method_id = Some(agent_client_protocol::AuthMethodId::new(
+        "test-method".to_string(),
+    ));
     let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Action(Action::Login)));
+}
+#[test]
+fn welcome_pending_without_method_enter_opens_setup() {
+    let mut app = test_app();
+    app.auth_state = AuthState::Pending { error: None };
+    app.welcome_prompt_focused = false;
+    assert!(app.login_method_id.is_none());
+    let outcome = app.handle_input(&key_event(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        outcome,
+        InputOutcome::Action(Action::OpenSetupWizard)
+    ));
+    let outcome = app.handle_input(&key_event(KeyCode::Char('s'), KeyModifiers::NONE));
+    assert!(matches!(
+        outcome,
+        InputOutcome::Action(Action::OpenSetupWizard)
+    ));
 }
 #[test]
 fn welcome_pending_n_is_unchanged() {

@@ -1272,7 +1272,7 @@ pub(crate) async fn run(
         if connection.auth_methods.is_empty() {
             app.auth_state = super::app_view::AuthState::Pending {
                 error: Some(
-                    "No credentials configured. Configure a model provider: set `[vendors.<id>] enabled = true` with its `env_key`, or add `[model_providers.*]` (see docs/user-guide/11-custom-models.md).".to_string(),
+                    "No credentials configured. Press `s` for guided setup, or set `[vendors.<id>] enabled = true` with its `env_key` (see docs/user-guide/11-custom-models.md).".to_string(),
                 ),
             };
             vec![]

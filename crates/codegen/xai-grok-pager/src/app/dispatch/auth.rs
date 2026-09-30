@@ -40,7 +40,7 @@ pub(super) fn ensure_login_method(app: &mut AppView) {
 /// Points at vendor/provider configuration instead of a browser login.
 fn no_login_method_error(app: &AppView) -> String {
     if app.auth_methods.is_empty() {
-        "No credentials configured. Configure a model provider: set `[vendors.<id>] enabled = true` with its `env_key`, or add `[model_providers.*]` (see docs/user-guide/11-custom-models.md).".to_string()
+        "No credentials configured. Press `s` for guided setup, or set `[vendors.<id>] enabled = true` with its `env_key` (see docs/user-guide/11-custom-models.md).".to_string()
     } else {
         "No login method available. Configure a model provider (see docs/user-guide/11-custom-models.md).".to_string()
     }
