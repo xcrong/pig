@@ -173,4 +173,3 @@ jobs:
           else
             npm publish --provenance --access public
           fi
-        working-directory: npm/pig
