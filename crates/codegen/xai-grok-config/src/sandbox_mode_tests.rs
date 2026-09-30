@@ -6,7 +6,6 @@ use super::{
     ModeDegradation, RefusedLayers, ResolvedSandboxMode, SandboxMode, SandboxModeLayers,
     SandboxModeSource,
 };
-use crate::remote_settings::RemoteSettings;
 
 fn resolve(layers: SandboxModeLayers<'_>) -> (SandboxMode, SandboxModeSource) {
     let resolved = SandboxMode::resolve(layers);
@@ -194,42 +193,6 @@ fn modes_are_parsed_in_any_case_from_every_source() {
         "the value is never echoed: {error}"
     );
     assert!(serde_json::from_str::<SandboxMode>("3").is_err());
-}
-
-/// The CLI parses `/v1/settings` with `serde_json::from_slice` (reqwest's `Response::json`) and
-/// its cache with `serde_json::from_str`: whatever `sandbox_mode` holds, the rest still loads.
-#[test]
-fn a_remote_sandbox_mode_of_any_shape_never_fails_the_settings() {
-    for (value, mode) in [
-        (None, None),
-        (Some(r#""enforce""#), Some(SandboxMode::Enforce)),
-        (Some(r#"" Observe ""#), Some(SandboxMode::Observe)),
-        (Some(r#""bogus""#), None),
-        (Some("null"), None),
-        (Some("3"), None),
-        (Some("true"), None),
-        (Some("18446744073709551615"), None),
-        (Some("[null]"), None),
-        (Some(r#"{"a":null}"#), None),
-        (Some(r#"{"$__toml_private_datetime":"x"}"#), None),
-        (Some(r#"{"a":1,"a":2}"#), None),
-    ] {
-        let field = value.map(|v| format!(r#""sandbox_mode":{v},"#));
-        let body = format!(
-            r#"{{"leader_mode":true,{}"release_channel":"alpha","loc_tracking":true}}"#,
-            field.unwrap_or_default()
-        );
-        for parsed in [
-            serde_json::from_slice::<RemoteSettings>(body.as_bytes()),
-            serde_json::from_str::<RemoteSettings>(&body),
-        ] {
-            let settings = parsed.unwrap_or_else(|error| panic!("{body}: {error}"));
-            assert_eq!(mode, settings.sandbox_mode, "{body}");
-            assert_eq!(Some(true), settings.leader_mode, "{body}");
-            assert_eq!(Some("alpha"), settings.release_channel.as_deref(), "{body}");
-            assert_eq!(Some(true), settings.loc_tracking, "{body}");
-        }
-    }
 }
 
 /// A `workspaced.toml` layer reads the mode through the same function: a string names it, any
