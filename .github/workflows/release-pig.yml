@@ -149,12 +149,11 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 24 自带的 npm 已满足 trusted publishing 的 >= 11.5.1 要求，
+          # 不再需要 `npm install -g npm@latest`：npm 12 的 engine 要求是
+          # node >= 22.22.2，在 Node 20 上那一步会直接 EBADENGINE 失败。
+          node-version: 24
           registry-url: https://registry.npmjs.org
-
-      - name: Use npm with OIDC support
-        # Trusted publishing needs npm >= 11.5.1; the Node 20 bundle ships npm 10.
-        run: npm install -g npm@latest
 
       - name: Align package version with tag
         shell: bash
