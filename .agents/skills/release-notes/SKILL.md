@@ -1,6 +1,6 @@
 ---
 name: release-notes
-description: Cut a pig release: collect changes since the previous v* tag, write the bilingual (zh-CN/en) release log to changelogs/, commit it, and push the tag to trigger the release build. Use when the user wants to 发布版本, 打 tag, 写 release 日志 or 更新 changelog.
+description: "Cut a pig release: collect changes since the previous v* tag, write the bilingual (zh-CN/en) release log to changelogs/, commit it, and push the tag to trigger the release build. Use when the user wants to 发布版本, 打 tag, 写 release 日志 or 更新 changelog."
 ---
 
 # Pig Release Notes
