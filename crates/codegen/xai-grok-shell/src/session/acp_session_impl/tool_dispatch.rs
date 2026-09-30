@@ -225,6 +225,7 @@ impl SessionActor {
             timeout: None,
             description: title_command.clone().into_owned(),
             is_background: false,
+            block_until_ms: None,
         });
         // Bash mode has no model-issued wire name; resolve the toolset's execute tool by kind so the x.ai/tool identity still stamps
         let bash_marker = serde_json::json!({"bash_mode": true}).as_object().cloned();

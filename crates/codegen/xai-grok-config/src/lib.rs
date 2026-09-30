@@ -27,6 +27,7 @@ mod managed_cache;
 pub mod managed_text;
 mod mcp_bearer_token_file;
 mod paths;
+pub mod sandbox_mode;
 pub mod shell;
 pub mod signed_policy;
 mod validation;

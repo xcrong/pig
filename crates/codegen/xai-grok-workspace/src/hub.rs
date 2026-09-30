@@ -490,6 +490,7 @@ impl ToolServerHandler for SessionRoutedToolHandler {
                 self.name(),
                 &call_id,
                 &args,
+                crate::permission::PromptGate::PreRun,
             )
             .await
         {

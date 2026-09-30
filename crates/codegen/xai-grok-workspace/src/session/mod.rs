@@ -712,6 +712,15 @@ pub struct WorkspaceShared {
     #[cfg(test)]
     pub(crate) post_resolve_test_hook: parking_lot::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     pub(crate) client_fs_hash_memo: crate::file_system::client_fs::FileHashMemo,
+    /// The folder's per-command shell sandbox, when the host built the workspace with one (the
+    /// daemon does; the CLI and the remote sandbox server do not).
+    pub(crate) sandbox: Option<std::sync::Arc<crate::sandbox::WorkspaceSandbox>>,
+}
+impl WorkspaceShared {
+    /// The folder's per-command shell sandbox, when the host built the workspace with one.
+    pub fn sandbox(&self) -> Option<std::sync::Arc<crate::sandbox::WorkspaceSandbox>> {
+        self.sandbox.clone()
+    }
 }
 impl WorkspaceShared {
     /// Workspace root directory.

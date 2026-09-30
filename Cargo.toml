@@ -30,6 +30,7 @@ members = [
     "crates/codegen/xai-grok-config-types",
     "crates/codegen/xai-grok-dashboard-store",
     "crates/codegen/xai-grok-diag-server",
+    "crates/codegen/xai-grok-egress-proxy",
     "crates/codegen/xai-grok-env",
     "crates/codegen/xai-grok-extra-ca",
     "crates/codegen/xai-grok-feedback",
@@ -181,6 +182,7 @@ htmd = "0.5.4"
 html-escape = "0.2"
 http = "1"
 http-body-util = "0.1"
+httparse = "1"
 humantime-serde = "1"
 ignore = "0.4"
 image = { version = "0.25.10", default-features = false }
@@ -262,6 +264,7 @@ siphasher = "1"
 smallvec = "1"
 strip-ansi-escapes = "0.2.1"
 strum = { version = "0.27", features = ["derive"] }
+subtle = "2"
 supports-color = "3.0"
 syntect = { version = "5.3", default-features = false, features = ["default-onig"] }
 tar = "0.4"

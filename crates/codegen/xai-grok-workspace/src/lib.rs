@@ -40,6 +40,8 @@ pub mod scheduler_liveness;
 pub use restore_fetch::{EnsureCommitsOutcome, ensure_commits_reachable};
 pub use session::git::git_object_exists;
 pub mod rpc_envelope;
+pub mod sandbox;
+pub mod sandbox_mode;
 pub mod session;
 pub mod status_config;
 pub(crate) mod telemetry;
@@ -83,6 +85,7 @@ pub fn init_metrics() {
     session::swap_policy::init_metrics();
     upload::init_metrics();
     permission::init_metrics();
+    sandbox::metrics::init_metrics();
     hub_server::init_metrics();
     hub_auth::init_metrics();
 }

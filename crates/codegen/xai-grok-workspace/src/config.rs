@@ -905,6 +905,9 @@ pub struct WorkspaceConfig {
     pub tool_approval: ToolApprovalGate,
     /// Which host runs this server; decides whether the root's `FsChanged` producer is lit.
     pub host_kind: crate::host_kind::WorkspaceHostKind,
+    /// The folder's per-command shell sandbox; `None` on hosts that do not sandbox commands (the
+    /// CLI, the remote sandbox server). The session factory must carry its launch hook.
+    pub sandbox: Option<std::sync::Arc<crate::sandbox::WorkspaceSandbox>>,
 }
 /// Metadata a tool server announces so hub consumers can identify and route to it.
 /// Re-export of the protocol crate's single catalog of well-known registration-metadata keys; every field is optional and independently sourced.
@@ -967,6 +970,7 @@ impl WorkspaceConfig {
             tool_approval: ToolApprovalGate::Off,
             status_config,
             host_kind: Default::default(),
+            sandbox: None,
         }
     }
 }

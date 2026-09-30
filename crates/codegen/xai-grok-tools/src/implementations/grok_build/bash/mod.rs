@@ -252,6 +252,17 @@ pub struct BashToolInput {
         deserialize_with = "crate::types::schema::deserialize_lenient_bool"
     )]
     pub is_background: bool,
+    /// Foreground wait in ms under the `current` contract. `0` starts the command in the background at once.
+    /// It overrides `is_background` and `timeout`. The two-knob versions ignore it.
+    #[schemars(
+        description = "How long to block and wait for the command to complete before moving it to background (in milliseconds). Defaults to 30000ms. Set to 0 to immediately run the command in the background. The timer includes the shell startup time."
+    )]
+    #[serde(
+        default,
+        deserialize_with = "crate::types::schema::deserialize_lenient_u64",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub block_until_ms: Option<u64>,
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -2410,6 +2421,7 @@ mod tests {
             timeout: None,
             description: "test".to_string(),
             is_background: false,
+            block_until_ms: None,
         }
     }
 
@@ -2419,6 +2431,7 @@ mod tests {
             timeout: None,
             description: "test".to_string(),
             is_background: true,
+            block_until_ms: None,
         }
     }
 

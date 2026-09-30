@@ -675,6 +675,8 @@ impl WorkspaceHandle {
             bind_mount_hook: arc_swap::ArcSwap::from_pointee(
                 crate::path_virtualization::BindMountHook::noop(),
             ),
+            // The folder's per-command sandbox from config; `None` on hosts without one.
+            sandbox: config.sandbox,
             #[cfg(test)]
             post_resolve_test_hook: parking_lot::Mutex::new(None),
             client_fs_hash_memo: Default::default(),
@@ -5004,6 +5006,7 @@ impl WorkspaceHandle {
             bind_mcp: None,
             tool_approval: crate::permission::ToolApprovalGate::Off,
             host_kind: Default::default(),
+            sandbox: None,
         };
         Self::build(
             config,
@@ -5049,6 +5052,7 @@ impl WorkspaceHandle {
             bind_mcp: None,
             tool_approval: crate::permission::ToolApprovalGate::Off,
             host_kind: Default::default(),
+            sandbox: None,
         }
     }
     /// Test handle backed by a temp dir. Zero sessions; `TempDir` kept alive via `Arc`.
@@ -5065,6 +5069,24 @@ impl WorkspaceHandle {
         let factory = std::sync::Arc::new(TestSessionContextFactory::new());
         Self::new(Self::test_config(root.to_path_buf(), factory))
             .expect("test workspace handle construction must succeed")
+    }
+    /// Like [`Self::for_test_in`] with the folder's command sandbox wired the way
+    /// `build_local_workspace` wires it: every shell spawn goes through `sandbox`, the hub's
+    /// result path decodes what it stopped, and hub calls meet `tool_approval` first (the
+    /// daemon's is `approval_gate_for(WorkspaceHostKind::Daemon)`).
+    pub fn for_test_in_with_sandbox(
+        root: &std::path::Path,
+        sandbox: std::sync::Arc<crate::sandbox::WorkspaceSandbox>,
+        tool_approval: crate::permission::ToolApprovalGate,
+    ) -> Self {
+        use crate::session::tool_config::test_support::TestSessionContextFactory;
+        let factory = std::sync::Arc::new(TestSessionContextFactory::new().with_sandbox_launch(
+            xai_grok_tools::sandbox_launch::SandboxLaunchHook::new(sandbox.clone()),
+        ));
+        let mut config = Self::test_config(root.to_path_buf(), factory);
+        config.tool_approval = tool_approval;
+        config.sandbox = Some(sandbox);
+        Self::new(config).expect("test workspace handle construction must succeed")
     }
 }
 #[cfg(test)]

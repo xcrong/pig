@@ -31,6 +31,7 @@ pub mod persistence;
 pub mod registry;
 pub mod reminders;
 pub mod retry;
+pub mod sandbox_launch;
 pub mod tool_taxonomy;
 pub mod types;
 pub mod util;

@@ -2721,6 +2721,7 @@ mod tests {
             timeout: None,
             description: "list files".into(),
             is_background: false,
+            block_until_ms: None,
         });
         let merged = merge_tool_meta(
             &toolset,

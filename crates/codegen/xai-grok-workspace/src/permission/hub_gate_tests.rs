@@ -157,7 +157,17 @@ async fn settle_at_cwd(
     args: &Value,
     transport: Option<&dyn PermissionHookTransport>,
 ) -> Result<(), ToolError> {
-    settle(session, session.cwd(), tool_name, call_id, args, transport).await
+    settle(
+        session,
+        session.cwd(),
+        tool_name,
+        call_id,
+        args,
+        transport,
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
+    )
+    .await
 }
 #[tokio::test]
 async fn every_daemon_tool_has_the_class_the_table_says() {
@@ -627,6 +637,8 @@ async fn an_always_answer_under_the_served_root_holds_for_sibling_conversations(
         "c1",
         &use_tool,
         Some(&always),
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
     )
     .await
     .expect("approved");
@@ -640,7 +652,16 @@ async fn an_always_answer_under_the_served_root_holds_for_sibling_conversations(
         "the grant is keyed on the served root, not the conversation directory"
     );
     let never = StubTransport::new(json!({"outcome": "reject"}));
-    settle(&session_b, &root, "use_tool", "c2", &use_tool, Some(&never))
+    settle(
+        &session_b,
+        &root,
+        "use_tool",
+        "c2",
+        &use_tool,
+        Some(&never),
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
+    )
         .await
         .expect("the sibling conversation inherits the grant without asking");
     assert_eq!(0, never.prompts());
@@ -652,6 +673,8 @@ async fn an_always_answer_under_the_served_root_holds_for_sibling_conversations(
         "c3",
         &use_tool,
         Some(&always_in_repo),
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
     )
     .await
     .expect("approved");
@@ -675,6 +698,8 @@ async fn an_always_answer_under_the_served_root_holds_for_sibling_conversations(
         "c4",
         &bash,
         Some(&always_bash),
+        PromptGate::PreRun,
+        StateFileAccess::Plain,
     )
     .await
     .expect("approved");

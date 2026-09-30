@@ -560,6 +560,11 @@ pub mod test_support {
     pub struct TestSessionContextFactory {
         pub temp: TempDir,
         tool_state: bool,
+        /// The per-command sandbox seam for shells, as the production factory carries it.
+        /// Stored so `for_test_in_with_sandbox` mirrors production wiring; the spawn-side
+        /// `prepare` calls (tools terminal/bash) are a separate workstream, so shells built
+        /// here still run unwrapped until that lands.
+        sandbox_launch: Option<xai_grok_tools::sandbox_launch::SandboxLaunchHook>,
     }
     impl Default for TestSessionContextFactory {
         fn default() -> Self {
@@ -571,6 +576,7 @@ pub mod test_support {
             Self {
                 temp: TempDir::new().expect("create temp dir"),
                 tool_state: true,
+                sandbox_launch: None,
             }
         }
         /// Matches production, where `GROK_WORKSPACE_TOOL_STATE_ENABLED` is unset and the real factory returns an empty path.
@@ -579,6 +585,15 @@ pub mod test_support {
                 tool_state: false,
                 ..Self::new()
             }
+        }
+        /// Route every shell spawn through `hook`, as the production factory does for a served
+        /// folder's `WorkspaceSandbox`.
+        pub fn with_sandbox_launch(
+            mut self,
+            hook: xai_grok_tools::sandbox_launch::SandboxLaunchHook,
+        ) -> Self {
+            self.sandbox_launch = Some(hook);
+            self
         }
     }
     impl SessionContextFactory for TestSessionContextFactory {

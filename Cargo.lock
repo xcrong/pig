@@ -13350,6 +13350,7 @@ dependencies = [
  "xai-grok-announcements",
  "xai-grok-config",
  "xai-grok-mcp",
+ "xai-grok-sandbox",
 ]
 
 [[package]]
@@ -13379,6 +13380,20 @@ dependencies = [
  "tokio",
  "tracing",
  "xai-grok-version",
+]
+
+[[package]]
+name = "xai-grok-egress-proxy"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "httparse",
+ "rand 0.9.5",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "xai-grok-sandbox",
 ]
 
 [[package]]
@@ -14055,6 +14070,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dunce",
+ "fs2",
  "globset",
  "ignore",
  "libc",
@@ -14064,13 +14080,16 @@ dependencies = [
  "serde_json",
  "serial_test",
  "sha2 0.10.9",
+ "strum 0.27.2",
  "thiserror 2.0.18",
  "tokio",
  "toml",
  "tracing",
+ "unicode-normalization",
  "url",
  "xai-dirs",
  "xai-grok-config",
+ "xai-tty-utils",
 ]
 
 [[package]]
@@ -14637,6 +14656,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "toml",
+ "toml_edit 0.22.27",
  "tonic",
  "tracing",
  "tracing-subscriber",
@@ -14660,6 +14680,7 @@ dependencies = [
  "xai-grok-config",
  "xai-grok-config-types",
  "xai-grok-diag-server",
+ "xai-grok-egress-proxy",
  "xai-grok-env",
  "xai-grok-extra-ca",
  "xai-grok-hooks",
