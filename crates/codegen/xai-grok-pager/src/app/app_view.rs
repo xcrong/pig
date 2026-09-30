@@ -3844,14 +3844,15 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                     return InputOutcome::Action(Action::QuitConfirmed);
                 }
                 // No credential configured: offer the setup wizard instead of a
-                // dead login button. `s`/Enter opens it; `l` still attempts
-                // login for mixed states where a method exists.
-                if !ctx.has_login_method && !ctx.mid_session_login {
-                    if key!('s').matches(key) || key!(Enter).matches(key) {
+                // dead login button. `s`/`l`/Enter all open it; login stays
+                // for mixed states where a method exists. `q` above still
+                // cancels a mid-session login first.
+                if !ctx.has_login_method {
+                    if key!('s').matches(key)
+                        || key!('l').matches(key)
+                        || key!(Enter).matches(key)
+                    {
                         return InputOutcome::Action(Action::OpenSetupWizard);
-                    }
-                    if key!('l').matches(key) {
-                        return InputOutcome::Action(Action::Login);
                     }
                     return InputOutcome::Unchanged;
                 }
@@ -3954,7 +3955,7 @@ fn handle_welcome_input(ev: &Event, ctx: &mut WelcomeInputCtx<'_>) -> InputOutco
                         && mouse.row < rect.y + rect.height
                     {
                         if matches!(ctx.auth_state, AuthState::Pending { .. }) {
-                            if !ctx.has_login_method && !ctx.mid_session_login {
+                            if !ctx.has_login_method {
                                 return dispatch_no_credential_menu_action(i);
                             }
                             return dispatch_pending_menu_action(i);

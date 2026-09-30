@@ -4809,8 +4809,24 @@ fn welcome_pending_l_triggers_login() {
     let mut app = test_app();
     app.auth_state = AuthState::Pending { error: None };
     app.welcome_prompt_focused = false;
+    // A login method is advertised: `l` attempts login.
+    app.login_method_id = Some(agent_client_protocol::AuthMethodId::new(
+        "test-method".to_string(),
+    ));
     let outcome = app.handle_input(&key_event(KeyCode::Char('l'), KeyModifiers::NONE));
     assert!(matches!(outcome, InputOutcome::Action(Action::Login)));
+}
+#[test]
+fn welcome_pending_l_without_method_opens_setup() {
+    let mut app = test_app();
+    app.auth_state = AuthState::Pending { error: None };
+    app.welcome_prompt_focused = false;
+    assert!(app.login_method_id.is_none());
+    let outcome = app.handle_input(&key_event(KeyCode::Char('l'), KeyModifiers::NONE));
+    assert!(matches!(
+        outcome,
+        InputOutcome::Action(Action::OpenSetupWizard)
+    ));
 }
 #[test]
 fn welcome_pending_enter_triggers_login() {

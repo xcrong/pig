@@ -1270,11 +1270,10 @@ pub(crate) async fn run(
     }
     let mut post_render_effects = if needs_interactive_login {
         if connection.auth_methods.is_empty() {
-            app.auth_state = super::app_view::AuthState::Pending {
-                error: Some(
-                    "No credentials configured. Press `s` for guided setup, or set `[vendors.<id>] enabled = true` with its `env_key` (see docs/user-guide/11-custom-models.md).".to_string(),
-                ),
-            };
+            // No red banner: the welcome menu itself offers `Setup provider`,
+            // which is the guidance. Manual config stays documented in
+            // docs/user-guide/11-custom-models.md.
+            app.auth_state = super::app_view::AuthState::Pending { error: None };
             vec![]
         } else {
             dispatch::dispatch(Action::Login, &mut app)
