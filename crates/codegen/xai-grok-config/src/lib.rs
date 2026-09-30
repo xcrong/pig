@@ -76,7 +76,9 @@ pub use managed_cache::{
     managed_policy_compromised_for, mark_managed_config_synced, mark_managed_config_synced_at,
     normalize_identity,
 };
-pub use mcp_bearer_token_file::{BearerTokenPath, BearerTokenPathError};
+pub use mcp_bearer_token_file::{
+    BearerTokenPath, BearerTokenPathError, bearer_token_file_meta, configured_bearer_token_file,
+};
 pub use paths::{
     claude_managed_settings_path, claude_managed_settings_probe_path, create_dir_all_owner_only,
     decode_cwd_from_dirname, default_grok_home, encode_cwd_dirname, ensure_sessions_cwd_dir,

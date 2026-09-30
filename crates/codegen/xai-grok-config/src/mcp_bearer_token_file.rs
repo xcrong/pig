@@ -10,7 +10,7 @@ use agent_client_protocol as acp;
 
 const META_KEY: &str = "x.ai/mcp/bearerTokenFile";
 
-pub(crate) fn bearer_token_file_meta(configured: &str) -> acp::Meta {
+pub fn bearer_token_file_meta(configured: &str) -> acp::Meta {
     acp::Meta::from_iter([(
         META_KEY.to_owned(),
         serde_json::Value::String(configured.to_owned()),
@@ -18,7 +18,7 @@ pub(crate) fn bearer_token_file_meta(configured: &str) -> acp::Meta {
 }
 
 /// The configured string, unparsed, for listing a client-provided server as it was given.
-pub(crate) fn configured_bearer_token_file(meta: Option<&acp::Meta>) -> Option<String> {
+pub fn configured_bearer_token_file(meta: Option<&acp::Meta>) -> Option<String> {
     meta?.get(META_KEY)?.as_str().map(str::to_owned)
 }
 

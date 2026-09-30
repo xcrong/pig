@@ -31,12 +31,14 @@ use rmcp::{
 
 pub use crate::auth_status::McpOauthDiscovery;
 use crate::auth_status::{HttpAuthDecision, decide_http_auth_from_disk};
+use crate::bearer_token_file::BearerTokenFile;
 use crate::call_result::mcp_output_from_call_result;
 pub use crate::generation::{Generation, Replacement, Superseded};
 use crate::oauth::OAUTH_DISCOVERY_TIMEOUT;
 use crate::oauth_config::McpOAuthConfig;
 pub use crate::shared_mcp_state::SharedMcpState;
 
+use xai_grok_config::BearerTokenPath;
 use xai_grok_tools::types::{
     output::{MCPOutputDetails, ToolOutput},
     tool::{ToolKind, ToolNamespace},
@@ -2396,19 +2398,32 @@ async fn decide_http_auth_over_network(
 }
 
 /// Configuration for HTTP MCP server connection.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct HttpConfig {
     pub url: String,
     pub headers: Vec<(String, String)>,
     /// This server is a first-party local app endpoint addressed by [`GROK_AGENT_ID_HEADER`]. Set only from the spawn context — never inferred from headers — and it keys the transport hardening (no proxy, no redirects) and the OAuth skip.
     pub local_agent_endpoint: bool,
+    /// `bearer_token_file` from config; it replaces any configured `Authorization` header.
+    pub bearer_token_file: Option<BearerTokenFile>,
 }
 
 impl HttpConfig {
-    fn has_authorization_header(&self) -> bool {
+    /// Config supplies the credential: an `Authorization` header or a bearer token file.
+    fn has_configured_auth(&self) -> bool {
+        self.bearer_token_file.is_some()
+            || self
+                .headers
+                .iter()
+                .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+    }
+
+    /// Configured headers minus `Authorization`, for transports that set the token per request.
+    fn headers_except_authorization(&self) -> impl Iterator<Item = (&str, &str)> {
         self.headers
             .iter()
-            .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            .filter(|(key, _)| !key.eq_ignore_ascii_case("authorization"))
+            .map(|(key, value)| (key.as_str(), value.as_str()))
     }
 }
 
@@ -3375,12 +3390,12 @@ impl McpClient {
         self.http_config.is_some()
     }
 
-    /// `true` when the transport carries a config-provided `Authorization` header.
+    /// `true` when config supplies the transport's credential: an `Authorization` header or a `bearer_token_file`.
     /// Its 401s are a config problem OAuth login cannot fix (spawn and the login rebuild both skip discovery for such servers).
-    pub fn has_configured_auth_header(&self) -> bool {
+    pub fn has_configured_auth(&self) -> bool {
         self.http_config
             .as_ref()
-            .is_some_and(HttpConfig::has_authorization_header)
+            .is_some_and(HttpConfig::has_configured_auth)
     }
 
     /// `true` for an in-process SDK client reached over the ACP reverse channel (rather than HTTP/stdio).
@@ -3636,8 +3651,7 @@ impl McpClient {
                 result = self.try_handshake(retry_transport).await;
             }
         }
-        handshake_span
-            .record("elapsed_ms", handshake_start.elapsed().as_millis() as i64);
+        handshake_span.record("elapsed_ms", handshake_start.elapsed().as_millis() as i64);
         drop(handshake_span);
 
         // Disarm before publishing the result so the drop guard doesn't double-restore on the success path
@@ -3938,11 +3952,7 @@ impl McpClient {
         let mut headers = parse_config_headers(
             name,
             "oauth-transport",
-            config
-                .headers
-                .iter()
-                .filter(|(key, _)| !key.eq_ignore_ascii_case("Authorization"))
-                .map(|(key, value)| (key.as_str(), value.as_str())),
+            config.headers_except_authorization(),
         );
         apply_user_agent_policy(&mut headers, name, &config.url);
         // reqwest 0.13; the policy chokepoint is typed for 0.12 and cannot wrap this builder.
@@ -4096,14 +4106,22 @@ impl McpClient {
         server_name: &str,
         warn_budget: crate::mcp_http_client::WarnBudget,
     ) -> Result<crate::mcp_http_client::McpHttpClient<reqwest::Client>, McpError> {
-        let mut headers = parse_config_headers(
-            server_name,
-            "transport",
-            config
-                .headers
-                .iter()
-                .map(|(key, value)| (key.as_str(), value.as_str())),
-        );
+        let mut headers = if config.bearer_token_file.is_some() {
+            parse_config_headers(
+                server_name,
+                "transport",
+                config.headers_except_authorization(),
+            )
+        } else {
+            parse_config_headers(
+                server_name,
+                "transport",
+                config
+                    .headers
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str())),
+            )
+        };
         apply_user_agent_policy(&mut headers, server_name, &config.url);
         // reqwest 0.13; the policy chokepoint is typed for 0.12 and cannot wrap this builder.
         #[allow(clippy::disallowed_methods)]
@@ -4124,11 +4142,10 @@ impl McpClient {
         let client = builder
             .build()
             .map_err(|e| McpError::ClientError(format!("Failed to build HTTP client: {e}")))?;
-        Ok(crate::mcp_http_client::McpHttpClient::new(
-            client,
-            server_name,
-            warn_budget,
-        ))
+        Ok(
+            crate::mcp_http_client::McpHttpClient::new(client, server_name, warn_budget)
+                .with_bearer_token_file(config.bearer_token_file.clone()),
+        )
     }
 
     /// Cheap, non-blocking liveness predicate.
@@ -4332,10 +4349,8 @@ impl McpClient {
                 None => break,
             }
         }
-        list_tools_span
-            .record("tools_count", all_tools.len() as i64);
-        list_tools_span
-            .record("elapsed_ms", list_tools_start.elapsed().as_millis() as i64);
+        list_tools_span.record("tools_count", all_tools.len() as i64);
+        list_tools_span.record("elapsed_ms", list_tools_start.elapsed().as_millis() as i64);
         drop(list_tools_span);
 
         let event_writer = mcp_state.lock().await.event_writer().clone();
@@ -4734,10 +4749,10 @@ pub async fn start_mcp_server(
 
             let spawn_child_start = std::time::Instant::now();
             let spawn_child_span = tracing::info_span!(
-                    "mcp.spawn_child",
-                    server_name = %name,
-                    elapsed_ms = tracing::field::Empty,
-                );
+                "mcp.spawn_child",
+                server_name = %name,
+                elapsed_ms = tracing::field::Empty,
+            );
             let spawn_result = SafeTokioChildProcess::spawn(
                 cmd,
                 ctx.scope,
@@ -4745,8 +4760,7 @@ pub async fn start_mcp_server(
                 ctx.event_writer.clone(),
             )
             .await;
-            spawn_child_span
-                .record("elapsed_ms", spawn_child_start.elapsed().as_millis() as i64);
+            spawn_child_span.record("elapsed_ms", spawn_child_start.elapsed().as_millis() as i64);
             drop(spawn_child_span);
             let (transport, stderr_handle) = spawn_result.map_err(|e| {
                 tracing::error!("Failed to spawn MCP server '{}': {}", name, e);
@@ -4770,10 +4784,18 @@ pub async fn start_mcp_server(
             ))
         }
         acp::McpServer::Http(acp::McpServerHttp {
-            name, url, headers, ..
+            name,
+            url,
+            headers,
+            meta,
+            ..
         })
         | acp::McpServer::Sse(acp::McpServerSse {
-            name, url, headers, ..
+            name,
+            url,
+            headers,
+            meta,
+            ..
         }) => {
             if let Some(mc) = meta_config {
                 tracing::info!(server = %name, %url, ?mc, "MCP http: meta config override");
@@ -4790,16 +4812,20 @@ pub async fn start_mcp_server(
                 })?;
                 headers.push((GROK_AGENT_ID_HEADER.to_owned(), session_id.to_owned()));
             }
+            let bearer_token_file = BearerTokenPath::from_meta(meta.as_ref())
+                .map_err(|e| McpError::ClientError(format!("MCP server '{name}': {e}")))?
+                .map(BearerTokenFile::new);
             let http_config = HttpConfig {
                 url: url.clone(),
                 headers,
                 local_agent_endpoint,
+                bearer_token_file,
             };
 
-            let auth_decision = if http_config.has_authorization_header() {
+            let auth_decision = if http_config.has_configured_auth() {
                 tracing::debug!(
                     server = %name,
-                    "Skipping OAuth discovery: server already has Authorization header"
+                    "Skipping OAuth discovery: config supplies an Authorization header or bearer_token_file"
                 );
                 HttpAuthDecision::NoOauthSupport
             } else if http_config.local_agent_endpoint {
@@ -4945,6 +4971,7 @@ impl McpClient {
                 url: String::new(),
                 headers: Vec::new(),
                 local_agent_endpoint: false,
+                bearer_token_file: None,
             }),
             Some(&overrides),
             None,

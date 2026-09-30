@@ -50,6 +50,9 @@ pub enum McpServerTransportConfig {
         /// Name of the environment variable to read and set for `Authorization: Bearer <token>`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bearer_token_env_var: Option<String>,
+        /// Re-read on every request, so a token rotated on disk applies without a reconnect.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bearer_token_file: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         headers: Option<HashMap<String, String>>,
         /// OAuth client ID for providers that don't support Dynamic Client Registration.
@@ -88,6 +91,7 @@ pub struct McpServerConfigProblem {
 pub const KNOWN_MCP_SERVER_FIELDS: &[&str] = &[
     "args",
     "bearer_token_env_var",
+    "bearer_token_file",
     "command",
     "cwd",
     "enabled",
@@ -306,12 +310,20 @@ fn render_setup_templates(
                 *cwd = sub(cwd)?;
             }
         }
-        McpServerTransportConfig::StreamableHttp { url, headers, .. } => {
+        McpServerTransportConfig::StreamableHttp {
+            url,
+            headers,
+            bearer_token_file,
+            ..
+        } => {
             *url = sub(url)?;
             if let Some(headers) = headers.as_mut() {
                 for value in headers.values_mut() {
                     *value = sub(value)?;
                 }
+            }
+            if let Some(path) = bearer_token_file.as_mut() {
+                *path = sub(path)?;
             }
         }
     }
@@ -392,12 +404,20 @@ impl McpServerConfig {
                     *cwd = sub(cwd);
                 }
             }
-            McpServerTransportConfig::StreamableHttp { url, headers, .. } => {
+            McpServerTransportConfig::StreamableHttp {
+                url,
+                headers,
+                bearer_token_file,
+                ..
+            } => {
                 *url = sub(url);
                 if let Some(headers) = headers.as_mut() {
                     for value in headers.values_mut() {
                         *value = sub(value);
                     }
+                }
+                if let Some(path) = bearer_token_file.as_mut() {
+                    *path = sub(path);
                 }
             }
         }
@@ -434,6 +454,7 @@ impl McpServerConfig {
                 url,
                 transport_type,
                 bearer_token_env_var,
+                bearer_token_file,
                 headers,
                 ..
             } => {
@@ -474,11 +495,23 @@ impl McpServerConfig {
 
                 Some(if is_sse {
                     acp::McpServer::Sse(
-                        acp::McpServerSse::new(name, url.clone()).headers(http_headers),
+                        acp::McpServerSse::new(name, url.clone())
+                            .headers(http_headers)
+                            .meta(
+                                bearer_token_file
+                                    .as_deref()
+                                    .map(xai_grok_config::bearer_token_file_meta),
+                            ),
                     )
                 } else {
                     acp::McpServer::Http(
-                        acp::McpServerHttp::new(name, url.clone()).headers(http_headers),
+                        acp::McpServerHttp::new(name, url.clone())
+                            .headers(http_headers)
+                            .meta(
+                                bearer_token_file
+                                    .as_deref()
+                                    .map(xai_grok_config::bearer_token_file_meta),
+                            ),
                     )
                 })
             }
@@ -629,6 +662,7 @@ mod tests {
                 url: "https://x/mcp".into(),
                 transport_type: Some("http".into()),
                 bearer_token_env_var: Some("TOK".into()),
+                bearer_token_file: Some("/run/tok".into()),
                 headers: Some(HashMap::from([("H".into(), "v".into())])),
                 oauth_client_id: Some("id".into()),
                 oauth_client_secret_env_var: Some("SEC".into()),
@@ -739,6 +773,7 @@ mod tests {
                 url: "{{url}}".into(),
                 transport_type: None,
                 bearer_token_env_var: None,
+                bearer_token_file: None,
                 headers: None,
                 oauth_client_id: None,
                 oauth_client_secret_env_var: None,
@@ -797,6 +832,7 @@ mod tests {
                 url: "https://example.com".into(),
                 transport_type: None,
                 bearer_token_env_var: None,
+                bearer_token_file: None,
                 headers: None,
                 oauth_client_id: None,
                 oauth_client_secret_env_var: None,
