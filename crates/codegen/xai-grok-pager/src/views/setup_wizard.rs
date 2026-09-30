@@ -8,8 +8,7 @@
 //! rewrite path. Custom providers get a step-by-step form for a custom
 //! endpoint (provider id, base URL, model, wire id, display name, backend,
 //! credential) with a messages-auth branch (gateway Bearer vs Anthropic
-//! direct `x-api-key` + `anthropic-version`), plus a hint for the advanced
-//! pi-snapshot mirror path.
+//! direct `x-api-key` + `anthropic-version`).
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -55,9 +54,6 @@ pub enum SetupStep {
     EnterKey {
         vendor_index: usize,
     },
-    CustomMenu {
-        selected: usize,
-    },
     CustomProviderId,
     CustomBaseUrl,
     CustomModelKey,
@@ -72,7 +68,6 @@ pub enum SetupStep {
     CustomAnthropicVersion,
     CustomKey,
     CustomConfirm,
-    SnapshotHint,
     Saving,
     Done {
         config_path: String,
@@ -208,10 +203,6 @@ impl SetupWizardState {
         }
     }
 
-    pub fn custom_menu_len() -> usize {
-        2
-    }
-
     /// Row count on the messages-auth branch step.
     pub fn custom_messages_auth_len() -> usize {
         2
@@ -297,8 +288,9 @@ impl SetupWizardState {
                         self.enter_vendor(selected, |name| detect(name));
                         SetupWizardOutcome::Changed
                     } else {
-                        self.step = SetupStep::CustomMenu { selected: 0 };
+                        self.input.set_text(&self.custom_provider_id);
                         self.error = None;
+                        self.step = SetupStep::CustomProviderId;
                         SetupWizardOutcome::Changed
                     }
                 }
@@ -336,47 +328,11 @@ impl SetupWizardState {
                     }
                 }
             },
-            SetupStep::CustomMenu { mut selected } => match key.code {
+            SetupStep::CustomProviderId => match key.code {
                 KeyCode::Esc => {
                     self.step = SetupStep::ChooseVendor {
                         selected: self.vendors.len(),
                     };
-                    SetupWizardOutcome::Changed
-                }
-                KeyCode::Up => {
-                    selected = selected.saturating_sub(1);
-                    self.step = SetupStep::CustomMenu { selected };
-                    SetupWizardOutcome::Changed
-                }
-                KeyCode::Down => {
-                    selected = (selected + 1).min(Self::custom_menu_len().saturating_sub(1));
-                    self.step = SetupStep::CustomMenu { selected };
-                    SetupWizardOutcome::Changed
-                }
-                KeyCode::Enter if key.modifiers.is_empty() => {
-                    if selected == 0 {
-                        self.input.set_text(&self.custom_provider_id);
-                        self.error = None;
-                        self.step = SetupStep::CustomProviderId;
-                    } else {
-                        self.error = None;
-                        self.step = SetupStep::SnapshotHint;
-                    }
-                    SetupWizardOutcome::Changed
-                }
-                _ => {
-                    if let Some(outcome) =
-                        handle_list_nav(key, &mut selected, Self::custom_menu_len())
-                    {
-                        self.step = SetupStep::CustomMenu { selected };
-                        return outcome;
-                    }
-                    SetupWizardOutcome::Unchanged
-                }
-            },
-            SetupStep::CustomProviderId => match key.code {
-                KeyCode::Esc => {
-                    self.step = SetupStep::CustomMenu { selected: 0 };
                     self.error = None;
                     SetupWizardOutcome::Changed
                 }
@@ -652,13 +608,6 @@ impl SetupWizardState {
                     SetupWizardOutcome::Changed
                 }
                 KeyCode::Enter if key.modifiers.is_empty() => self.confirm_custom(),
-                _ => SetupWizardOutcome::Unchanged,
-            },
-            SetupStep::SnapshotHint => match key.code {
-                KeyCode::Esc | KeyCode::Backspace => {
-                    self.step = SetupStep::CustomMenu { selected: 1 };
-                    SetupWizardOutcome::Changed
-                }
                 _ => SetupWizardOutcome::Unchanged,
             },
             SetupStep::Saving => SetupWizardOutcome::Unchanged,
@@ -940,7 +889,6 @@ fn compute_setup_layout(area: Rect, state: &SetupWizardState) -> Option<SetupWiz
     let dialog = setup_dialog_rect(area)?;
     let count = match &state.step {
         SetupStep::ChooseVendor { .. } => state.choose_len(),
-        SetupStep::CustomMenu { .. } => SetupWizardState::custom_menu_len(),
         SetupStep::CustomBackend { .. } => custom_backend_ids().len(),
         SetupStep::CustomMessagesAuth { .. } => SetupWizardState::custom_messages_auth_len(),
         _ => 0,
@@ -960,7 +908,6 @@ impl SetupWizardState {
     fn list_selection(&self) -> Option<(usize, usize)> {
         match &self.step {
             SetupStep::ChooseVendor { selected } => Some((*selected, self.choose_len())),
-            SetupStep::CustomMenu { selected } => Some((*selected, Self::custom_menu_len())),
             SetupStep::CustomBackend { selected } => Some((*selected, custom_backend_ids().len())),
             SetupStep::CustomMessagesAuth { selected } => {
                 Some((*selected, Self::custom_messages_auth_len()))
@@ -972,7 +919,6 @@ impl SetupWizardState {
     fn set_list_selection(&mut self, index: usize) {
         match &mut self.step {
             SetupStep::ChooseVendor { selected } => *selected = index,
-            SetupStep::CustomMenu { selected } => *selected = index,
             SetupStep::CustomBackend { selected } => {
                 *selected = index;
                 self.custom_backend = index;
@@ -994,21 +940,11 @@ impl SetupWizardState {
                     self.enter_vendor(index, |name| detect(name));
                     SetupWizardOutcome::Changed
                 } else {
-                    self.step = SetupStep::CustomMenu { selected: 0 };
-                    self.error = None;
-                    SetupWizardOutcome::Changed
-                }
-            }
-            SetupStep::CustomMenu { .. } => {
-                if index == 0 {
                     self.input.set_text(&self.custom_provider_id);
                     self.error = None;
                     self.step = SetupStep::CustomProviderId;
-                } else {
-                    self.error = None;
-                    self.step = SetupStep::SnapshotHint;
+                    SetupWizardOutcome::Changed
                 }
-                SetupWizardOutcome::Changed
             }
             SetupStep::CustomBackend { .. } => {
                 self.custom_backend = index;
@@ -1342,36 +1278,6 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
             }
             paint_hints(buf, Rect::new(inner_x, row, inner_w, 1), &theme);
         }
-        SetupStep::CustomMenu { selected } => {
-            paint_line(
-                buf,
-                inner_x,
-                &mut row,
-                inner_w,
-                Line::from(Span::styled(
-                    "Custom provider:",
-                    Style::default().fg(theme.gray_bright),
-                )),
-            );
-            for (i, label) in [
-                "Custom endpoint (Chat / Responses / Messages)",
-                "pi snapshot mirror (advanced)",
-            ]
-            .iter()
-            .enumerate()
-            {
-                paint_list_row(
-                    buf,
-                    Rect::new(inner_x, row, inner_w, 1),
-                    *selected == i,
-                    &theme,
-                    label,
-                );
-                row += 1;
-            }
-            row += 1;
-            paint_hints(buf, Rect::new(inner_x, row, inner_w, 1), &theme);
-        }
         SetupStep::CustomProviderId => {
             render_custom_field(
                 buf,
@@ -1671,40 +1577,6 @@ pub fn render_setup_wizard(area: Rect, buf: &mut Buffer, state: &mut SetupWizard
                     inner_w,
                     Line::from(Span::styled(err, Style::default().fg(theme.accent_error))),
                 );
-            }
-        }
-        SetupStep::SnapshotHint => {
-            for line in [
-                Line::from(Span::styled(
-                    "pi snapshot mirror (advanced)",
-                    Style::default().fg(theme.text_primary),
-                )),
-                Line::from(Span::styled(
-                    "curl -fsSL https://pi.dev/api/models/providers/<id>?types=chat \\",
-                    Style::default().fg(theme.gray),
-                )),
-                Line::from(Span::styled(
-                    "  -o ~/.config/pig/vendors/<id>.json",
-                    Style::default().fg(theme.gray),
-                )),
-                Line::from(Span::styled(
-                    "[vendors.<id>] enabled=true base_url=<url>",
-                    Style::default().fg(theme.gray_bright),
-                )),
-                Line::from(Span::styled(
-                    "snapshot_file=vendors/<id>.json env_key=<VAR>",
-                    Style::default().fg(theme.gray_bright),
-                )),
-                Line::from(Span::styled(
-                    "See 11-custom-models.md (Custom vendors).",
-                    Style::default().fg(theme.gray_dim),
-                )),
-                Line::from(vec![
-                    Span::styled("esc", bold_accent(&theme)),
-                    Span::styled(" = back", Style::default().fg(theme.gray)),
-                ]),
-            ] {
-                paint_line(buf, inner_x, &mut row, inner_w, line);
             }
         }
         SetupStep::Saving => {
@@ -2114,22 +1986,20 @@ mod tests {
     }
 
     #[test]
-    fn custom_row_opens_menu() {
+    fn custom_row_goes_to_provider_id() {
         let mut state = SetupWizardState::new(options());
         state.handle_key(&key(KeyCode::Down), &|_| SetupEnvPresence::default());
         state.handle_key(&key(KeyCode::Down), &|_| SetupEnvPresence::default());
         let outcome = state.handle_key(&key(KeyCode::Enter), &|_| SetupEnvPresence::default());
         assert!(matches!(outcome, SetupWizardOutcome::Changed));
-        assert!(matches!(state.step, SetupStep::CustomMenu { selected: 0 }));
+        assert!(matches!(state.step, SetupStep::CustomProviderId));
     }
 
     fn enter_custom_openai(state: &mut SetupWizardState) {
         let no_detect = |_: &str| SetupEnvPresence::default();
-        // ChooseVendor (custom row) -> CustomMenu -> OpenAI path.
+        // ChooseVendor (custom row) jumps straight to the endpoint flow.
         state.handle_key(&key(KeyCode::Down), &no_detect);
         state.handle_key(&key(KeyCode::Down), &no_detect);
-        state.handle_key(&key(KeyCode::Enter), &no_detect);
-        assert!(matches!(state.step, SetupStep::CustomMenu { .. }));
         state.handle_key(&key(KeyCode::Enter), &no_detect);
         assert!(matches!(state.step, SetupStep::CustomProviderId));
     }
@@ -2380,18 +2250,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_row_shows_hint() {
-        let mut state = SetupWizardState::new(options());
-        let no_detect = |_: &str| SetupEnvPresence::default();
-        state.handle_key(&key(KeyCode::Down), &no_detect);
-        state.handle_key(&key(KeyCode::Down), &no_detect);
-        state.handle_key(&key(KeyCode::Enter), &no_detect);
-        state.handle_key(&key(KeyCode::Down), &no_detect);
-        state.handle_key(&key(KeyCode::Enter), &no_detect);
-        assert!(matches!(state.step, SetupStep::SnapshotHint));
-    }
-
-    #[test]
     fn empty_env_name_blocks_confirm() {
         let mut state = SetupWizardState::new(options());
         state.handle_key(&key(KeyCode::Enter), &|_| SetupEnvPresence::default());
@@ -2511,26 +2369,35 @@ mod tests {
     }
 
     #[test]
-    fn mouse_custom_menu_hover_and_click() {
+    fn mouse_custom_row_click_goes_to_provider_id() {
         let mut state = SetupWizardState::new(options());
-        state.step = SetupStep::CustomMenu { selected: 0 };
         let hits = render_mouse_layout(&mut state);
-        assert_eq!(hits.rows.len(), 2);
-        let row = hits.rows[1];
-        let outcome = state.handle_mouse(MouseEventKind::Moved, row.x + 2, row.y, &no_detect);
+        let custom = hits.rows.len() - 1;
+        // Hover custom row moves selection.
+        let row = hits.rows[custom];
+        let outcome = state.handle_mouse(MouseEventKind::Moved, row.x + 1, row.y, &no_detect);
         assert!(matches!(outcome, SetupWizardOutcome::Changed));
-        assert!(matches!(state.step, SetupStep::CustomMenu { selected: 1 }));
-        // Click selected snapshot row -> SnapshotHint.
+        assert!(matches!(
+            state.step,
+            SetupStep::ChooseVendor { selected } if selected == custom
+        ));
+        // Click the selected custom row jumps straight to CustomProviderId.
         let hits = render_mouse_layout(&mut state);
-        let row = hits.rows[1];
+        let row = hits.rows[custom];
         let outcome = state.handle_mouse(
             MouseEventKind::Down(MouseButton::Left),
-            row.x + 2,
+            row.x + 1,
             row.y,
             &no_detect,
         );
         assert!(matches!(outcome, SetupWizardOutcome::Changed));
-        assert!(matches!(state.step, SetupStep::SnapshotHint));
+        assert!(matches!(state.step, SetupStep::CustomProviderId));
+        // Esc returns to the custom row.
+        state.handle_key(&key(KeyCode::Esc), &no_detect);
+        assert!(matches!(
+            state.step,
+            SetupStep::ChooseVendor { selected } if selected == custom
+        ));
     }
 
     #[test]
