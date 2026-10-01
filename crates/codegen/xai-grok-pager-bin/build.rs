@@ -46,4 +46,16 @@ fn main() {
         println!("cargo:rustc-link-arg=/DELAYLOAD:ProjectedFSLib.dll");
         println!("cargo:rustc-link-arg=delayimp.lib");
     }
+
+    // The PE default is a 1 MiB main-thread stack reserve; clap's derive-generated
+    // `PagerArgs` parser recurses deeper than that in a debug build, so every
+    // subcommand (even `--version`) aborts with "has overflowed its stack" before
+    // printing. `RUST_MIN_STACK` cannot help: it sizes spawned threads, not main.
+    // 16 MiB matches the usual Linux main-thread reserve. `/STACK` is an MSVC-linker
+    // option; the gnu host links through ld and would reject it.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        println!("cargo:rustc-link-arg=/STACK:16777216");
+    }
 }

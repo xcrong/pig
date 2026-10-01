@@ -885,7 +885,10 @@ impl HeldDir {
 
     pub fn replace(&self, name: &OsStr, contents: &str, owner: FileOwner) -> std::io::Result<()> {
         let mode = (owner == FileOwner::Daemon).then_some(0o600);
-        xai_grok_config::fs_atomic::write_atomically_verified(&self.dir.join(name), contents, mode)
+        // Slot semantics: `open` above walked every component of `self.dir` and refused a
+        // symlink, so parents are safe to follow, and a link at `name` must be replaced by the
+        // rename rather than written through.
+        xai_grok_config::fs_atomic::write_atomically(&self.dir.join(name), contents, mode)
     }
 }
 

@@ -64,6 +64,9 @@ rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
 
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "link-arg=-Wl,--stack,16777216"]
+
 
 # jemalloc page size for Apple Silicon (macOS aarch64 uses 16KB pages = 2^14).
 # This target-prefixed env var is consumed by tikv-jemalloc-sys's build.rs

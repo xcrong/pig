@@ -152,10 +152,21 @@ impl XaiProtoBuilder {
 
         // Can only process one input file when using --dependency_out=FILE.
         for proto in protos {
+            // protoc requires `--descriptor_set_out` whenever `--dependency_out` is
+            // given, and neither has a portable sink: `--descriptor_set_out=/dev/null`
+            // and `--dependency_out=/dev/stdout` only exist on Unix. Use scratch
+            // files so this works on Windows too.
+            let scratch = tempfile::TempDir::new()?;
+            let descriptor_set_out = scratch.path().join("rerun-if-changed.pbbin");
+            let dependency_out = scratch.path().join("rerun-if-changed.mk");
+
             let mut command = Command::new(protoc.unwrap_or(Path::new("protoc")));
             command
-                .arg("--dependency_out=/dev/stdout")
-                .arg("--descriptor_set_out=/dev/null");
+                .arg(format!("--dependency_out={}", dependency_out.display()))
+                .arg(format!(
+                    "--descriptor_set_out={}",
+                    descriptor_set_out.display()
+                ));
 
             // Add protoc's well-known types include directory first (if found).
             // This is needed for Bazel sandboxed builds where protoc and its
@@ -176,19 +187,22 @@ impl XaiProtoBuilder {
             command.stdin(Stdio::null());
             command.stderr(Stdio::inherit());
 
-            let output = command.output().context("protoc command failed")?;
-            if !output.status.success() {
-                return Err(anyhow::anyhow!("protoc command failed"));
-            }
+            let status = command.status().context("protoc command failed")?;
+            anyhow::ensure!(status.success(), "protoc command failed");
 
-            let output =
-                String::from_utf8(output.stdout).context("protoc command output not UTF-8")?;
+            let output = fs::read_to_string(&dependency_out).with_context(|| {
+                format!(
+                    "protoc did not write a dependency file at {}",
+                    dependency_out.display()
+                )
+            })?;
 
             let mut lines = output.lines();
             let first_line = lines.next().context("protoc command output is empty")?;
-            let prefix = "/dev/null:";
-            let rem = first_line.strip_prefix(prefix).with_context(|| {
-                format!("protoc command output must start with /dev/null: {output:?}")
+            // protoc echoes the `--descriptor_set_out` value verbatim as the make target.
+            let prefix = format!("{}:", descriptor_set_out.display());
+            let rem = first_line.strip_prefix(prefix.as_str()).with_context(|| {
+                format!("protoc command output must start with {prefix}: {output:?}")
             })?;
             for line in iter::once(rem).chain(lines) {
                 let line = line.trim();
@@ -196,7 +210,11 @@ impl XaiProtoBuilder {
                 // Depending on absolute paths like
                 // /Users/user/homebrew/Cellar/protobuf/29.1/include/google/protobuf/timestamp.proto
                 // is valid, but we want to have output more deterministic.
-                if line.contains("/include/google/protobuf/") {
+                // protoc echoes paths with the platform separator, so normalize before matching.
+                if line
+                    .replace('\\', "/")
+                    .contains("/include/google/protobuf/")
+                {
                     continue;
                 }
 

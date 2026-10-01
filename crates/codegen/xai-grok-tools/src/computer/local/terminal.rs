@@ -587,6 +587,7 @@ struct LocalTerminalActor {
 
     persistent_shell: bool,
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     login_shell_capture: bool,
 
     /// Baked in at construction, not read from a process-global, so a subagent
@@ -1578,6 +1579,8 @@ impl LocalTerminalActor {
     }
 
     async fn collect_shell_state_dumps(&mut self, task_ids: &[String]) {
+        #[cfg(not(unix))]
+        let _ = task_ids;
         #[cfg(unix)]
         if self.persistent_shell {
             for task_id in task_ids {
@@ -3312,7 +3315,7 @@ fn spawn_shell_command(
     };
 
     #[cfg(not(unix))]
-    let mut build_cmd = |with_breakaway: bool| {
+    let build_cmd = |with_breakaway: bool| {
         use windows::Win32::System::Threading::{
             CREATE_BREAKAWAY_FROM_JOB, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW,
         };

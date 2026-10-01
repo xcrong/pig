@@ -643,6 +643,9 @@ fn a_managed_config_without_a_mode_adds_no_layer() {
         backend_available,
         writable: &writable,
     };
+    // Symlink-planting cases below are POSIX-only: Windows reparse points need an
+    // unprivileged-create flag or a developer mode shell, which tests must not assume.
+    #[cfg(unix)]
     let read_at = |grok_home: &Path| {
         crate::sandbox_mode::managed_mode_layer(&SandboxModeInputs {
             grok_home,
@@ -670,39 +673,42 @@ fn a_managed_config_without_a_mode_adds_no_layer() {
         assert_eq!(Some(mode), read(), "{document:?}");
     }
 
-    let managed = crate::sandbox_mode::managed_config_path(&fx.grok_home);
-    let dotfiles = fx._tmp.path().join("dotfiles");
-    std::fs::create_dir_all(&dotfiles).unwrap();
-    std::fs::copy(&managed, dotfiles.join("managed_config.toml")).unwrap();
-    let planted = fx.root.join("planted");
-    std::fs::create_dir_all(&planted).unwrap();
-    std::fs::copy(&managed, planted.join("managed_config.toml")).unwrap();
-    let linked_home = fx._tmp.path().join("linked-home");
-    std::os::unix::fs::symlink(&dotfiles, &linked_home).unwrap();
-    assert!(
-        read_at(&linked_home).is_err(),
-        "a linked grok home is refused: what its grants let commands write cannot be read through it"
-    );
-    let bent_home = fx._tmp.path().join("bent-home");
-    std::os::unix::fs::symlink(&planted, &bent_home).unwrap();
-    assert!(
-        read_at(&bent_home).is_err(),
-        "a grok home linked into the workspace is refused"
-    );
-    std::fs::remove_file(&managed).unwrap();
-    std::os::unix::fs::symlink(dotfiles.join("managed_config.toml"), &managed).unwrap();
-    assert_eq!(
-        Some(SandboxMode::Enforce),
-        read(),
-        "the file linked into the dotfiles reads"
-    );
-    std::fs::remove_file(&managed).unwrap();
-    std::os::unix::fs::symlink(planted.join("managed_config.toml"), &managed).unwrap();
-    assert!(
-        crate::sandbox_mode::managed_mode_layer(&inputs(false)).is_err(),
-        "the file linked into the workspace is refused"
-    );
-    std::fs::remove_file(&managed).unwrap();
+    #[cfg(unix)]
+    {
+        let managed = crate::sandbox_mode::managed_config_path(&fx.grok_home);
+        let dotfiles = fx._tmp.path().join("dotfiles");
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        std::fs::copy(&managed, dotfiles.join("managed_config.toml")).unwrap();
+        let planted = fx.root.join("planted");
+        std::fs::create_dir_all(&planted).unwrap();
+        std::fs::copy(&managed, planted.join("managed_config.toml")).unwrap();
+        let linked_home = fx._tmp.path().join("linked-home");
+        std::os::unix::fs::symlink(&dotfiles, &linked_home).unwrap();
+        assert!(
+            read_at(&linked_home).is_err(),
+            "a linked grok home is refused: what its grants let commands write cannot be read through it"
+        );
+        let bent_home = fx._tmp.path().join("bent-home");
+        std::os::unix::fs::symlink(&planted, &bent_home).unwrap();
+        assert!(
+            read_at(&bent_home).is_err(),
+            "a grok home linked into the workspace is refused"
+        );
+        std::fs::remove_file(&managed).unwrap();
+        std::os::unix::fs::symlink(dotfiles.join("managed_config.toml"), &managed).unwrap();
+        assert_eq!(
+            Some(SandboxMode::Enforce),
+            read(),
+            "the file linked into the dotfiles reads"
+        );
+        std::fs::remove_file(&managed).unwrap();
+        std::os::unix::fs::symlink(planted.join("managed_config.toml"), &managed).unwrap();
+        assert!(
+            crate::sandbox_mode::managed_mode_layer(&inputs(false)).is_err(),
+            "the file linked into the workspace is refused"
+        );
+        std::fs::remove_file(&managed).unwrap();
+    }
 
     fx.set_user_mode("off");
     fx.set_managed_document("not = [toml");
