@@ -27,15 +27,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 发版目标收缩到 linux x64 + mac arm64（2026-09 起）。
-        # ubuntu-arm / mac-intel / windows 暂不发版：windows 还会触发上游
-        # Cargo.lock 里 find-msvc-tools 0.1.13 与 cc 1.2.48 的不兼容问题，
-        # 等上游 lock 修复或有人需要时再加回来。
+        # 发版目标：linux x64 + mac arm64 + windows x64。
+        # windows 曾因上游 Cargo.lock 里 find-msvc-tools 0.1.13 与 cc 1.2.48
+        # 不兼容而下线，现已随 find-msvc-tools 0.1.14 升级与本仓库 Windows
+        # 构建兼容修复（protoc 便携化、栈保留、平台门控）加回。
         include:
           - runner: ubuntu-24.04
             artifact: pig-linux-x86_64.tar.gz
           - runner: macos-14
             artifact: pig-macos-arm64.tar.gz
+          - runner: windows-2025
+            artifact: pig-windows-x86_64.tar.gz
 
     steps:
       - name: Checkout
@@ -59,6 +61,10 @@ jobs:
         if: startsWith(runner.os, 'macOS')
         run: brew install protobuf
 
+      - name: Install protoc (Windows)
+        if: startsWith(runner.os, 'Windows')
+        run: choco install protoc -y
+
       - name: Install Rust toolchain
         # 遵循仓库根目录 rust-toolchain.toml 的版本 pin
         uses: dtolnay/rust-toolchain@stable
@@ -74,6 +80,7 @@ jobs:
           case "${{ matrix.runner }}" in
             ubuntu-24.04) TRIPLE=x86_64-unknown-linux-musl ;;
             macos-14) TRIPLE=aarch64-apple-darwin ;;
+            windows-*) TRIPLE=x86_64-pc-windows-msvc ;;
             *) echo "unsupported runner: ${{ matrix.runner }}"; exit 1 ;;
           esac
           SHELL_VER=$(sed -n 's/^const RG_VER: &str = "\(.*\)";/\1/p' crates/codegen/xai-grok-shell/build.rs)
@@ -90,7 +97,8 @@ jobs:
                 "https://github.com/BurntSushi/ripgrep/releases/download/$ver/ripgrep-$ver-$TRIPLE.tar.gz"
               tar -xzf /tmp/rg-prefetch/ripgrep-$ver-$TRIPLE.tar.gz -C "$dir"
             fi
-            find "$dir" -name rg -type f | head -n 1
+            # Windows 产物的二进制是 rg.exe，这里同时匹配两种文件名。
+            find "$dir" \( -name rg -o -name rg.exe \) -type f | head -n 1
           }
           echo "GROK_SHELL_BUNDLE_RG_PATH=$(fetch_rg "$SHELL_VER")" >> "$GITHUB_ENV"
           echo "GROK_TOOLS_BUNDLE_RG_PATH=$(fetch_rg "$TOOLS_VER")" >> "$GITHUB_ENV"
@@ -102,7 +110,12 @@ jobs:
         shell: bash
         run: |
           cd target/release
-          tar -czf "$GITHUB_WORKSPACE/${{ matrix.artifact }}" pig
+          # Windows 产物的二进制是 pig.exe，其余平台是 pig。
+          if [[ "${{ matrix.runner }}" == windows-* ]]; then
+            tar -czf "$GITHUB_WORKSPACE/${{ matrix.artifact }}" pig.exe
+          else
+            tar -czf "$GITHUB_WORKSPACE/${{ matrix.artifact }}" pig
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
